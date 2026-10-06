@@ -1,4 +1,4 @@
-# Install-GpuFanCurve.ps1 — install a custom NVIDIA GPU fan curve via nvfancontrol,
+﻿# Install-GpuFanCurve.ps1 - install a custom NVIDIA GPU fan curve via nvfancontrol,
 # persistent at logon (scheduled task, highest privileges).
 #
 # Default curve is more aggressive than the silent stock curve

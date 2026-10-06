@@ -1,4 +1,4 @@
-# Run-WorkstationBench.ps1 — one-command workstation benchmark battery.
+﻿# Run-WorkstationBench.ps1 - one-command workstation benchmark battery.
 #
 # Collects system/GPU info, runs the GPU compute phases with telemetry, optionally
 # runs LLM (Ollama), NVENC (ffmpeg) and a game-like render (Unigine Valley), and

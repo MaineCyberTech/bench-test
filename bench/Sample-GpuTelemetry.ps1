@@ -1,4 +1,4 @@
-# Sample-GpuTelemetry.ps1 — sample GPU telemetry for a duration and report min/avg/max.
+﻿# Sample-GpuTelemetry.ps1 - sample GPU telemetry for a duration and report min/avg/max.
 # Usage: .\Sample-GpuTelemetry.ps1 -Seconds 60 [-IntervalMs 1000] [-Json]
 param(
     [int]$Seconds = 60,

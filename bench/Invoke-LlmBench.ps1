@@ -1,4 +1,4 @@
-# Invoke-LlmBench.ps1 — measure local LLM inference speed via Ollama.
+﻿# Invoke-LlmBench.ps1 - measure local LLM inference speed via Ollama.
 # Usage: .\Invoke-LlmBench.ps1 [-Models 'qwen3:8b'] [-Tokens 128] [-OutFile <path>]
 param(
     [string[]]$Models = @(),

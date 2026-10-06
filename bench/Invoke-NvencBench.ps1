@@ -1,4 +1,4 @@
-# Invoke-NvencBench.ps1 — NVENC/NVDEC video-engine benchmark via ffmpeg.
+﻿# Invoke-NvencBench.ps1 - NVENC/NVDEC video-engine benchmark via ffmpeg.
 # Usage: .\Invoke-NvencBench.ps1 [-FfmpegPath <ffmpeg.exe>] [-Seconds 30] [-OutFile <path>]
 param(
     [string]$FfmpegPath,

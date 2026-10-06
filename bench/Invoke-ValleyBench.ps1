@@ -1,4 +1,4 @@
-# Invoke-ValleyBench.ps1 — optional game-like render test using Unigine Valley.
+﻿# Invoke-ValleyBench.ps1 - optional game-like render test using Unigine Valley.
 #
 # Unigine Valley is a launcher/engine pair; this script runs the engine directly
 # (Valley.exe) at a chosen resolution/quality, starts the built-in benchmark, and

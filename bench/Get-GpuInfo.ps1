@@ -1,4 +1,4 @@
-# Get-GpuInfo.ps1 — report system, GPU, and NVIDIA driver info.
+﻿# Get-GpuInfo.ps1 - report system, GPU, and NVIDIA driver info.
 # Usage: .\Get-GpuInfo.ps1 [-Json]
 param([switch]$Json)
 

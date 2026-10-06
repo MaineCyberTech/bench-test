@@ -1,4 +1,4 @@
-# Set-GpuPowerLimit.ps1 — query or set the GPU power limit (needs admin to set).
+﻿# Set-GpuPowerLimit.ps1 - query or set the GPU power limit (needs admin to set).
 # Usage:
 #   .\Set-GpuPowerLimit.ps1 -Info              # show min/default/max/current
 #   .\Set-GpuPowerLimit.ps1 -Watts 220         # cap to 220 W (one UAC prompt)
@@ -17,7 +17,7 @@ if ($Info -or -not $Watts) {
     exit 0
 }
 
-# set requires admin — relaunch just the nvidia-smi call elevated
+# set requires admin - relaunch just the nvidia-smi call elevated
 $p = Start-Process nvidia-smi -ArgumentList '-i', "$Gpu", '-pl', "$Watts" -Verb RunAs -Wait -PassThru
 Start-Sleep -Seconds 1
 "set rc=$($p.ExitCode)"

@@ -1,4 +1,4 @@
-# Invoke-GpuBench.ps1 — run the GPU compute phases with live telemetry and write a report.
+﻿# Invoke-GpuBench.ps1 - run the GPU compute phases with live telemetry and write a report.
 # Usage: .\Invoke-GpuBench.ps1 [-OutDir .\results] [-SoakSeconds 600] [-NoInstall] [-TorchIndex <url>]
 param(
     [string]$OutDir = "$PSScriptRoot\..\results",
@@ -96,7 +96,7 @@ $report = [ordered]@{
 $report | ConvertTo-Json -Depth 12 | Set-Content "$base.json" -Encoding UTF8
 
 $md = @()
-$md += "# GPU bench — $hostname"
+$md += "# GPU bench - $hostname"
 $md += ""
 $md += "Generated: $(Get-Date -Format o)"
 $i = $report.info
@@ -107,7 +107,7 @@ $md += "|---|---|---|"
 foreach ($p in $phases) {
     if (-not $p.result) { continue }
     $t = $p.telemetry
-    $tm = if ($t) { "util $($t.util.avg)/$($t.util.max)% · $($t.temp.avg)/$($t.temp.max)C · $($t.power.avg)/$($t.power.max)W · fan $($t.fan.avg)/$($t.fan.max)%" } else { "" }
+    $tm = if ($t) { "util $($t.util.avg)/$($t.util.max)% | $($t.temp.avg)/$($t.temp.max)C | $($t.power.avg)/$($t.power.max)W | fan $($t.fan.avg)/$($t.fan.max)%" } else { "" }
     $r = $p.result
     switch ($p.phase) {
         'matmul' { foreach ($k in $r.results.PSObject.Properties.Name) { $md += "| matmul | $k $($r.results.$k.tflops) TFLOPS | $tm |" } }
