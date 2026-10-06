@@ -15,7 +15,7 @@ function Find-Ffmpeg {
     return $null
 }
 $ff = Find-Ffmpeg
-if (-not $ff) { Write-Error "ffmpeg.exe not found (pass -FfmpegPath). Download: https://www.gyan.dev/ffmpeg/builds/"; exit 1 }
+if (-not $ff) { throw "ffmpeg.exe not found (pass -FfmpegPath). Download: https://www.gyan.dev/ffmpeg/builds/" }
 Write-Host "[nvenc] ffmpeg: $ff"
 
 $tmp = Join-Path $env:TEMP "bench_nvenc_$([guid]::NewGuid().ToString('N'))"

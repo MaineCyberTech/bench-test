@@ -8,12 +8,12 @@ param(
 
 $ollama = (Get-Command ollama -ErrorAction SilentlyContinue).Source
 if (-not $ollama) { $ollama = "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe" }
-if (-not (Test-Path $ollama)) { Write-Error "ollama not found"; exit 1 }
+if (-not (Test-Path $ollama)) { throw "ollama not found" }
 
 if ($Models.Count -eq 0) {
     $Models = (& $ollama list 2>$null | Select-Object -Skip 1 | ForEach-Object { ($_ -split '\s+')[0] } | Where-Object { $_ })
 }
-if ($Models.Count -eq 0) { Write-Error "no ollama models installed"; exit 1 }
+if ($Models.Count -eq 0) { throw "no ollama models installed" }
 
 $results = @()
 foreach ($m in $Models) {

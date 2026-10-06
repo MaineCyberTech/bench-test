@@ -13,10 +13,14 @@ param(
     [ValidateSet('LOW', 'MEDIUM', 'HIGH', 'ULTRA')][string]$Quality = 'HIGH',
     [int]$Multisample = 0,          # 0=off,1=2x,2=4x,3=8x
     [switch]$TessellationExtreme,
-    [string]$OutDir = "$PSScriptRoot\..\results"
+    [string]$OutDir
 )
+# NB: don't default $OutDir to "$PSScriptRoot\..\results" here. When a Mandatory
+# parameter is present, $PSScriptRoot is not yet set while parameter defaults are
+# evaluated, so that expression resolves to "\..\results" (and writes to C:\results).
+if (-not $OutDir) { $OutDir = Join-Path (Split-Path $PSScriptRoot -Parent) 'results' }
 $exe = Join-Path $ValleyBin 'Valley.exe'
-if (-not (Test-Path $exe)) { Write-Error "Valley.exe not found in $ValleyBin"; exit 1 }
+if (-not (Test-Path $exe)) { throw "Valley.exe not found in $ValleyBin" }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y); [DllImport("user32.dll")] public static extern void mouse_event(uint f,uint dx,uint dy,uint d,uint e);' -Name M -Namespace W

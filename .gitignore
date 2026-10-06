@@ -5,6 +5,7 @@ results/
 # python
 __pycache__/
 *.pyc
+.venv/
 
 # editor
 .vscode/
