@@ -57,8 +57,19 @@ To update, install the **latest NVIDIA driver** for that GPU (Game Ready / Studi
 resolve + download the current driver by device id is planned; for now use
 <https://www.nvidia.com/en-us/drivers/>.
 
-Power-limit control (needs admin): `nvidia-smi -pl <W>` (e.g. `220` to cap heat/coil-whine;
-range is printed by `nvidia-smi -q -d POWER`).
+Power-limit control (needs admin):
+```powershell
+.\bench\Set-GpuPowerLimit.ps1 -Info        # min/default/max/current
+.\bench\Set-GpuPowerLimit.ps1 -Watts 220   # cap heat/coil-whine (one UAC prompt)
+.\bench\Set-GpuPowerLimit.ps1 -Watts 285   # restore full
+```
+
+Custom GPU fan curve (more aggressive than the quiet stock curve; persistent at logon):
+```powershell
+.\bench\Install-GpuFanCurve.ps1                         # default curve + logon task
+.\bench\Install-GpuFanCurve.ps1 -Curve '40:40,55:55,70:75,80:95'
+.\bench\Install-GpuFanCurve.ps1 -Uninstall              # remove task / restore auto fan
+```
 
 ## Interpreting results
 
