@@ -27,7 +27,7 @@ Telemetry (`bench/Sample-GpuTelemetry.ps1`) samples `util`, `temp`, `power`, `SM
 ## Quick start (on the target workstation)
 
 Requirements: Windows 10/11, an NVIDIA GPU (works CPU-only but pointless), PowerShell 5.1+,
-Python 3.10+ (`python` on PATH), and `gh` + a token to clone this private repo.
+Python 3.10+ (`python` on PATH), and `git`.
 
 ```powershell
 git clone https://github.com/MaineCyberTech/bench-test.git
@@ -35,6 +35,16 @@ cd bench-test
 # one-command battery (installs PyTorch CUDA build if missing, writes results\<host>-<date>.{json,md})
 powershell -ExecutionPolicy Bypass -File .\bench\Run-WorkstationBench.ps1
 ```
+
+### Long endurance soak
+```powershell
+# disable sleep first, then soak (detached so it survives an RDP drop)
+powercfg -change -standby-timeout-ac 0
+powershell -ExecutionPolicy Bypass -File .\bench\Invoke-LongSoak.ps1 -Hours 4
+```
+`Invoke-LongSoak.ps1` runs the 4-stream soak for `-Hours`, samples telemetry every
+`-IntervalSeconds`, and writes `<host>-longsoak-<stamp>.{md,json}` with min/avg/max thermals,
+loaded-sample drift, throttle reasons and any TDR/WHEA events.
 
 Options:
 ```powershell
@@ -88,6 +98,22 @@ docs/      METHODOLOGY.md (how it works, reference numbers, gotchas)
 examples/  a real result from an RTX 4070 Ti SUPER / Xeon W-2123 (for a template)
 results/   output (git-ignored)
 ```
+
+## Scripts
+
+| Script | Purpose |
+|---|---|
+| `Run-WorkstationBench.ps1` | one-command battery (info + compute + optional LLM/NVENC/Valley) |
+| `Invoke-LongSoak.ps1` | multi-hour endurance soak with telemetry + report |
+| `Invoke-GpuBench.ps1` | compute phases with telemetry → JSON + Markdown report |
+| `gpu_bench.py` | matmul · membw · pcie · conv · integrity · streams · soak |
+| `Get-GpuInfo.ps1` | system/CPU/RAM/GPU + driver version + PCI id |
+| `Sample-GpuTelemetry.ps1` | standalone telemetry sampler |
+| `Invoke-LlmBench.ps1` | Ollama tokens/s |
+| `Invoke-NvencBench.ps1` | NVENC h264/hevc/av1 fps |
+| `Invoke-ValleyBench.ps1` | Unigine Valley game-like run |
+| `Set-GpuPowerLimit.ps1` | query/set power limit |
+| `Install-GpuFanCurve.ps1` | custom GPU fan curve + logon task |
 
 ## License
 

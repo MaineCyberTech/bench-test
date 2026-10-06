@@ -29,10 +29,12 @@
 |---|---|---|---|---|---|
 | 600 s soak @285 W | 86.6 TFLOPS | 81 °C | 285 W | 93 % | SW power cap only |
 | 30 min soak @220 W | 72.7 TFLOPS | 82 °C | 220 W | 85 % | none |
-| 30 min soak @285 W | 74.8 TFLOPS | **90 °C** | 285 W | 89 % | **SW thermal slowdown ~26 min** |
+| 30 min soak @285 W (stock fan) | 74.8 TFLOPS | **90 °C** | 285 W | 89 % | **SW thermal slowdown ~26 min** |
+| **4 h soak @285 W (custom fan curve)** | **79.6 TFLOPS** | **80 °C max** | 285 W | 94–97 % | **none** |
 
-> At 285 W the mixed soak thermally throttled; +14 °C drift with flat power ⇒ **case airflow**
-> was the limit (Z4 G4 front/PCIe fans don't ramp). 220 W was the sweet spot (~97 % throughput, cooler).
+> Installing the custom GPU fan curve (`Install-GpuFanCurve.ps1`) eliminated the 90 °C thermal
+> throttling: the same 285 W load now holds ~80 °C for 4 hours straight with no slowdown.
+> Power limit matters too: 220 W gave ~97 % of the throughput, ~10 °C cooler, much quieter.
 
 ## LLM (Ollama)
 | Model | tok/s |
