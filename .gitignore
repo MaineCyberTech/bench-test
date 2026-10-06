@@ -1,0 +1,13 @@
+# results output (generated)
+results/
+*.log
+
+# python
+__pycache__/
+*.pyc
+
+# editor
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
