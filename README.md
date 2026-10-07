@@ -26,6 +26,9 @@ Built to compare machines (e.g. before/after a GPU install or a driver update) w
 | **System inventory (deep)** | `bench/Get-SystemInfo.ps1` | CPU, DIMMs (part/speed), GPU + PCIe link gen/width, volumes, NICs, monitors, USB, boot time |
 | **Hardware sensors** | `bench/Get-Sensors.ps1` | temps/fans/voltages/power/loads/clocks via LibreHardwareMonitor (elevated = full) |
 | **Network** | `bench/Invoke-NetBench.ps1` | ping latency + download/upload Mbps (Cloudflare) |
+| **Device topology** | `bench/Get-PcieInfo.ps1` | all PCI/PCIe devices + vendor/device IDs + driver versions |
+| **Health history** | `bench/Get-EventHealth.ps1` | WHEA / TDR / disk / Kernel-Power-41 event history + disk SMART |
+| **Environment** | `bench/Get-EnvInfo.ps1` | OS update level, drivers, installed apps, Defender/firewall/TPM/SecureBoot/BitLocker, battery/Bluetooth |
 
 Telemetry (`bench/Sample-GpuTelemetry.ps1`) samples `util`, `temp`, `power`, `SM clock`, `VRAM`, `fan` once/second.
 
@@ -121,6 +124,9 @@ results/   output (git-ignored)
 | `Get-SystemInfo.ps1` | deep inventory: CPU/DIMM/GPU/PCIe/volumes/NICs/monitors/USB/boot |
 | `Get-Sensors.ps1` | all hardware sensors (LibreHardwareMonitor) |
 | `Invoke-NetBench.ps1` | network latency + download/upload Mbps |
+| `Get-PcieInfo.ps1` | PCI/PCIe device topology + driver versions |
+| `Get-EventHealth.ps1` | WHEA/TDR/disk/Kernel-Power history + disk SMART |
+| `Get-EnvInfo.ps1` | OS update level, drivers, software, security, battery/Bluetooth |
 | `Invoke-LlmBench.ps1` | Ollama tokens/s |
 | `Invoke-NvencBench.ps1` | NVENC h264/hevc/av1 fps |
 | `Invoke-ValleyBench.ps1` | Unigine Valley game-like run |

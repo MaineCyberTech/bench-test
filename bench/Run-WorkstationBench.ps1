@@ -44,9 +44,15 @@ Write-Host "=== [1/10] system + GPU inventory + sensors ===" -ForegroundColor Ye
 & "$PSScriptRoot\Get-GpuInfo.ps1"
 & "$PSScriptRoot\Get-SystemInfo.ps1" -OutFile "$base.sysinfo.json"
 try { & "$PSScriptRoot\Get-Sensors.ps1" -OutFile "$base.sensors.json" } catch { Write-Host "  sensors skipped: $($_.Exception.Message)" }
+try { & "$PSScriptRoot\Get-PcieInfo.ps1" -OutFile "$base.pcie.json" | Out-Null } catch { Write-Host "  pcie skipped: $($_.Exception.Message)" }
+try { & "$PSScriptRoot\Get-EventHealth.ps1" -Days 7 -OutFile "$base.health.json" } catch { Write-Host "  health skipped: $($_.Exception.Message)" }
+try { & "$PSScriptRoot\Get-EnvInfo.ps1" -OutFile "$base.env.json" } catch { Write-Host "  env skipped: $($_.Exception.Message)" }
 $summary.artifacts.info = "$base.info.json"
 $summary.artifacts.sysinfo = "$base.sysinfo.json"
 $summary.artifacts.sensors = "$base.sensors.json"
+$summary.artifacts.pcie = "$base.pcie.json"
+$summary.artifacts.health = "$base.health.json"
+$summary.artifacts.env = "$base.env.json"
 
 Write-Host "=== [2/10] GPU compute battery (telemetry + report) ===" -ForegroundColor Yellow
 & "$PSScriptRoot\Invoke-GpuBench.ps1" -OutDir $OutDir -SoakSeconds $SoakSeconds -TorchIndex $TorchIndex -Size $Size -NoInstall:$NoInstall
