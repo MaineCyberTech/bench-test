@@ -102,18 +102,19 @@
 
 | Metric | example | run4 (7tukmbj) | run1* | run2 | run3 |
 |---|---|---|---|---|---|
-| Score | 3471 | 3471^ | 4277 | - | 4284 |
-| Avg FPS | 83.0 | 83.0^ | 102.2 | - | 102.4 |
-| Min / Max FPS | - | - | 5.1 / 213.8 | - | 23.4 / 206.6 |
+| Score | 3471 | 3831 | 4277 | - | 4284 |
+| Avg FPS | 83.0 | 91.6 | 102.2 | - | 102.4 |
+| Min / Max FPS | - | 27.7 / 152.3 | 5.1 / 213.8 | - | 23.4 / 206.6 |
 | GPU util avg / max (%) | ~33 | - | 29 / 59 | - | - |
-| temp max (°C) | - | - | 58 | - | ~57 |
+| temp max (°C) | - | 49 | 58 | - | ~57 |
 
 **Latest on DESKTOP-PL8A1V6** (hardened Valley driver, 2026-10-06 19:36): Score **4527** /
 **108.2 FPS** (min 24.7 / max 207.9); spread across four valid runs **4277-4527** (+/-6 %).
 
-^ run4's Valley result dialog was not captured (the engine launched windowed behind the
-desktop); the value is the earlier verified baseline for this box. Both boxes are CPU-bound in
-this legacy 32-bit engine (GPU util < 70 %, ~90-150 W of 285 W).
+run4's Valley score is a **launcher-driven fullscreen re-capture** (2026-10-07,
+`screenshot valley-DESKTOP-7TUKMBJ-20261007-score3831.png`): 1920x1080 fullscreen High, Direct3D11.
+Both boxes are CPU-bound in this legacy 32-bit engine (GPU util < 70 %, ~90-150 W of 285 W); the
+Z4 G4 trails the ASUS box by ~10-16 % (4c/8t vs 6c/12t).
 \* run1's Valley ran separately right after run1; run2 had no Valley.
 
 ## Takeaways
@@ -123,8 +124,8 @@ this legacy 32-bit engine (GPU util < 70 %, ~90-150 W of 285 W).
   `DESKTOP-7TUKMBJ` (HP Z4 G4) runs **85.7/87 °C with the fan at 100 %** - i.e. **case-airflow limited**
   at 285 W (the Z4 G4 chassis fans don't ramp). Same silicon, different chassis.
 - **CPU: 4c/8t vs 6c/12t.** The new CPU phase quantifies the Xeon W-2123 (405 GFLOPS fp32, 292 GFLOPS soak);
-  the i7-6800K column is pending. The CPU gap explains **Valley +23-30 %** on the ASUS box and matters for
-  the combined CPU+GPU stress (CPU pinned at ~96-100 % alongside the GPU).
+  the i7-6800K column is pending. The CPU gap shows in **Valley: ASUS box 4277-4527 vs Z4 G4 3831**
+  (~11-18 % higher on the 6c/12t machine) and drives the combined-stress headroom (this box's CPU is ~96-100 % busy alongside the GPU).
 - **NVENC and LLM are in line; AV1 encode has the widest spread (~9 %).**
 - **Stability: no TDR / `nvlddmkm` / WHEA / BugCheck on any box or phase.**
 

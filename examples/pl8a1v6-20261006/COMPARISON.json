@@ -8,7 +8,7 @@
     "Soak duration is ~618 s (sum of per-phase timing).",
     "LLM model sets differ per host; only compare like-for-like models.",
     "run4 is the first run with the CPU and combined CPU+GPU phases (added after run1-3).",
-    "Valley is CPU-bound on both boxes (GPU util < 70%). run4's Valley result dialog was not captured (engine ran windowed); its score uses the earlier verified baseline."
+    "Valley is CPU-bound on both boxes (GPU util < 70%). run4's Valley score (3831) is a launcher-driven fullscreen re-capture on 2026-10-07."
   ],
   "valley_latest": {
     "score": 4527,
@@ -64,7 +64,7 @@
       "combined": { "seconds": 318.5, "gpu_tflops": 79.6, "cpu_gflops": 282.8, "gpu_temp_avg_c": 77.1, "gpu_temp_max_c": 84, "gpu_power_avg_w": 275.5, "gpu_power_max_w": 285.2, "gpu_fan_avg_pct": 91.3, "gpu_fan_max_pct": 100, "cpu_util_avg_pct": 95.8, "cpu_util_max_pct": 100 },
       "nvenc_fps": { "h264_nvenc": 270, "hevc_nvenc": 398, "av1_nvenc": 363 },
       "llm_tok_s": { "qwen3:8b": 98, "deepseek-coder-v2-tools:latest": 215.9, "deepseek-coder-v2:16b": 220.7 },
-      "valley": { "score": 3471, "fps_avg": 83.0, "fps_min": null, "fps_max": null, "util_avg_pct": null, "util_max_pct": null, "temp_max_c": null, "power_max_w": null, "note": "result dialog not captured this run (engine launched windowed); value is the earlier verified baseline" }
+      "valley": { "score": 3831, "fps_avg": 91.6, "fps_min": 27.7, "fps_max": 152.3, "util_avg_pct": null, "util_max_pct": null, "temp_max_c": 49, "power_max_w": null, "note": "launcher-driven fullscreen re-capture 2026-10-07; screenshot valley-DESKTOP-7TUKMBJ-20261007-score3831.png" }
     },
     {
       "id": "run1",
