@@ -1,0 +1,148 @@
+{
+  "run": "20261007-1731-main-4ecee97",
+  "generated": "2026-10-07T17:35:45Z",
+  "sourceReports": 1,
+  "counts": {
+    "total": 7,
+    "bySeverity": {
+      "P1": 1,
+      "P2": 4,
+      "P3": 2
+    },
+    "byArea": {
+      "SUPPLY": 3,
+      "DATA": 1,
+      "SAFE": 1,
+      "CI": 1,
+      "GOV": 1
+    }
+  },
+  "findings": [
+    {
+      "id": "SUPPLY-P1-001",
+      "severity": "P1",
+      "title": "Get-Sensors.ps1 downloads the mutable 'latest' LibreHardwareMonitor release and loads it in-process without integrity verification",
+      "report": "lens_focused_security_supply_chain_ci.md",
+      "line": 17,
+      "area": "SUPPLY",
+      "evidence": [
+        "bench/Get-Sensors.ps1:17 curl.exe -L --fail -o lhm.zip 'https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/latest/download/LibreHardwareMonitor.zip'",
+        "bench/Get-Sensors.ps1:18 Expand-Archive $zip -DestinationPath $LibDir -Force",
+        "bench/Get-Sensors.ps1:22 Add-Type -Path $dll (loads LibreHardwareMonitorLib.dll into the PowerShell process)",
+        "bench/Get-Sensors.ps1:4-5 'Run ELEVATED for the most complete readings'; Run-WorkstationBench.ps1:46 invokes Get-Sensors.ps1 in the default battery"
+      ],
+      "impact": "The artifact is unpinned ('releases/latest') and unverified (no checksum or signature) before it is extracted and loaded as code in the caller's PowerShell session, which the toolkit recommends running elevated. A mutable upstream artifact (or an upstream/GitHub compromise) therefore gains code execution on every benchmark host.",
+      "recommendation": "Pin a specific LibreHardwareMonitor release and verify a committed SHA-256 (or Authenticode signature) before Expand-Archive/Add-Type; fail closed on mismatch. Keep the existing -LibDir override and document supplying a pre-vetted local build.",
+      "deterministic_ref": null,
+      "confidence": "high",
+      "status": "open"
+    },
+    {
+      "id": "SUPPLY-P2-001",
+      "severity": "P2",
+      "title": "Install-GpuFanCurve.ps1 downloads nvfancontrol with no checksum and runs it from an elevated logon task",
+      "report": "lens_focused_security_supply_chain_ci.md",
+      "line": 34,
+      "area": "SUPPLY",
+      "evidence": [
+        "bench/Install-GpuFanCurve.ps1:34 $url = 'https://github.com/foucault/nvfancontrol/releases/download/0.5.1/nvfancontrol-rtx-win32-x64.zip'",
+        "bench/Install-GpuFanCurve.ps1:36-37 curl.exe -L --fail -o $zip $url; Expand-Archive $zip -DestinationPath $InstallDir -Force",
+        "bench/Install-GpuFanCurve.ps1:50-58 registers scheduled task 'NVIDIA GPU Fan Curve' at logon with -RunLevel Highest executing the downloaded exe"
+      ],
+      "impact": "The release tag is pinned (0.5.1) but the downloaded archive is never integrity-checked, and it is installed as a persistent, highest-privilege logon task. A tampered release asset or a MITM/redirected download executes with SYSTEM-level task privileges on every logon.",
+      "recommendation": "Verify a pinned SHA-256 (or the publisher's signature) before extracting and refuse to register the task on mismatch; allow a pre-downloaded local binary. Document the elevated persistence the script installs.",
+      "deterministic_ref": null,
+      "confidence": "high",
+      "status": "open"
+    },
+    {
+      "id": "SUPPLY-P2-002",
+      "severity": "P2",
+      "title": "PyTorch/numpy are installed at runtime from an unpinned, caller-controlled package index",
+      "report": "lens_focused_security_supply_chain_ci.md",
+      "line": 6,
+      "area": "SUPPLY",
+      "evidence": [
+        "bench/Invoke-GpuBench.ps1:6,62 python -m pip install --upgrade --index-url $TorchIndex torch",
+        "bench/Run-WorkstationBench.ps1:16,58 -TorchIndex defaults to https://download.pytorch.org/whl/cu128",
+        "bench/Invoke-RamBench.ps1:24 python -m pip install --quiet numpy"
+      ],
+      "impact": "There is no version pin and no --require-hashes; -TorchIndex is passed straight through to pip. A typo'd or hostile index (or an index-serving compromise) can supply arbitrary wheels that then execute inside the benchmark process on the host.",
+      "recommendation": "Pin exact versions and hashes (requirements with hashes + pip --require-hashes) and constrain -TorchIndex to an allowlist; default to not installing (require -NoInstall-style opt-in).",
+      "deterministic_ref": null,
+      "confidence": "medium",
+      "status": "open"
+    },
+    {
+      "id": "DATA-P2-001",
+      "severity": "P2",
+      "title": "Collectors capture stable hardware identifiers and PII with no redaction option, and the workflow encourages sharing results",
+      "report": "lens_focused_security_supply_chain_ci.md",
+      "line": 36,
+      "area": "DATA",
+      "evidence": [
+        "bench/Get-SystemInfo.ps1:36 DIMM serial ($_.SerialNumber); :49 nvidia-smi serial,uuid; :25 processor_id; :76 NIC mac/ip; :14 BIOS version",
+        "bench/Get-EnvInfo.ps1:54 Startup commands (embed user paths/names); :37 installed software; :55 DNS servers",
+        "README.md:106 examples/ described as 'a real result ... (for a template)'; committed examples/pl8a1v6-20261006/*.info.json include host names and GPU subsystem ids"
+      ],
+      "impact": "A run captures device-unique serials (DIMM/GPU/BIOS), MAC/IP addresses, hostname and a startup/software inventory, and there is no -Anonymize/redaction switch. Because the README presents sharing/committing a result as the normal workflow, users are likely to publish identifiers that fingerprint and correlate a machine; in this public repo that output is world-readable.",
+      "recommendation": "Add a redaction mode (drop/hash serials, MACs, IPs, usernames, startup commands) and make it the default for shareable output; document the sensitive fields; scrub the committed examples to redacted values.",
+      "deterministic_ref": null,
+      "confidence": "high",
+      "status": "open"
+    },
+    {
+      "id": "SAFE-P2-001",
+      "severity": "P2",
+      "title": "Default battery runs host-impacting phases without opt-in, and the wrapper defeats the VRAM-fill confirmation",
+      "report": "lens_focused_security_supply_chain_ci.md",
+      "line": 47,
+      "area": "SAFE",
+      "evidence": [
+        "bench/Invoke-GpuBench.ps1:47 passes --force to every phase, so gpu_bench.py:119 ('VRAM fill will use ~90% of free VRAM; continue?') is bypassed and integrity fills ~90% of free VRAM by default",
+        "bench/ram_bench.py:113,185 integrity fills 70% of free RAM by default (--fill-pct 70, 2 passes); Run-WorkstationBench.ps1:100-107 runs it by default",
+        "bench/disk_bench.py:164-177 writes a 2 GiB benchtest_disk.tmp in %TEMP% (default) and deletes it at the end; an interrupted run leaves it behind"
+      ],
+      "impact": "On a shared or working machine the default one-command battery can evict/OOM other workloads (RAM and VRAM), cause heavy swap and SSD write wear, and leave a large temp file if interrupted. RAM/disk have no confirmation at all, and the GPU safety prompt is defeated by --force from the wrapper.",
+      "recommendation": "Make integrity/soak phases opt-in (or require one explicit confirmation), stop passing --force by default, bound the fill percentages, and remove the disk temp file in a finally/EXIT handler. Document resource impact and required free space up front.",
+      "deterministic_ref": null,
+      "confidence": "high",
+      "status": "open"
+    },
+    {
+      "id": "CI-P3-001",
+      "severity": "P3",
+      "title": "No CI, dependency automation, or secret scanning in the repository",
+      "report": "lens_focused_security_supply_chain_ci.md",
+      "line": 1,
+      "area": "CI",
+      "evidence": [
+        "No .github/ directory or workflow files are present in the repository",
+        "tools/deterministic_checks.py reports '[CI] No GitHub Actions workflows'"
+      ],
+      "impact": "Changes to scripts that download and execute third-party code are merged with no lint, test, or secret-scan gate, so regressions and committed credentials would not be caught automatically.",
+      "recommendation": "Add a minimal CI workflow (PSScriptAnalyzer / python compile / pytest plus gitleaks, pinned and sha256-verified) and Dependabot; make the workflow a required status check on main.",
+      "deterministic_ref": "DET-P3-001",
+      "confidence": "high",
+      "status": "open"
+    },
+    {
+      "id": "GOV-P3-001",
+      "severity": "P3",
+      "title": "Repository is public while LICENSE declares the material PROPRIETARY AND CONFIDENTIAL",
+      "report": "lens_focused_security_supply_chain_ci.md",
+      "line": 1,
+      "area": "GOV",
+      "evidence": [
+        "GitHub API: MaineCyberTech/bench-test visibility=PUBLIC",
+        "LICENSE:1-3 'Copyright (c) 2026 Maine Cyber Technologies, LLC. All rights reserved. PROPRIETARY AND CONFIDENTIAL.'",
+        "README.md:138 'Proprietary - see LICENSE'"
+      ],
+      "impact": "Confidential/proprietary terms contradict world-readable publication and can mislead contributors and consumers about permitted use and redistribution.",
+      "recommendation": "Either make the repository private or relicense for public distribution, and reconcile README/LICENSE with the actual visibility.",
+      "deterministic_ref": null,
+      "confidence": "high",
+      "status": "open"
+    }
+  ]
+}
