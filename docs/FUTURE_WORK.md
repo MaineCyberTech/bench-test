@@ -3,6 +3,17 @@
 The toolkit already covers GPU, CPU, RAM, disk, network, sensors, PCIe topology, health
 events and environment. Remaining ideas, roughly in priority order:
 
+## Planned test modules (next batch, not yet implemented)
+- **`cpu_simd`** — new `cpu_bench.py` phases: **AVX-512/AVX2 FLOPS**, **AES-256-GCM** throughput,
+  **SHA-256** throughput, and **zstd/gzip/lzma compression** MB/s (single- vs multi-thread).
+- **Disk: `steadywrite`, `latency`, `smart`** — steady-state/SLC-exhaustion write chart,
+  4 KiB **latency percentiles** (p50/p90/p99/p99.9) and **queue-depth scaling**, plus a
+  **full SMART attribute dump** via bundled `smartctl` (smartmontools) in `Invoke-DiskBench.ps1`.
+- **`Invoke-IperfBench.ps1`** — **LAN throughput** via a bundled `iperf3` (client/server `-J`),
+  latency-under-load and link-error counters.
+- **`Invoke-FullSystemSoak.ps1`** — run GPU + CPU + RAM + disk soaks **concurrently** for N
+  minutes with per-subsystem telemetry and a single stability verdict.
+
 ## Hardware / sensors
 - **CPU package power (RAPL)** — read Intel/AMD energy counters via MSR (needs a signed
   driver or vendor tool; not exposed via ACPI on workstation boards like the HP Z4 G4).
