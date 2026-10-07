@@ -99,11 +99,11 @@ integrity 5.5 GiB passes 2, 0 bad · 120 s soak 9.3 GB/s, 0 errors.
 139 297 / 7 042 / 30 744 IOPS; 4K latency p50/p99/p99.9 = 5.4 / 16.7 / 28.9 µs;
 10 GiB steady **254 → 124 MB/s (−51 %)**.
 
-**Disk — D: (WD_BLACK SN850X, NVMe):** seq 287 / 2047 MB/s; 4K rand r/w/mix
-137 723 / **126 935** / 123 044 IOPS; 4K latency p50/p99/p99.9 = 5.2 / 17.0 / 33.5 µs;
-1 GiB steady 1111 MB/s.
-*The NVMe's large partition is unformatted, so D: (a 2 GiB FAT32 slice) is the only
-writable NVMe target; 4 K random **write** is ~18× the SATA SSD's.*
+**Disk — D: (WD_BLACK SN850X, NVMe — reformatted as one 931 GB NTFS volume):** seq
+write/read 1315 / 1654 MB/s; 4K rand read/write/mix 139 113 / **98 765** / **104 890** IOPS;
+4K latency p50/p99/p99.9 = 5.0 / 16.1 / 26.7 µs; 10 GiB steady **1251 → 1288 MB/s (−2.9 %)**.
+*NVMe is ~5× the SATA SSD's sequential write and ~14× its random 4K write, and it holds SLC
+speed across a 10 GiB steady write where the DRAM-less SanDisk drops 51 %.*
 
 **Network:** ping 34 ms; upload 34.5 Mbps; download measured 0 (endpoint returned nothing).
 

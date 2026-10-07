@@ -1,0 +1,76 @@
+﻿{
+    "host":  "DESKTOP-PL8A1V6",
+    "timestamp":  "2026-10-07T13:18:06.5233460-07:00",
+    "path":  "D:\\benchtest",
+    "size_mb":  2048,
+    "health":  {
+                   "friendly":  "WD_BLACK SN850X HS 1000GB",
+                   "media":  "SSD",
+                   "bus":  "NVMe",
+                   "health":  "Healthy",
+                   "temperature_c":  null,
+                   "wear":  null,
+                   "read_errors":  null,
+                   "write_errors":  null,
+                   "power_on_hours":  null
+               },
+    "phases":  [
+                   {
+                       "phase":  "seqwrite",
+                       "size_mb":  2048,
+                       "seconds":  1.56,
+                       "mbps":  1315.1
+                   },
+                   {
+                       "phase":  "seqread",
+                       "size_mb":  2048,
+                       "seconds":  1.24,
+                       "mbps":  1653.6
+                   },
+                   {
+                       "phase":  "randread",
+                       "seconds":  15.0,
+                       "ops":  2087243,
+                       "reads":  2087243,
+                       "writes":  0,
+                       "iops":  139113.0,
+                       "mbps":  569.8
+                   },
+                   {
+                       "phase":  "randwrite",
+                       "seconds":  18.0,
+                       "ops":  1774054,
+                       "reads":  0,
+                       "writes":  1774054,
+                       "iops":  98765.0,
+                       "mbps":  404.5
+                   },
+                   {
+                       "phase":  "randmix",
+                       "seconds":  17.6,
+                       "ops":  1844754,
+                       "reads":  1290838,
+                       "writes":  553916,
+                       "iops":  104890.0,
+                       "mbps":  429.6
+                   },
+                   {
+                       "phase":  "latency",
+                       "ops":  300000,
+                       "iops":  142130.0,
+                       "us_p50":  5.0,
+                       "us_p90":  9.7,
+                       "us_p99":  16.1,
+                       "us_p999":  26.7
+                   },
+                   {
+                       "phase":  "steadywrite",
+                       "gib":  10,
+                       "seconds":  9.0,
+                       "overall_mbps":  1189.7,
+                       "first10_mbps":  1251.4,
+                       "last10_mbps":  1288.0,
+                       "drop_pct":  -2.9
+                   }
+               ]
+}

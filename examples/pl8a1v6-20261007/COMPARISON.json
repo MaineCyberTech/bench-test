@@ -27,7 +27,7 @@
       "valley": { "score": 4508, "fps_avg": 107.7, "fps_min": 25.8, "fps_max": 224.6 },
       "ram": { "copy_gbps": 21.7, "scale_gbps": 12.9, "add_gbps": 13.8, "triad_gbps": 7.7, "latency_ns": 15.7 },
       "disk_c_sata": { "seq_write_mbps": 258, "seq_read_mbps": 2016, "rand4k_read_iops": 139297, "rand4k_write_iops": 7042, "steady10_mbps_first_last": [254, 124] },
-      "disk_d_nvme": { "seq_write_mbps": 287, "seq_read_mbps": 2047, "rand4k_read_iops": 137723, "rand4k_write_iops": 126935, "steady1_mbps": 1111 },
+      "disk_d_nvme": { "note": "reformatted as one 931 GB NTFS volume (was an Omarchy/Limine install)", "seq_write_mbps": 1315, "seq_read_mbps": 1654, "rand4k_read_iops": 139113, "rand4k_write_iops": 98765, "rand4k_mix_iops": 104890, "steady10_mbps_first_last": [1251, 1288] },
       "net": { "ping_ms": 34.1, "download_mbps": 0, "upload_mbps": 34.5 },
       "fullsoak": { "gpu_tflops": 80.4, "cpu_gflops": 272.4, "ram_gbps": 6.5, "disk_seq_mbps": 154.6, "gpu_temp_max_c": 71 }
     },
