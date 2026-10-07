@@ -1,0 +1,36 @@
+{
+  "run": "bench-test",
+  "generated": "2026-10-07T17:30:34Z",
+  "sourceReports": 1,
+  "counts": {
+    "bySeverity": {
+      "P3": 2
+    },
+    "byArea": {
+      "DET": 2
+    },
+    "total": 2
+  },
+  "findings": [
+    {
+      "id": "DET-P3-001",
+      "severity": "P3",
+      "subcode": "CI",
+      "title": "[CI] No GitHub Actions workflows",
+      "report": "lens_deterministic.md",
+      "line": 14,
+      "detail": "Add CI for lint/test/build.",
+      "evidence": []
+    },
+    {
+      "id": "DET-P3-002",
+      "severity": "P3",
+      "subcode": "PORT",
+      "title": "[PORT] .gitattributes missing (no line-ending policy)",
+      "report": "lens_deterministic.md",
+      "line": 18,
+      "detail": "Without a policy, checkouts differ between Windows and Linux. Add `* text=auto eol=lf`.",
+      "evidence": []
+    }
+  ]
+}
