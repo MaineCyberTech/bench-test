@@ -88,6 +88,9 @@
 | temp max (°C) | — | 58 | — | ~57 |
 | power max (W) | — | 89 | — | — |
 
+**Latest run** (hardened Valley driver, 2026-10-06 19:36): Score **4527** · **108.2 FPS**
+(min 24.7 / max 207.9). Observed spread on this box across four valid runs: **4277–4527** (±6 %).
+
 \* run1's Valley was run separately right after run1 (screenshot `valley-DESKTOP-PL8A1V6-20261006-100731.png`);
 run3's was inline with the battery. run2 had no Valley. Valley is CPU-bound on both boxes.
 
@@ -97,8 +100,8 @@ run3's was inline with the battery. run2 had no Valley. Valley is CPU-bound on b
   slightly *higher* on multi-stream scaling and memory bandwidth.
 - **Soak is ~7 % lower** on this box (80.7–81.2 vs 86.6 TFLOPS) but runs **10–14 °C cooler** at far
   lower fan — not thermally limited. Difference is within the documented run-to-run band.
-- **Valley +23 %** on this box (4284 vs 3471) — a CPU effect: i7-6800K (6c/12t) vs Xeon W-2123
-  (4c/8t). Still engine/CPU-bound (89 W of 285 W, GPU util < 60 %).
+- **Valley +23–30 %** on this box (4277–4527 vs 3471) — a CPU effect: i7-6800K (6c/12t) vs Xeon
+  W-2123 (4c/8t). Still engine/CPU-bound (89 W of 285 W, GPU util < 60 %).
 - **NVENC and LLM are in line**; AV1 encode has the widest spread (~9 %).
 - **Stability: no TDR / `nvlddmkm` / WHEA / BugCheck** on any run.
 
@@ -108,3 +111,6 @@ run3's was inline with the battery. run2 had no Valley. Valley is CPU-bound on b
    while parameter defaults are evaluated when a `[Parameter(Mandatory)]` parameter is present.
 2. Failed phases (`ffmpeg`/`ollama` missing) were still listed in the run manifest because the
    phase scripts used non-terminating `Write-Error`, so the runner's `try/catch` never fired.
+3. `Invoke-ValleyBench.ps1` clicked an absolute `(47,13)` coordinate, so when the engine launched
+   *windowed* (busy desktop) the click missed the Benchmark control and no score was captured. Now
+   clicked relative to the engine window's client area (fullscreen or windowed).

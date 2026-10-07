@@ -9,6 +9,16 @@
     "LLM model sets differ between example and run1-3.",
     "run1 Valley ran separately right after run1; run2 had no Valley."
   ],
+  "valley_latest": {
+    "score": 4527,
+    "fps_avg": 108.2,
+    "fps_min": 24.7,
+    "fps_max": 207.9,
+    "mode": "1920x1080 fullscreen High Direct3D11",
+    "when": "2026-10-06T19:36",
+    "driver": "hardened Invoke-ValleyBench.ps1 (client-relative click)",
+    "observed_spread": "4277-4527 across four valid runs"
+  },
   "hosts": [
     {
       "id": "example",
