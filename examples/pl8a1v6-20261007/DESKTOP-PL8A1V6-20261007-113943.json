@@ -1,0 +1,178 @@
+﻿{
+    "host":  "DESKTOP-PL8A1V6",
+    "timestamp":  "2026-10-07T12:05:56.4927806-07:00",
+    "info":  {
+                 "phase":  "info",
+                 "device":  "NVIDIA GeForce RTX 4070 Ti SUPER",
+                 "torch":  "2.11.0+cu128",
+                 "cuda":  "12.8",
+                 "arch":  [
+                              8,
+                              9
+                          ],
+                 "sm_count":  66,
+                 "vram_gib":  16.0,
+                 "cudnn":  91900
+             },
+    "phases":  [
+                   {
+                       "phase":  "info",
+                       "result":  {
+                                      "phase":  "info",
+                                      "device":  "NVIDIA GeForce RTX 4070 Ti SUPER",
+                                      "torch":  "2.11.0+cu128",
+                                      "cuda":  "12.8",
+                                      "arch":  [
+                                                   8,
+                                                   9
+                                               ],
+                                      "sm_count":  66,
+                                      "vram_gib":  16.0,
+                                      "cudnn":  91900
+                                  },
+                       "telemetry":  null
+                   },
+                   {
+                       "phase":  "matmul",
+                       "result":  {
+                                      "phase":  "matmul",
+                                      "n":  12288,
+                                      "results":  {
+                                                      "fp16":  {
+                                                                   "iters":  749,
+                                                                   "seconds":  31.54,
+                                                                   "tflops":  88.1
+                                                               },
+                                                      "bf16":  {
+                                                                   "iters":  749,
+                                                                   "seconds":  31.4,
+                                                                   "tflops":  88.5
+                                                               },
+                                                      "tf32":  {
+                                                                   "iters":  1143,
+                                                                   "seconds":  94.07,
+                                                                   "tflops":  45.1
+                                                               },
+                                                      "fp32":  {
+                                                                   "iters":  1095,
+                                                                   "seconds":  149.18,
+                                                                   "tflops":  27.2
+                                                               }
+                                                  }
+                                  },
+                       "telemetry":  null
+                   },
+                   {
+                       "phase":  "membw",
+                       "result":  {
+                                      "phase":  "membw",
+                                      "results":  {
+                                                      "fp32":  {
+                                                                   "add_gbps":  616.0,
+                                                                   "reduce_gbps":  635.0
+                                                               },
+                                                      "bf16":  {
+                                                                   "add_gbps":  618.0,
+                                                                   "reduce_gbps":  632.0
+                                                               }
+                                                  }
+                                  },
+                       "telemetry":  null
+                   },
+                   {
+                       "phase":  "pcie",
+                       "result":  {
+                                      "phase":  "pcie",
+                                      "h2d_gbps":  12.0,
+                                      "d2h_gbps":  13.0
+                                  },
+                       "telemetry":  null
+                   },
+                   {
+                       "phase":  "conv",
+                       "result":  {
+                                      "phase":  "conv",
+                                      "tflops":  62.8,
+                                      "iters":  3300
+                                  },
+                       "telemetry":  null
+                   },
+                   {
+                       "phase":  "integrity",
+                       "result":  {
+                                      "phase":  "vram",
+                                      "chunks":  13,
+                                      "gib":  13.0,
+                                      "float_mismatched":  0,
+                                      "int_bad_elements":  0
+                                  },
+                       "telemetry":  null
+                   },
+                   {
+                       "phase":  "streams",
+                       "result":  {
+                                      "phase":  "streams",
+                                      "n":  12288,
+                                      "results":  {
+                                                      "1":  90.1,
+                                                      "2":  90.1,
+                                                      "4":  90.1,
+                                                      "8":  90.1
+                                                  }
+                                  },
+                       "telemetry":  null
+                   },
+                   {
+                       "phase":  "soak",
+                       "result":  {
+                                      "phase":  "soak",
+                                      "seconds":  618.0,
+                                      "matmuls":  23236,
+                                      "convs":  23236,
+                                      "matmul_tflops":  80.7,
+                                      "peak_vram_gib":  1.1
+                                  },
+                       "telemetry":  {
+                                         "temp":  {
+                                                      "avg":  70.1,
+                                                      "max":  71
+                                                  },
+                                         "fan":  {
+                                                     "avg":  60.4,
+                                                     "max":  62
+                                                 },
+                                         "mem":  {
+                                                     "avg":  3614.6,
+                                                     "max":  3630
+                                                 },
+                                         "sm":  {
+                                                    "avg":  2725.2,
+                                                    "max":  2760
+                                                },
+                                         "util":  {
+                                                      "avg":  99.5,
+                                                      "max":  100
+                                                  },
+                                         "power":  {
+                                                       "avg":  281.2,
+                                                       "max":  284.6
+                                                   }
+                                     }
+                   }
+               ],
+    "stability":  {
+                      "tdr_or_whea":  {
+
+                                      },
+                      "throttle":  [
+                                       "SW Power Cap                                   : Not Active",
+                                       "HW Slowdown                                    : Not Active",
+                                       "HW Thermal Slowdown                        : Not Active",
+                                       "SW Thermal Slowdown                            : Not Active",
+                                       "SW Power Capping                               : 158431162 us",
+                                       "SW Thermal Slowdown                            : 0 us",
+                                       "HW Thermal Slowdown                            : 0 us",
+                                       "HW Power Braking                               : 0 us"
+                                   ]
+                  }
+}

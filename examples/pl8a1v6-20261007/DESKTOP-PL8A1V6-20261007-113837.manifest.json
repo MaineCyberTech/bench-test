@@ -1,0 +1,21 @@
+﻿{
+    "host":  "DESKTOP-PL8A1V6",
+    "timestamp":  "2026-10-07T11:38:37.8440614-07:00",
+    "artifacts":  {
+                      "info":  "C:\\temp\\bench-test\\bench\\..\\results\\DESKTOP-PL8A1V6-20261007-113837.info.json",
+                      "sysinfo":  "C:\\temp\\bench-test\\bench\\..\\results\\DESKTOP-PL8A1V6-20261007-113837.sysinfo.json",
+                      "sensors":  "C:\\temp\\bench-test\\bench\\..\\results\\DESKTOP-PL8A1V6-20261007-113837.sensors.json",
+                      "pcie":  "C:\\temp\\bench-test\\bench\\..\\results\\DESKTOP-PL8A1V6-20261007-113837.pcie.json",
+                      "health":  "C:\\temp\\bench-test\\bench\\..\\results\\DESKTOP-PL8A1V6-20261007-113837.health.json",
+                      "env":  "C:\\temp\\bench-test\\bench\\..\\results\\DESKTOP-PL8A1V6-20261007-113837.env.json",
+                      "cpu":  "C:\\temp\\bench-test\\results\\DESKTOP-PL8A1V6-cpu-20261007-120556.json",
+                      "combined":  "C:\\temp\\bench-test\\results\\DESKTOP-PL8A1V6-combined-20261007-120942.json",
+                      "llm":  "C:\\temp\\bench-test\\bench\\..\\results\\DESKTOP-PL8A1V6-20261007-113837.llm.json",
+                      "nvenc":  "C:\\temp\\bench-test\\bench\\..\\results\\DESKTOP-PL8A1V6-20261007-113837.nvenc.json",
+                      "valley":  "see screenshot in C:\\temp\\bench-test\\bench\\..\\results",
+                      "ram":  "C:\\temp\\bench-test\\results\\DESKTOP-PL8A1V6-ram-20261007-122509.json",
+                      "disk":  "C:\\temp\\bench-test\\results\\DESKTOP-PL8A1V6-disk-20261007-122811.json",
+                      "net":  "C:\\temp\\bench-test\\results\\DESKTOP-PL8A1V6-net-20261007-123254.json",
+                      "fullsoak":  "C:\\temp\\bench-test\\results\\DESKTOP-PL8A1V6-fullsoak-20261007-123320.json"
+                  }
+}

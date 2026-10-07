@@ -1,0 +1,77 @@
+﻿{
+    "host":  "DESKTOP-PL8A1V6",
+    "timestamp":  "2026-10-07T12:38:58.9021938-07:00",
+    "seconds":  300,
+    "results":  {
+                    "gpu":  {
+                                "phase":  "soak",
+                                "seconds":  318.0,
+                                "matmuls":  11900,
+                                "convs":  11900,
+                                "matmul_tflops":  80.4,
+                                "peak_vram_gib":  1.1
+                            },
+                    "cpu":  {
+                                "phase":  "soak",
+                                "seconds":  300.0,
+                                "iters":  4757,
+                                "gflops":  272.4
+                            },
+                    "ram":  {
+                                "phase":  "soak",
+                                "seconds":  300.2,
+                                "iters":  608,
+                                "gbps":  6.5,
+                                "errors":  0,
+                                "gib_per_array":  1.0
+                            },
+                    "dsk":  {
+                                "phase":  "soak",
+                                "seconds":  316.0,
+                                "seq_mib":  256,
+                                "rand_ops":  18873466,
+                                "seq_write_mbps":  154.6,
+                                "rand_iops_avg":  59720.0
+                            }
+                },
+    "telemetry":  {
+                      "temp":  {
+                                   "avg":  66,
+                                   "max":  71
+                               },
+                      "fan":  {
+                                  "avg":  45,
+                                  "max":  57
+                              },
+                      "cpu":  {
+                                  "avg":  83,
+                                  "max":  97
+                              },
+                      "freeMiB":  {
+                                      "avg":  23322,
+                                      "max":  26607
+                                  },
+                      "sm":  {
+                                 "avg":  2585,
+                                 "max":  2760
+                             },
+                      "power":  {
+                                    "avg":  260,
+                                    "max":  282
+                                },
+                      "gpu":  {
+                                  "avg":  93,
+                                  "max":  100
+                              }
+                  },
+    "throttle":  [
+                     "HW Thermal Slowdown                        : Not Active",
+                     "SW Thermal Slowdown                            : Not Active",
+                     "SW Thermal Slowdown                            : 0 us",
+                     "HW Thermal Slowdown                            : 0 us",
+                     "HW Power Braking                               : 0 us"
+                 ],
+    "errors":  {
+
+               }
+}
