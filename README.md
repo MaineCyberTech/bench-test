@@ -23,6 +23,9 @@ Built to compare machines (e.g. before/after a GPU install or a driver update) w
 | Game-like render | `bench/Invoke-ValleyBench.ps1` | Unigine Valley score/FPS (optional) |
 | **RAM** | `bench/Invoke-RamBench.ps1` | bandwidth (copy/scale/add/triad GB/s), random-access latency, **integrity** (fill+verify a large fraction of RAM), soak |
 | **Disk (HDD/SSD/NVMe)** | `bench/Invoke-DiskBench.ps1` | sequential read/write MB/s, random 4 KiB IOPS, plus **SMART** health/temperature/wear |
+| **System inventory (deep)** | `bench/Get-SystemInfo.ps1` | CPU, DIMMs (part/speed), GPU + PCIe link gen/width, volumes, NICs, monitors, USB, boot time |
+| **Hardware sensors** | `bench/Get-Sensors.ps1` | temps/fans/voltages/power/loads/clocks via LibreHardwareMonitor (elevated = full) |
+| **Network** | `bench/Invoke-NetBench.ps1` | ping latency + download/upload Mbps (Cloudflare) |
 
 Telemetry (`bench/Sample-GpuTelemetry.ps1`) samples `util`, `temp`, `power`, `SM clock`, `VRAM`, `fan` once/second.
 
@@ -115,6 +118,9 @@ results/   output (git-ignored)
 | `Invoke-CombinedStress.ps1` | CPU+GPU concurrent stress |
 | `Invoke-RamBench.ps1` / `ram_bench.py` | RAM bandwidth/latency/integrity/soak |
 | `Invoke-DiskBench.ps1` / `disk_bench.py` | disk seq/random throughput + SMART |
+| `Get-SystemInfo.ps1` | deep inventory: CPU/DIMM/GPU/PCIe/volumes/NICs/monitors/USB/boot |
+| `Get-Sensors.ps1` | all hardware sensors (LibreHardwareMonitor) |
+| `Invoke-NetBench.ps1` | network latency + download/upload Mbps |
 | `Invoke-LlmBench.ps1` | Ollama tokens/s |
 | `Invoke-NvencBench.ps1` | NVENC h264/hevc/av1 fps |
 | `Invoke-ValleyBench.ps1` | Unigine Valley game-like run |

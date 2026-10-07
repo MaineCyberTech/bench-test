@@ -5,6 +5,9 @@ results/
 # python
 __pycache__/
 *.pyc
+
+# downloaded tools (LibreHardwareMonitor etc.)
+tools/
 .venv/
 
 # editor
