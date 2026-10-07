@@ -1,0 +1,10 @@
+﻿{
+    "host":  "DESKTOP-PL8A1V6",
+    "timestamp":  "2026-10-06T10:19:05.2450482-07:00",
+    "artifacts":  {
+                      "info":  "C:\\temp\\bench-test\\bench\\..\\results\\DESKTOP-PL8A1V6-20261006-101905.info.json",
+                      "llm":  "C:\\temp\\bench-test\\bench\\..\\results\\DESKTOP-PL8A1V6-20261006-101905.llm.json",
+                      "nvenc":  "C:\\temp\\bench-test\\bench\\..\\results\\DESKTOP-PL8A1V6-20261006-101905.nvenc.json",
+                      "valley":  "see screenshot in C:\\temp\\bench-test\\bench\\..\\results"
+                  }
+}

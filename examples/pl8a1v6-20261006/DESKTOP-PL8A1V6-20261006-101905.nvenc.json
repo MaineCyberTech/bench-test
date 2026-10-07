@@ -1,0 +1,20 @@
+﻿{
+    "ffmpeg":  "C:\\Users\\Admin\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-9.0.2-full_build\\bin\\ffmpeg.exe",
+    "results":  [
+                    {
+                        "codec":  "h264_nvenc",
+                        "fps":  273,
+                        "enc_util_max":  49
+                    },
+                    {
+                        "codec":  "hevc_nvenc",
+                        "fps":  395,
+                        "enc_util_max":  48
+                    },
+                    {
+                        "codec":  "av1_nvenc",
+                        "fps":  344,
+                        "enc_util_max":  40
+                    }
+                ]
+}
