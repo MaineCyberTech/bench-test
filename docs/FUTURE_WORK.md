@@ -39,3 +39,47 @@ events and environment. Remaining ideas, roughly in priority order:
 ## Nice-to-haves
 - A single `results/report.html` dashboard aggregating a run.
 - Signed/timestamped run manifests for tamper evidence.
+
+## Additional tests to add (beyond the current battery)
+
+### CPU
+- **AVX-512 / SIMD FLOPS** — Skylake-W (W-2123) and newer support AVX-512; measure GFLOPs AVX-512 vs AVX2.
+- **AES-NI encryption throughput** (`openssl speed -evp aes-256-gcm`), plus SHA-256.
+- **Compression/decompression** throughput (zstd / gzip / 7z) — CPU + memory bound.
+- **Single-thread vs multi-thread** scaling (sieve/prime), and Linpack-lite GFLOPS.
+
+### GPU
+- **FP8 / INT8 tensor throughput** (newer architectures).
+- **Ray tracing / mesh shaders** (DX12 RT benchmark, e.g. 3DMark Speed Way / Port Royal).
+- **DLSS/FSR upscaling** test.
+- **Video decode (NVDEC)** throughput — 4K/8K, H.264/HEVC/AV1.
+- **NVENC quality** (VMAF/SSIM) vs x264, not just fps.
+- **CUDA memory latency** via a compiled pointer-chase kernel.
+
+### Storage
+- **Steady-state / SLC-cache-exhaustion write** — write 50-100 GiB and chart the throughput drop.
+- **Queue-depth scaling** (QD1/8/32/128) for 4 KiB random.
+- **Latency percentiles** (p50/p99/p99.9).
+- **Full SMART attribute dump** (`smartctl -a`) — richer than `Get-StorageReliabilityCounter`.
+- **NVMe temperature under load**; RAID/array throughput.
+
+### Memory
+- **True latency** (compiled dependent-load pointer chase).
+- **Multi-threaded STREAM** (numpy is single-threaded).
+- **ECC error counters** (server platforms).
+
+### Network
+- **LAN throughput** via `iperf3` client/server.
+- **Latency under load** (bufferbloat), jumbo frames, link-error counters, Wi-Fi signal/throughput.
+
+### System / thermal
+- **Thermal soak** — steady-state CPU/GPU/mobo temps over 30-60 min at defined load (fan-curve validation).
+- **Fan RPM / PWM** where sensors expose it.
+- **Full-system simultaneous soak** — GPU + CPU + RAM + disk together with a stability verdict.
+- **Suspend/resume + reboot stress**, POST/boot timing.
+- **Wall power draw** (smart PDU / UPS / IPMI).
+
+### ML / software
+- **Image inference** (ResNet) img/s, **Stable Diffusion** images/min, **YOLO** FPS, **embeddings**/s.
+- **Container/VM performance** (docker build, sysbench), **database** (pgbench/sysbench).
+
