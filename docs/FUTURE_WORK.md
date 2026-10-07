@@ -3,16 +3,17 @@
 The toolkit already covers GPU, CPU, RAM, disk, network, sensors, PCIe topology, health
 events and environment. Remaining ideas, roughly in priority order:
 
-## Planned test modules (next batch, not yet implemented)
-- **`cpu_simd`** — new `cpu_bench.py` phases: **AVX-512/AVX2 FLOPS**, **AES-256-GCM** throughput,
-  **SHA-256** throughput, and **zstd/gzip/lzma compression** MB/s (single- vs multi-thread).
-- **Disk: `steadywrite`, `latency`, `smart`** — steady-state/SLC-exhaustion write chart,
-  4 KiB **latency percentiles** (p50/p90/p99/p99.9) and **queue-depth scaling**, plus a
-  **full SMART attribute dump** via bundled `smartctl` (smartmontools) in `Invoke-DiskBench.ps1`.
-- **`Invoke-IperfBench.ps1`** — **LAN throughput** via a bundled `iperf3` (client/server `-J`),
+## Implemented since first drafted
+- **`cpu_simd`** — done: `cpu_bench.py` now has `hash` (SHA-256), `compress` (zlib/lzma),
+  `aes` (AES-256-GCM, needs `cryptography`), and `flops` (fp32).
+- **Disk `steadywrite` + `latency`** — done (`disk_bench.py`); `smartctl` full SMART dump still pending.
+- **`Invoke-FullSystemSoak.ps1`** — done (GPU+CPU+RAM+disk concurrently, `-FullSystemSeconds`).
+
+## Planned test modules (remaining)
+- **`Invoke-IperfBench.ps1`** — LAN throughput via a bundled `iperf3` (client/server `-J`),
   latency-under-load and link-error counters.
-- **`Invoke-FullSystemSoak.ps1`** — run GPU + CPU + RAM + disk soaks **concurrently** for N
-  minutes with per-subsystem telemetry and a single stability verdict.
+- **`smartctl`** — bundle smartmontools for a full SMART attribute dump (installer-based; needs unpacking).
+- **Disk queue-depth scaling** (QD1/8/32/128) for 4 KiB random.
 
 ## Hardware / sensors
 - **CPU package power (RAPL)** — read Intel/AMD energy counters via MSR (needs a signed

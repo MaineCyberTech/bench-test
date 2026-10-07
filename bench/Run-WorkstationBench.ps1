@@ -19,6 +19,7 @@ param(
     [int]$RamSoakSeconds = 120,
     [string]$DiskDrive = 'C',
     [int]$DiskSizeMB = 2048,
+    [int]$FullSystemSeconds = 0,
     [switch]$SkipRam,
     [switch]$SkipDisk,
     [switch]$SkipNet,
@@ -39,7 +40,7 @@ function Get-NewestArtifact([string]$pattern) {
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
 }
 
-Write-Host "=== [1/10] system + GPU inventory + sensors ===" -ForegroundColor Yellow
+Write-Host "=== [1/11] system + GPU inventory + sensors ===" -ForegroundColor Yellow
 & "$PSScriptRoot\Get-GpuInfo.ps1" -Json | Set-Content "$base.info.json" -Encoding UTF8
 & "$PSScriptRoot\Get-GpuInfo.ps1"
 & "$PSScriptRoot\Get-SystemInfo.ps1" -OutFile "$base.sysinfo.json"
@@ -54,75 +55,84 @@ $summary.artifacts.pcie = "$base.pcie.json"
 $summary.artifacts.health = "$base.health.json"
 $summary.artifacts.env = "$base.env.json"
 
-Write-Host "=== [2/10] GPU compute battery (telemetry + report) ===" -ForegroundColor Yellow
+Write-Host "=== [2/11] GPU compute battery (telemetry + report) ===" -ForegroundColor Yellow
 & "$PSScriptRoot\Invoke-GpuBench.ps1" -OutDir $OutDir -SoakSeconds $SoakSeconds -TorchIndex $TorchIndex -Size $Size -NoInstall:$NoInstall
 
 if (-not $SkipCpu) {
-    Write-Host "=== [3/10] CPU compute battery ===" -ForegroundColor Yellow
+    Write-Host "=== [3/11] CPU compute battery ===" -ForegroundColor Yellow
     try {
         & "$PSScriptRoot\Invoke-CpuBench.ps1" -OutDir $OutDir -SoakSeconds $CpuSoakSeconds | Out-Null
         $f = Get-NewestArtifact "$($env:COMPUTERNAME)-cpu-*.json"
         if ($f) { $summary.artifacts.cpu = $f.FullName }
     } catch { Write-Host "  cpu skipped: $($_.Exception.Message)" }
-} else { Write-Host "=== [3/10] CPU skipped ===" -ForegroundColor DarkGray }
+} else { Write-Host "=== [3/11] CPU skipped ===" -ForegroundColor DarkGray }
 
 if (-not $SkipCombined) {
-    Write-Host "=== [4/10] combined CPU+GPU stress ===" -ForegroundColor Yellow
+    Write-Host "=== [4/11] combined CPU+GPU stress ===" -ForegroundColor Yellow
     try {
         & "$PSScriptRoot\Invoke-CombinedStress.ps1" -OutDir $OutDir -Seconds $CombinedSeconds | Out-Null
         $f = Get-NewestArtifact "$($env:COMPUTERNAME)-combined-*.json"
         if ($f) { $summary.artifacts.combined = $f.FullName }
     } catch { Write-Host "  combined skipped: $($_.Exception.Message)" }
-} else { Write-Host "=== [4/10] combined skipped ===" -ForegroundColor DarkGray }
+} else { Write-Host "=== [4/11] combined skipped ===" -ForegroundColor DarkGray }
 
 if (-not $SkipLlm) {
-    Write-Host "=== [5/10] LLM inference (Ollama) ===" -ForegroundColor Yellow
+    Write-Host "=== [5/11] LLM inference (Ollama) ===" -ForegroundColor Yellow
     try { & "$PSScriptRoot\Invoke-LlmBench.ps1" -OutFile "$base.llm.json" | Out-Null; if (Test-Path "$base.llm.json") { $summary.artifacts.llm = "$base.llm.json" } }
     catch { Write-Host "  llm skipped: $($_.Exception.Message)" }
-} else { Write-Host "=== [5/10] LLM skipped ===" -ForegroundColor DarkGray }
+} else { Write-Host "=== [5/11] LLM skipped ===" -ForegroundColor DarkGray }
 
 if (-not $SkipNvenc) {
-    Write-Host "=== [6/10] NVENC video engine ===" -ForegroundColor Yellow
+    Write-Host "=== [6/11] NVENC video engine ===" -ForegroundColor Yellow
     try { & "$PSScriptRoot\Invoke-NvencBench.ps1" -OutFile "$base.nvenc.json" | Out-Null; if (Test-Path "$base.nvenc.json") { $summary.artifacts.nvenc = "$base.nvenc.json" } }
     catch { Write-Host "  nvenc skipped: $($_.Exception.Message)" }
-} else { Write-Host "=== [6/10] NVENC skipped ===" -ForegroundColor DarkGray }
+} else { Write-Host "=== [6/11] NVENC skipped ===" -ForegroundColor DarkGray }
 
 if (-not $SkipValley) {
-    Write-Host "=== [7/10] game-like render (Unigine Valley) ===" -ForegroundColor Yellow
+    Write-Host "=== [7/11] game-like render (Unigine Valley) ===" -ForegroundColor Yellow
     if ($ValleyBin) {
         try { & "$PSScriptRoot\Invoke-ValleyBench.ps1" -ValleyBin $ValleyBin -OutDir $OutDir | Out-Null; $summary.artifacts.valley = "see screenshot in $OutDir" }
         catch { Write-Host "  valley skipped: $($_.Exception.Message)" }
     } else {
         Write-Host "  skipped: pass -ValleyBin '<path-to-valley\bin>' to include it" -ForegroundColor DarkGray
     }
-} else { Write-Host "=== [7/10] Valley skipped ===" -ForegroundColor DarkGray }
+} else { Write-Host "=== [7/11] Valley skipped ===" -ForegroundColor DarkGray }
 
 if (-not $SkipRam) {
-    Write-Host "=== [8/10] RAM bandwidth / latency / integrity / soak ===" -ForegroundColor Yellow
+    Write-Host "=== [8/11] RAM bandwidth / latency / integrity / soak ===" -ForegroundColor Yellow
     try {
         & "$PSScriptRoot\Invoke-RamBench.ps1" -OutDir $OutDir -SoakSeconds $RamSoakSeconds | Out-Null
         $f = Get-NewestArtifact "$($env:COMPUTERNAME)-ram-*.json"
         if ($f) { $summary.artifacts.ram = $f.FullName }
     } catch { Write-Host "  ram skipped: $($_.Exception.Message)" }
-} else { Write-Host "=== [8/10] RAM skipped ===" -ForegroundColor DarkGray }
+} else { Write-Host "=== [8/11] RAM skipped ===" -ForegroundColor DarkGray }
 
 if (-not $SkipDisk) {
-    Write-Host "=== [9/10] disk throughput + SMART health ===" -ForegroundColor Yellow
+    Write-Host "=== [9/11] disk throughput + SMART health ===" -ForegroundColor Yellow
     try {
         & "$PSScriptRoot\Invoke-DiskBench.ps1" -OutDir $OutDir -Drive $DiskDrive -SizeMB $DiskSizeMB | Out-Null
         $f = Get-NewestArtifact "$($env:COMPUTERNAME)-disk-*.json"
         if ($f) { $summary.artifacts.disk = $f.FullName }
     } catch { Write-Host "  disk skipped: $($_.Exception.Message)" }
-} else { Write-Host "=== [9/10] disk skipped ===" -ForegroundColor DarkGray }
+} else { Write-Host "=== [9/11] disk skipped ===" -ForegroundColor DarkGray }
 
 if (-not $SkipNet) {
-    Write-Host "=== [10/10] network latency + throughput ===" -ForegroundColor Yellow
+    Write-Host "=== [10/11] network latency + throughput ===" -ForegroundColor Yellow
     try {
         & "$PSScriptRoot\Invoke-NetBench.ps1" -OutDir $OutDir | Out-Null
         $f = Get-NewestArtifact "$($env:COMPUTERNAME)-net-*.json"
         if ($f) { $summary.artifacts.net = $f.FullName }
     } catch { Write-Host "  network skipped: $($_.Exception.Message)" }
-} else { Write-Host "=== [10/10] network skipped ===" -ForegroundColor DarkGray }
+} else { Write-Host "=== [10/11] network skipped ===" -ForegroundColor DarkGray }
+
+if ($FullSystemSeconds -gt 0) {
+    Write-Host "=== [11/11] full-system simultaneous soak (GPU+CPU+RAM+disk) ===" -ForegroundColor Yellow
+    try {
+        & "$PSScriptRoot\Invoke-FullSystemSoak.ps1" -OutDir $OutDir -Seconds $FullSystemSeconds | Out-Null
+        $f = Get-NewestArtifact "$($env:COMPUTERNAME)-fullsoak-*.json"
+        if ($f) { $summary.artifacts.fullsoak = $f.FullName }
+    } catch { Write-Host "  fullsoak skipped: $($_.Exception.Message)" }
+} else { Write-Host "=== [11/11] full-system soak skipped (pass -FullSystemSeconds N) ===" -ForegroundColor DarkGray }
 
 $summary | ConvertTo-Json -Depth 5 | Set-Content "$base.manifest.json" -Encoding UTF8
 Write-Host ""

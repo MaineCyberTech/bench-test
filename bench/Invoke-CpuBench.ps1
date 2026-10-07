@@ -28,6 +28,10 @@ $phases = [ordered]@{}
 $phases.info = Invoke-Phase 'info' @()
 $phases.matmul = Invoke-Phase 'matmul' @('--seconds', '10')
 $phases.membw = Invoke-Phase 'membw' @('--seconds', '8')
+$phases.hash = Invoke-Phase 'hash' @('--seconds', '8')
+$phases.compress = Invoke-Phase 'compress' @('--seconds', '6')
+$phases.aes = Invoke-Phase 'aes' @('--seconds', '8')
+$phases.flops = Invoke-Phase 'flops' @('--seconds', '8')
 $phases.soak = Invoke-Phase 'soak' @('--seconds', "$SoakSeconds")
 
 $report = [ordered]@{ host = $hostname; timestamp = (Get-Date).ToString('o'); phases = $phases }
@@ -44,6 +48,10 @@ $md += "| phase | metric |"
 $md += "|---|---|"
 if ($phases.matmul) { foreach ($k in $phases.matmul.results.PSObject.Properties.Name) { $md += "| matmul | $k $($phases.matmul.results.$k.gflops) GFLOPS |" } }
 if ($phases.membw) { $m = $phases.membw.results; $md += "| membw | copy $($m.copy_gbps) / add $($m.add_gbps) / reduce $($m.reduce_gbps) GB/s |" }
+if ($phases.hash) { $md += "| sha256 | $($phases.hash.sha256_mbps) MB/s |" }
+if ($phases.compress) { $c = $phases.compress; $md += "| compression | zlib c/d $($c.zlib_compress_mbps)/$($c.zlib_decompress_mbps), lzma c/d $($c.lzma_compress_mbps)/$($c.lzma_decompress_mbps) MB/s |" }
+if ($phases.aes -and -not $phases.aes.skipped) { $md += "| AES-256-GCM | $($phases.aes.aes256gcm_mbps) MB/s |" }
+if ($phases.flops) { $md += "| flops fp32 | $($phases.flops.gflops) GFLOPS |" }
 if ($phases.soak) { $md += "| soak | $($phases.soak.gflops) GFLOPS over $($phases.soak.seconds)s |" }
 $md -join "`n" | Set-Content "$base.md" -Encoding UTF8
 

@@ -6,6 +6,7 @@ param(
     [string]$Drive = 'C',
     [int]$SizeMB = 2048,
     [int]$Seconds = 15,
+    [int]$SteadyGB = 10,
     [string]$OutDir = '',
     [switch]$Keep
 )
@@ -65,6 +66,8 @@ $phases += Invoke-Phase 'seqread' @()
 $phases += Invoke-Phase 'randread' @()
 $phases += Invoke-Phase 'randwrite' @()
 $phases += Invoke-Phase 'randmix' @()
+$phases += Invoke-Phase 'latency' @()
+$phases += Invoke-Phase 'steadywrite' @('--steady-gb', "$SteadyGB")
 
 $report = [ordered]@{ host = $hostname; timestamp = (Get-Date).ToString('o'); path = $Path; size_mb = $SizeMB; health = $health; phases = $phases }
 $report | ConvertTo-Json -Depth 8 | Set-Content "$base.json" -Encoding UTF8
@@ -80,6 +83,8 @@ foreach ($p in $phases) { if (-not $p) { continue }
         'randread' { $md += "| rand 4K read | $($p.iops) IOPS, $($p.mbps) MB/s |" }
         'randwrite' { $md += "| rand 4K write | $($p.iops) IOPS, $($p.mbps) MB/s |" }
         'randmix' { $md += "| rand 4K mix (70/30) | $($p.iops) IOPS, $($p.mbps) MB/s |" }
+        'latency' { $md += "| 4K latency | $($p.iops) IOPS, p50 $($p.us_p50)/p99 $($p.us_p99)/p99.9 $($p.us_p999) us |" }
+        'steadywrite' { $md += "| steady-state write ($($p.gib) GiB) | first $($p.first10_mbps) -> last $($p.last10_mbps) MB/s (drop $($p.drop_pct)%) |" }
     }
 }
 $md += ""; $md += "_Buffered I/O: sequential reads may be cache-served. Use a file larger than RAM for truer reads._"

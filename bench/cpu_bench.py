@@ -86,7 +86,62 @@ def phase_soak(a):
     jline(out)
 
 
-PHASES = {"info": phase_info, "matmul": phase_matmul, "membw": phase_membw, "soak": phase_soak}
+def phase_hash(a):
+    import hashlib
+    data = os.urandom(64 * 1024 * 1024)
+    r = timed(a.seconds, lambda: hashlib.sha256(data).digest(), nbytes=len(data))
+    mbps = round(len(data) * r["iters"] / r["seconds"] / 1e6, 0)
+    out = {"phase": "hash", "sha256_mbps": mbps, "mb": len(data) // (1024 * 1024)}
+    print("sha256 %.0f MB/s (%d MiB block)" % (mbps, out["mb"]))
+    jline(out)
+
+
+def phase_compress(a):
+    import zlib
+    import lzma
+    data = os.urandom(64 * 1024 * 1024)
+    r = timed(a.seconds, lambda: zlib.compress(data, 6), nbytes=len(data))
+    zc = round(len(data) * r["iters"] / r["seconds"] / 1e6, 0)
+    comp = zlib.compress(data, 6)
+    r2 = timed(a.seconds, lambda: zlib.decompress(comp), nbytes=len(data))
+    zd = round(len(data) * r2["iters"] / r2["seconds"] / 1e6, 0)
+    t0 = time.time(); lzma.compress(data, preset=1); lc = round(len(data) / (time.time() - t0) / 1e6, 0)
+    t0 = time.time(); lzma.decompress(lzma.compress(data, preset=1)); ld = round(len(data) / (time.time() - t0) / 1e6, 0)
+    out = {"phase": "compress", "zlib_compress_mbps": zc, "zlib_decompress_mbps": zd,
+           "lzma_compress_mbps": lc, "lzma_decompress_mbps": ld}
+    print("compress zlib c/d=%.0f/%.0f  lzma c/d=%.0f/%.0f MB/s" % (zc, zd, lc, ld))
+    jline(out)
+
+
+def phase_aes(a):
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    except Exception:
+        out = {"phase": "aes", "skipped": True, "reason": "cryptography not installed"}
+        print("aes skipped (pip install cryptography)")
+        jline(out)
+        return
+    key = os.urandom(32); nonce = os.urandom(12); data = os.urandom(64 * 1024 * 1024)
+    g = AESGCM(key)
+    r = timed(a.seconds, lambda: g.encrypt(nonce, data, None), nbytes=len(data))
+    mbps = round(len(data) * r["iters"] / r["seconds"] / 1e6, 0)
+    out = {"phase": "aes", "aes256gcm_mbps": mbps, "mb": len(data) // (1024 * 1024)}
+    print("aes-256-gcm %.0f MB/s" % mbps)
+    jline(out)
+
+
+def phase_flops(a):
+    n = 64 * 1024 * 1024
+    x = np.random.rand(n).astype(np.float32); y = np.random.rand(n).astype(np.float32); z = np.empty_like(x)
+    r = timed(a.seconds, lambda: np.add(np.multiply(x, y, out=z), z, out=z), flops=2 * n)
+    gf = round(2 * n * r["iters"] / r["seconds"] / 1e9, 1)
+    out = {"phase": "flops", "gflops": gf, "elements": n, "dtype": "fp32"}
+    print("flops (fp32 mul+add) %.1f GFLOPS" % gf)
+    jline(out)
+
+
+PHASES = {"info": phase_info, "matmul": phase_matmul, "membw": phase_membw, "soak": phase_soak,
+          "hash": phase_hash, "compress": phase_compress, "aes": phase_aes, "flops": phase_flops}
 
 
 def main():

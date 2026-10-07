@@ -18,11 +18,13 @@ Built to compare machines (e.g. before/after a GPU install or a driver update) w
 | VRAM integrity | `bench/gpu_bench.py integrity` | bit-exact fill/verify of ~90 % VRAM |
 | Stream scaling | `bench/gpu_bench.py streams` | TFLOPS vs 1/2/4/8 CUDA streams |
 | Endurance soak | `bench/gpu_bench.py soak` | sustained TFLOPS + thermals over N seconds |
+| **CPU** | `bench/Invoke-CpuBench.ps1` | matmul fp32/fp64, mem bw, **SHA-256**, **zlib/lzma compression**, **AES-256-GCM**, fp32 FLOPS, soak |
 | LLM inference | `bench/Invoke-LlmBench.ps1` | tokens/s per model (Ollama) |
 | Video engine (NVENC) | `bench/Invoke-NvencBench.ps1` | fps h264/hevc/av1 + concurrent sessions |
 | Game-like render | `bench/Invoke-ValleyBench.ps1` | Unigine Valley score/FPS (optional) |
 | **RAM** | `bench/Invoke-RamBench.ps1` | bandwidth (copy/scale/add/triad GB/s), random-access latency, **integrity** (fill+verify a large fraction of RAM), soak |
-| **Disk (HDD/SSD/NVMe)** | `bench/Invoke-DiskBench.ps1` | sequential read/write MB/s, random 4 KiB IOPS, plus **SMART** health/temperature/wear |
+| **Disk (HDD/SSD/NVMe)** | `bench/Invoke-DiskBench.ps1` | sequential + random 4 KiB IOPS, **4 KiB latency percentiles**, **steady-state write**, plus SMART |
+| **Full-system soak** | `bench/Invoke-FullSystemSoak.ps1` | GPU + CPU + RAM + disk **concurrently** + stability verdict (opt-in) |
 | **System inventory (deep)** | `bench/Get-SystemInfo.ps1` | CPU, DIMMs (part/speed), GPU + PCIe link gen/width, volumes, NICs, monitors, USB, boot time |
 | **Hardware sensors** | `bench/Get-Sensors.ps1` | temps/fans/voltages/power/loads/clocks via LibreHardwareMonitor (elevated = full) |
 | **Network** | `bench/Invoke-NetBench.ps1` | ping latency + download/upload Mbps (Cloudflare) |
@@ -120,7 +122,8 @@ results/   output (git-ignored)
 | `Invoke-CpuBench.ps1` / `cpu_bench.py` | CPU matmul fp32/fp64 + mem bandwidth + soak |
 | `Invoke-CombinedStress.ps1` | CPU+GPU concurrent stress |
 | `Invoke-RamBench.ps1` / `ram_bench.py` | RAM bandwidth/latency/integrity/soak |
-| `Invoke-DiskBench.ps1` / `disk_bench.py` | disk seq/random throughput + SMART |
+| `Invoke-DiskBench.ps1` / `disk_bench.py` | disk seq/random throughput + latency + steady-state + SMART |
+| `Invoke-FullSystemSoak.ps1` | GPU+CPU+RAM+disk concurrent soak |
 | `Get-SystemInfo.ps1` | deep inventory: CPU/DIMM/GPU/PCIe/volumes/NICs/monitors/USB/boot |
 | `Get-Sensors.ps1` | all hardware sensors (LibreHardwareMonitor) |
 | `Invoke-NetBench.ps1` | network latency + download/upload Mbps |

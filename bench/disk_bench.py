@@ -22,6 +22,8 @@ import shutil
 import sys
 import time
 
+import numpy as np
+
 BLK = 1 << 20      # 1 MiB
 IO = 4096          # 4 KiB
 
@@ -130,15 +132,17 @@ def phase_randmix(a):   _rand_phase(a, "randmix", 70)
 
 def phase_soak(a):
     t0 = time.time()
-    seq_mb = 0; rand_ops = 0
+    seq_mb = 0; rand_ops = 0; seq_secs = 0.0
     while time.time() - t0 < a.seconds:
         # seq write then read
         buf = b"\x11" * BLK
+        st = time.time()
         with open(datafile(a), "wb", buffering=0) as fh:
             for _ in range(min(a.size_mb, 256)):
                 fh.write(buf)
             fh.flush(); os.fsync(fh.fileno())
             seq_mb += min(a.size_mb, 256)
+        seq_secs += time.time() - st
         with open(datafile(a), "rb", buffering=0) as fh:
             while fh.read(BLK):
                 pass
@@ -146,15 +150,69 @@ def phase_soak(a):
         ops, _, _, _ = rand_loop(a, 70)
         rand_ops += ops
     dt = time.time() - t0
+    seq_mbps = round(seq_mb / seq_secs, 1) if seq_secs else 0
     out = {"phase": "soak", "seconds": round(dt, 1), "seq_mib": seq_mb, "rand_ops": rand_ops,
-           "seq_mbps_avg": round(seq_mb / dt, 1), "rand_iops_avg": round(rand_ops / dt, 0)}
-    print("disk soak %.1fs seq=%.0f MB/s rand=%.0f IOPS" % (dt, out["seq_mbps_avg"], out["rand_iops_avg"]))
+           "seq_write_mbps": seq_mbps, "rand_iops_avg": round(rand_ops / dt, 0)}
+    print("disk soak %.1fs seq_write=%.0f MB/s rand=%.0f IOPS" % (dt, seq_mbps, out["rand_iops_avg"]))
+    jline(out)
+
+
+def phase_steadywrite(a):
+    f = datafile(a)
+    chunk = 256 * BLK
+    total = int(a.steady_gb) * 1024 * 1024 * 1024
+    buf = b"\x5A" * chunk
+    buckets = []
+    written = 0
+    t0 = time.time()
+    with open(f, "wb", buffering=0) as fh:
+        while written < total:
+            bt = time.time()
+            fh.write(buf); fh.flush()
+            buckets.append(chunk / (time.time() - bt))
+            written += chunk
+        os.fsync(fh.fileno())
+    dt = time.time() - t0
+    n = len(buckets); k = max(1, n // 10)
+    first = sum(buckets[:k]) / k / 1e6
+    last = sum(buckets[-k:]) / k / 1e6
+    overall = written / dt / 1e6
+    out = {"phase": "steadywrite", "gib": written // (1024 ** 3), "seconds": round(dt, 1),
+           "overall_mbps": round(overall, 1), "first10_mbps": round(first, 1), "last10_mbps": round(last, 1),
+           "drop_pct": round((1 - last / first) * 100, 1) if first else None}
+    print("disk steadywrite %.0f GiB: first10=%.0f last10=%.0f overall=%.0f MB/s (drop %.0f%%)" % (
+        out["gib"], first, last, overall, out["drop_pct"] or 0))
+    jline(out)
+
+
+def phase_latency(a):
+    f = ensure_file(a)
+    size = os.path.getsize(f)
+    nmax = max(1, size // IO)
+    rnd = random.Random(2)
+    times = []
+    ops = 0
+    t0 = time.time()
+    with open(f, "rb", buffering=0) as fh:
+        while time.time() - t0 < a.seconds and ops < 300000:
+            off = rnd.randrange(nmax) * IO
+            t = time.perf_counter()
+            fh.seek(off); fh.read(IO)
+            times.append(time.perf_counter() - t)
+            ops += 1
+    dt = time.time() - t0
+    arr = np.array(times) * 1e6  # microseconds
+    p50, p90, p99, p999 = (np.percentile(arr, [50, 90, 99, 99.9])).tolist()
+    out = {"phase": "latency", "ops": ops, "iops": round(ops / dt, 0),
+           "us_p50": round(p50, 1), "us_p90": round(p90, 1), "us_p99": round(p99, 1), "us_p999": round(p999, 1)}
+    print("disk 4K latency %.0f IOPS: p50=%.0f p90=%.0f p99=%.0f p99.9=%.0f us" % (
+        out["iops"], p50, p90, p99, p999))
     jline(out)
 
 
 PHASES = {"info": phase_info, "seqwrite": phase_seqwrite, "seqread": phase_seqread,
           "randread": phase_randread, "randwrite": phase_randwrite, "randmix": phase_randmix,
-          "soak": phase_soak}
+          "steadywrite": phase_steadywrite, "latency": phase_latency, "soak": phase_soak}
 
 
 def main():
@@ -163,6 +221,7 @@ def main():
     ap.add_argument("--path", default="", help="directory to test (default %%TEMP%%)")
     ap.add_argument("--size-mb", type=int, default=2048)
     ap.add_argument("--seconds", type=float, default=15.0)
+    ap.add_argument("--steady-gb", type=float, default=20.0, help="steadywrite size (GiB)")
     ap.add_argument("--keep", action="store_true", help="keep the test file")
     ap.add_argument("--force", action="store_true")
     a = ap.parse_args()
