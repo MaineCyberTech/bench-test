@@ -19,7 +19,8 @@ param(
     [int]$CaptureEverySeconds = 10,
     [int]$CaptureCount = 32,
     [ValidateSet('auto', 'direct', 'launcher')][string]$Mode = 'auto',
-    [string]$LauncherRunFraction = '0.874,0.819'
+    [string]$LauncherRunFraction = '0.874,0.819',
+    [int]$EngineSettleSeconds = 12
 )
 if (-not $OutDir) { $OutDir = Join-Path $PSScriptRoot '..\results' }
 $exe = Join-Path $ValleyBin 'Valley.exe'
@@ -96,7 +97,9 @@ if (-not $win -and $Mode -ne 'direct') {
 if ($win -and $win.MainWindowHandle -ne 0) {
     [W.M]::ShowWindow($win.MainWindowHandle, 9) | Out-Null
     [W.M]::SetForegroundWindow($win.MainWindowHandle) | Out-Null
-    Start-Sleep -Seconds 1
+    # Let the engine finish loading before driving the menu; clicking too early (the window
+    # exists during the loading screen) is ignored and the built-in benchmark never starts.
+    Start-Sleep -Seconds $EngineSettleSeconds
     $o = Get-ClientOrigin $win.MainWindowHandle
     Write-Host "[valley] engine client origin=($($o.X),$($o.Y)) -> Benchmark at (+47,+13)"
     Click2 ($o.X + 47) ($o.Y + 13)

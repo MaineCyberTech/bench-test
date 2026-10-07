@@ -28,10 +28,35 @@ def jline(obj):
     print("RESULT_JSON:" + json.dumps(obj), flush=True)
 
 
-def mem_available_bytes():
+def os_mem():
+    """Return (total, available, used_pct) via psutil if present, else the Windows API."""
     if psutil:
-        return psutil.virtual_memory().available
-    # fallback: assume 50% free
+        vm = psutil.virtual_memory()
+        return vm.total, vm.available, vm.percent
+    try:
+        import ctypes
+
+        class _MSX(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+        st = _MSX()
+        st.dwLength = ctypes.sizeof(_MSX)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+            return st.ullTotalPhys, st.ullAvailPhys, float(st.dwMemoryLoad)
+    except Exception:
+        pass
+    return 0, 0, None
+
+
+def mem_available_bytes():
+    _, avail, _ = os_mem()
+    if avail:
+        return avail
+    # last resort: assume half the RAM is free
     return 8 * 1024 ** 3
 
 
@@ -47,13 +72,7 @@ def timed(seconds, fn, nbytes):
 
 
 def phase_info(a):
-    if psutil:
-        vm = psutil.virtual_memory()
-        total, avail = vm.total, vm.available
-        pct = vm.percent
-    else:
-        total = avail = 0
-        pct = None
+    total, avail, pct = os_mem()
     out = {"phase": "info", "total_gib": round(total / 1024 ** 3, 1),
            "available_gib": round(avail / 1024 ** 3, 1), "used_pct": pct,
            "logical_cpus": os.cpu_count(), "numpy": np.__version__}
