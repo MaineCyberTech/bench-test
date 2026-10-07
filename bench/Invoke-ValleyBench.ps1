@@ -1,8 +1,10 @@
-﻿# Invoke-ValleyBench.ps1 - optional game-like render test using Unigine Valley.
+﻿# Invoke-ValleyBench.ps1 - game-like render test using Unigine Valley.
 #
-# Runs the Valley engine directly (Valley.exe), starts the built-in benchmark, and
-# captures timed screenshots (Unigine writes no machine-readable score file - read the
-# frame that shows the result dialog).
+# Tries the direct engine (Valley.exe). If the engine comes up WINDOWED (which happens when
+# the desktop is busy, and hides the benchmark result panel), it falls back to driving the
+# Unigine LAUNCHER, which launches the engine fullscreen. Then it starts the built-in
+# benchmark and captures a series of frames (Unigine writes no machine-readable score file -
+# read the frame that shows the result dialog).
 #
 # Get Valley: https://benchmark.unigine.com/valley (self-extracting; extract, pass -ValleyBin).
 # Usage: .\Invoke-ValleyBench.ps1 -ValleyBin 'C:\Unigine\valley\bin' [-Width 1920 -Height 1080 -Quality HIGH]
@@ -14,11 +16,14 @@ param(
     [int]$Multisample = 0,
     [switch]$TessellationExtreme,
     [string]$OutDir = '',
-    [int]$CaptureEverySeconds = 15,
-    [int]$CaptureCount = 18
+    [int]$CaptureEverySeconds = 10,
+    [int]$CaptureCount = 32,
+    [ValidateSet('auto', 'direct', 'launcher')][string]$Mode = 'auto',
+    [string]$LauncherRunFraction = '0.874,0.819'
 )
 if (-not $OutDir) { $OutDir = Join-Path $PSScriptRoot '..\results' }
 $exe = Join-Path $ValleyBin 'Valley.exe'
+$launcher = Join-Path $ValleyBin 'browser_x86.exe'
 if (-not (Test-Path $exe)) { throw "Valley.exe not found in $ValleyBin" }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -34,58 +39,83 @@ Add-Type -Namespace W -Name M -MemberDefinition @'
 public struct RECT { public int Left,Top,Right,Bottom; }
 public struct POINT { public int X,Y; }
 '@
+Add-Type -AssemblyName System.Drawing, System.Windows.Forms
+$screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+
+function Click([int]$x, [int]$y) {
+    [W.M]::SetCursorPos($x, $y) | Out-Null; Start-Sleep -Milliseconds 300
+    [W.M]::mouse_event(0x0002, 0, 0, 0, 0); Start-Sleep -Milliseconds 80; [W.M]::mouse_event(0x0004, 0, 0, 0, 0)
+}
+function Click2([int]$x, [int]$y) { Click $x $y; Start-Sleep -Milliseconds 500; Click $x $y }
+function Get-EngineWin { Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -like 'Unigine Valley Benchmark 1.0*' } | Select-Object -First 1 }
+function Get-LauncherWin { Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -like 'Unigine Valley Benchmark (Basic Edition)*' } | Select-Object -First 1 }
+function Get-ClientOrigin($h) { $pt = New-Object W.M+POINT; [void][W.M]::ClientToScreen($h, [ref]$pt); return $pt }
+function Is-Fullscreen($h) { $r = New-Object W.M+RECT; [void][W.M]::GetClientRect($h, [ref]$r); return (($r.Right - $r.Left) -ge $screen.Width -and ($r.Bottom - $r.Top) -ge $screen.Height) }
 
 $defines = ",RELEASE,LANGUAGE_EN,QUALITY_$Quality"
 if ($TessellationExtreme) { $defines += ",TESSELLATION_EXTREME" }
-$argstr = "-project_name Valley -data_path ../ -engine_config ../data/valley_1.0.cfg -system_script valley/unigine.cpp -sound_app openal -video_app direct3d11 -video_multisample $Multisample -video_fullscreen 1 -video_mode -1 -video_height $Height -video_width $Width -extern_define `"$defines`" -extern_plugin `",GPUMonitor`""
+$engineArgs = "-project_name Valley -data_path ../ -engine_config ../data/valley_1.0.cfg -system_script valley/unigine.cpp -sound_app openal -video_app direct3d11 -video_multisample $Multisample -video_fullscreen 1 -video_mode -1 -video_height $Height -video_width $Width -extern_define `"$defines`" -extern_plugin `",GPUMonitor`""
 
-$mon = Start-Job { param($s) $end=(Get-Date).AddSeconds($s); $a=@(); while((Get-Date) -lt $end){ $l=& nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,power.draw,clocks.sm,fan.speed --format=csv,noheader 2>$null; if($l -match ','){$p=$l -split ','|%{[double](($_ -replace '[^0-9\.]',''))}; $a+=[pscustomobject]@{u=$p[0];t=$p[1];pw=$p[2];sm=$p[3];f=$p[4]}}; Start-Sleep -Milliseconds 1000 }; return $a } -ArgumentList ($CaptureEverySeconds * $CaptureCount + 60)
+Get-Process browser_x86, Valley -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 2
 
-$p = Start-Process $exe -ArgumentList $argstr -WorkingDirectory $ValleyBin -PassThru
-Write-Host "[valley] launched pid=$($p.Id); waiting for the engine window ..."
-# find the engine window (title contains 'Unigine Valley')
 $win = $null
-for ($i = 0; $i -lt 30; $i++) {
-    Start-Sleep -Seconds 1
-    $proc = Get-Process -Id $p.Id -ErrorAction SilentlyContinue
-    if ($proc -and $proc.MainWindowHandle -ne 0) { $win = $proc; break }
-    $alt = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -like 'Unigine Valley*' } | Select-Object -First 1
-    if ($alt) { $win = $alt; break }
+if ($Mode -ne 'launcher') {
+    Write-Host "[valley] direct engine launch ..."
+    $p = Start-Process $exe -ArgumentList $engineArgs -WorkingDirectory $ValleyBin -PassThru
+    for ($i = 0; $i -lt 30; $i++) { Start-Sleep -Seconds 1; $win = Get-EngineWin; if ($win) { break } }
+    if ($win -and (Is-Fullscreen $win.MainWindowHandle)) {
+        Write-Host "[valley] direct engine is fullscreen"
+    } else {
+        Write-Host "[valley] direct engine not fullscreen (or absent); switching to launcher"
+        Get-Process -Id $p.Id -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        Get-Process Valley -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        $win = $null
+    }
 }
-if (-not $win) { Write-Host "[valley] engine window not found; continuing anyway" }
+if (-not $win -and $Mode -ne 'direct') {
+    if (-not (Test-Path $launcher)) { throw "launcher browser_x86.exe not found in $ValleyBin" }
+    Write-Host "[valley] launcher launch ..."
+    $lp = Start-Process $launcher -ArgumentList '-config', '..\data\launcher\launcher.xml' -WorkingDirectory $ValleyBin -PassThru
+    for ($i = 0; $i -lt 20; $i++) { Start-Sleep -Seconds 1; $lw = Get-LauncherWin; if ($lw) { break } }
+    if ($lw) {
+        [W.M]::ShowWindow($lw.MainWindowHandle, 9) | Out-Null
+        [W.M]::SetForegroundWindow($lw.MainWindowHandle) | Out-Null
+        Start-Sleep -Seconds 1
+        $o = Get-ClientOrigin $lw.MainWindowHandle
+        $r = New-Object W.M+RECT; [void][W.M]::GetClientRect($lw.MainWindowHandle, [ref]$r)
+        $frac = $LauncherRunFraction -split ','
+        $rx = [int]($o.X + [double]$frac[0] * ($r.Right - $r.Left))
+        $ry = [int]($o.Y + [double]$frac[1] * ($r.Bottom - $r.Top))
+        Write-Host "[valley] launcher RUN at ($rx,$ry)"
+        Click2 $rx $ry
+    }
+    for ($i = 0; $i -lt 40; $i++) { Start-Sleep -Seconds 1; $win = Get-EngineWin; if ($win) { break } }
+}
 
 if ($win -and $win.MainWindowHandle -ne 0) {
-    [W.M]::ShowWindow($win.MainWindowHandle, 9) | Out-Null   # SW_RESTORE
+    [W.M]::ShowWindow($win.MainWindowHandle, 9) | Out-Null
     [W.M]::SetForegroundWindow($win.MainWindowHandle) | Out-Null
     Start-Sleep -Seconds 1
-    $rc = New-Object W.M+RECT; [void][W.M]::GetClientRect($win.MainWindowHandle, [ref]$rc)
-    $pt = New-Object W.M+POINT; [void][W.M]::ClientToScreen($win.MainWindowHandle, [ref]$pt)
-    Write-Host "[valley] window client origin=($($pt.X),$($pt.Y)) -> clicking Benchmark at (+47,+13)"
-    [W.M]::SetCursorPos($pt.X + 47, $pt.Y + 13) | Out-Null
-    Start-Sleep -Milliseconds 300
-    [W.M]::mouse_event(0x0002, 0, 0, 0, 0); Start-Sleep -Milliseconds 80; [W.M]::mouse_event(0x0004, 0, 0, 0, 0)  # focus
-    Start-Sleep -Milliseconds 500
-    [W.M]::SetCursorPos($pt.X + 47, $pt.Y + 13) | Out-Null
-    [W.M]::mouse_event(0x0002, 0, 0, 0, 0); Start-Sleep -Milliseconds 80; [W.M]::mouse_event(0x0004, 0, 0, 0, 0)  # press
+    $o = Get-ClientOrigin $win.MainWindowHandle
+    Write-Host "[valley] engine client origin=($($o.X),$($o.Y)) -> Benchmark at (+47,+13)"
+    Click2 ($o.X + 47) ($o.Y + 13)
 } else {
-    Write-Host "[valley] clicking Benchmark at screen (47,13) as fallback"
-    [W.M]::SetCursorPos(47, 13) | Out-Null; Start-Sleep -Milliseconds 300
-    [W.M]::mouse_event(0x0002, 0, 0, 0, 0); Start-Sleep -Milliseconds 80; [W.M]::mouse_event(0x0004, 0, 0, 0, 0)
-    Start-Sleep -Milliseconds 500
-    [W.M]::mouse_event(0x0002, 0, 0, 0, 0); Start-Sleep -Milliseconds 80; [W.M]::mouse_event(0x0004, 0, 0, 0, 0)
+    Write-Host "[valley] engine window not found; fallback click (47,13)"
+    Click2 47 13
 }
 
+$mon = Start-Job { param($s) $end=(Get-Date).AddSeconds($s); $a=@(); while((Get-Date) -lt $end){ $l=& nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,power.draw,clocks.sm,fan.speed --format=csv,noheader 2>$null; if($l -match ','){$p=$l -split ','|%{[double](($_ -replace '[^0-9\.]',''))}; $a+=[pscustomobject]@{u=$p[0];t=$p[1];pw=$p[2];sm=$p[3];f=$p[4]}}; Start-Sleep -Milliseconds 1000 }; return $a } -ArgumentList ($CaptureEverySeconds * $CaptureCount + 30)
+
 Write-Host "[valley] benchmarking; capturing $CaptureCount frames every ${CaptureEverySeconds}s ..."
-Add-Type -AssemblyName System.Drawing, System.Windows.Forms
-$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
 $shots = @()
 for ($i = 1; $i -le $CaptureCount; $i++) {
     Start-Sleep -Seconds $CaptureEverySeconds
-    if (-not (Get-Process -Id $p.Id -ErrorAction SilentlyContinue)) { break }
-    $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
-    $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
-    $f = "$base-f$('{0:00}' -f $i).png"; $bmp.Save($f); $g.Dispose(); $bmp.Dispose()
-    $shots += $f
+    if (-not (Get-EngineWin)) { Write-Host "[valley] engine closed at f$i"; break }
+    $bmp = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
+    $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($screen.Location, [System.Drawing.Point]::Empty, $screen.Size)
+    $fp = "$base-f$('{0:00}' -f $i).png"; $bmp.Save($fp); $g.Dispose(); $bmp.Dispose()
+    $shots += $fp
 }
 Write-Host "[valley] frames: $($shots.Count) -> $base-f*.png" -ForegroundColor Green
 
@@ -93,5 +123,5 @@ $s = Receive-Job $mon -Wait -ErrorAction SilentlyContinue; Remove-Job $mon -Forc
 $m = $s | Measure-Object u, t, pw, sm, f -Average -Maximum
 "valley telemetry: util avg/max=$([math]::Round(($m|?{$_.Property -eq 'u'}).Average,0))/$([math]::Round(($m|?{$_.Property -eq 'u'}).Maximum,0))%  temp max=$([math]::Round(($m|?{$_.Property -eq 't'}).Maximum,0))C  power max=$([math]::Round(($m|?{$_.Property -eq 'pw'}).Maximum,0))W  fan max=$([math]::Round(($m|?{$_.Property -eq 'f'}).Maximum,0))%"
 
-Get-Process -Id $p.Id -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process browser_x86, Valley -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 [pscustomobject]@{ frames = $shots; util_max = ($m | Where-Object { $_.Property -eq 'u' }).Maximum; temp_max = ($m | Where-Object { $_.Property -eq 't' }).Maximum } | ConvertTo-Json
