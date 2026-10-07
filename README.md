@@ -102,7 +102,7 @@ Custom GPU fan curve (more aggressive than the quiet stock curve; persistent at 
 
 ```
 bench/     PowerShell runners + Python phases + telemetry sampler
-docs/      METHODOLOGY.md (how it works, reference numbers, gotchas)
+docs/      METHODOLOGY.md (how it works, reference numbers, gotchas) · FUTURE_WORK.md (not-yet-collected data)
 examples/  a real result from an RTX 4070 Ti SUPER / Xeon W-2123 (for a template)
 results/   output (git-ignored)
 ```
