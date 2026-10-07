@@ -1,4 +1,4 @@
-# Invoke-CpuBench.ps1 - run the CPU compute/memory phases and write a report.
+﻿# Invoke-CpuBench.ps1 - run the CPU compute/memory phases and write a report.
 # Usage: .\Invoke-CpuBench.ps1 [-OutDir .\results] [-SoakSeconds 120] [-Size 4096]
 param(
     [string]$OutDir = "$PSScriptRoot\..\results",

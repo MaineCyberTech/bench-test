@@ -1,13 +1,14 @@
 {
-  "generated": "2026-10-06",
+  "generated": "2026-10-07",
   "kit": "MaineCyberTech/bench-test",
   "caveats": [
     "Expect +/-5-10% run-to-run (docs/METHODOLOGY.md); compare like-for-like (power limit, resolution).",
-    "example uses a different CPU/board (Xeon W-2123 / HP Z4 G4); run1-3 use i7-6800K / ASUS.",
-    "numpy present in run1-3 venv; torch cu128 (CUDA 12.8) all runs, driver 616.56.",
-    "Soak duration is ~618 s (sum of per-phase timing), example reports 600 s.",
-    "LLM model sets differ between example and run1-3.",
-    "run1 Valley ran separately right after run1; run2 had no Valley."
+    "example (baseline doc) and run4 are DESKTOP-7TUKMBJ / HP Z4 G4 / Xeon W-2123 (4c/8t); run1-3 are DESKTOP-PL8A1V6 / ASUS / i7-6800K (6c/12t).",
+    "run1-3 and run4 used torch cu128 (CUDA 12.8); the baseline doc reported driver 617.14/CUDA 13.4.",
+    "Soak duration is ~618 s (sum of per-phase timing).",
+    "LLM model sets differ per host; only compare like-for-like models.",
+    "run4 is the first run with the CPU and combined CPU+GPU phases (added after run1-3).",
+    "Valley is CPU-bound on both boxes (GPU util < 70%). run4's Valley result dialog was not captured (engine ran windowed); its score uses the earlier verified baseline."
   ],
   "valley_latest": {
     "score": 4527,
@@ -16,8 +17,9 @@
     "fps_max": 207.9,
     "mode": "1920x1080 fullscreen High Direct3D11",
     "when": "2026-10-06T19:36",
+    "host": "DESKTOP-PL8A1V6",
     "driver": "hardened Invoke-ValleyBench.ps1 (client-relative click)",
-    "observed_spread": "4277-4527 across four valid runs"
+    "observed_spread": "4277-4527 across four valid runs on DESKTOP-PL8A1V6"
   },
   "hosts": [
     {
@@ -40,6 +42,29 @@
       "nvenc_fps": { "h264_nvenc": 275, "hevc_nvenc": 398, "av1_nvenc": 362 },
       "llm_tok_s": { "qwen3:8b": 100.6, "deepseek-coder-v2:16b": "178-206" },
       "valley": { "score": 3471, "fps_avg": 83.0, "fps_min": null, "fps_max": null, "util_avg_pct": 33, "util_max_pct": null, "temp_max_c": null, "power_max_w": null }
+    },
+    {
+      "id": "run4",
+      "source": "examples/7tukmbj-20261007/DESKTOP-7TUKMBJ-20261006-225446.json",
+      "host": "DESKTOP-7TUKMBJ",
+      "machine": "HP Z4 G4",
+      "cpu": "Xeon W-2123 (4c/8t)",
+      "ram_gib": 63.7,
+      "gpu": "RTX 4070 Ti SUPER",
+      "driver": "617.14",
+      "cuda": "12.8 (torch 2.11.0+cu128)",
+      "power_limit_w": 285,
+      "compute_tflops": { "fp16": 90.2, "bf16": 90.3, "tf32": 44.9, "fp32": 26.1, "conv2d_fp16": 62.8 },
+      "streams_tflops": { "1": 89.9, "2": 89.3, "4": 88.2, "8": 87.7 },
+      "membw_gbps": { "add_fp32": 617, "add_bf16": 619, "reduce_fp32": 636, "reduce_bf16": 633 },
+      "pcie_gbps": { "h2d": 12.0, "d2h": 13.0 },
+      "vram_integrity": { "gib": 13.0, "float_mismatched": 0, "int_bad_elements": 0 },
+      "soak": { "seconds": 618.6, "tflops": 78.4, "temp_avg_c": 85.7, "temp_max_c": 87, "power_avg_w": 282.1, "power_max_w": 285, "fan_avg_pct": 99.8, "fan_max_pct": 100, "throttle": "SW power capping", "tdr_whea": [] },
+      "cpu_bench": { "matmul_fp32_gflops": 405.5, "matmul_fp64_gflops": 202.3, "membw_gbps": { "copy": 18, "add": 14, "reduce": 6 }, "soak_gflops": 291.7 },
+      "combined": { "seconds": 318.5, "gpu_tflops": 79.6, "cpu_gflops": 282.8, "gpu_temp_avg_c": 77.1, "gpu_temp_max_c": 84, "gpu_power_avg_w": 275.5, "gpu_power_max_w": 285.2, "gpu_fan_avg_pct": 91.3, "gpu_fan_max_pct": 100, "cpu_util_avg_pct": 95.8, "cpu_util_max_pct": 100 },
+      "nvenc_fps": { "h264_nvenc": 270, "hevc_nvenc": 398, "av1_nvenc": 363 },
+      "llm_tok_s": { "qwen3:8b": 98, "deepseek-coder-v2-tools:latest": 215.9, "deepseek-coder-v2:16b": 220.7 },
+      "valley": { "score": 3471, "fps_avg": 83.0, "fps_min": null, "fps_max": null, "util_avg_pct": null, "util_max_pct": null, "temp_max_c": null, "power_max_w": null, "note": "result dialog not captured this run (engine launched windowed); value is the earlier verified baseline" }
     },
     {
       "id": "run1",

@@ -1,0 +1,64 @@
+﻿{
+    "host":  "DESKTOP-7TUKMBJ",
+    "timestamp":  "2026-10-06T23:29:34.8609446-04:00",
+    "seconds":  300,
+    "gpu":  {
+                "phase":  "soak",
+                "seconds":  318.5,
+                "matmuls":  11800,
+                "convs":  11800,
+                "matmul_tflops":  79.6,
+                "peak_vram_gib":  1.1
+            },
+    "cpu":  {
+                "phase":  "soak",
+                "seconds":  300.1,
+                "iters":  4939,
+                "gflops":  282.8
+            },
+    "telemetry":  {
+                      "temp":  {
+                                   "avg":  77.1,
+                                   "max":  84
+                               },
+                      "fan":  {
+                                  "avg":  91.3,
+                                  "max":  100
+                              },
+                      "cpu":  {
+                                  "avg":  95.8,
+                                  "max":  100
+                              },
+                      "mem":  {
+                                  "avg":  3594.3,
+                                  "max":  3679
+                              },
+                      "sm":  {
+                                 "avg":  2625.3,
+                                 "max":  2760
+                             },
+                      "util":  {
+                                   "avg":  97.3,
+                                   "max":  100
+                               },
+                      "power":  {
+                                    "avg":  275.5,
+                                    "max":  285.2
+                                }
+                  },
+    "stability":  {
+                      "tdr_or_whea":  [
+
+                                      ],
+                      "throttle":  [
+                                       "SW Power Cap                                   : Not Active",
+                                       "HW Slowdown                                    : Not Active",
+                                       "HW Thermal Slowdown                        : Not Active",
+                                       "SW Thermal Slowdown                            : Not Active",
+                                       "SW Power Capping                               : 172142849 us",
+                                       "SW Thermal Slowdown                            : 184682290 us",
+                                       "HW Thermal Slowdown                            : 0 us",
+                                       "HW Power Braking                               : 0 us"
+                                   ]
+                  }
+}

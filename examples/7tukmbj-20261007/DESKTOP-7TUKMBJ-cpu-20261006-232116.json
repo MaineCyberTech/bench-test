@@ -1,0 +1,42 @@
+﻿{
+    "host":  "DESKTOP-7TUKMBJ",
+    "timestamp":  "2026-10-06T23:24:06.6511901-04:00",
+    "phases":  {
+                   "info":  {
+                                "phase":  "info",
+                                "numpy":  "2.5.3",
+                                "logical_cpus":  8
+                            },
+                   "matmul":  {
+                                  "phase":  "matmul",
+                                  "n":  4096,
+                                  "results":  {
+                                                  "fp32":  {
+                                                               "iters":  30,
+                                                               "seconds":  10.17,
+                                                               "gflops":  405.5
+                                                           },
+                                                  "fp64":  {
+                                                               "iters":  15,
+                                                               "seconds":  10.19,
+                                                               "gflops":  202.3
+                                                           }
+                                              }
+                              },
+                   "membw":  {
+                                 "phase":  "membw",
+                                 "bytes_per_array":  268435456,
+                                 "results":  {
+                                                 "copy_gbps":  18.0,
+                                                 "add_gbps":  14.0,
+                                                 "reduce_gbps":  6.0
+                                             }
+                             },
+                   "soak":  {
+                                "phase":  "soak",
+                                "seconds":  120.0,
+                                "iters":  2038,
+                                "gflops":  291.7
+                            }
+               }
+}

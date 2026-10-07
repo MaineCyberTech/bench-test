@@ -1,0 +1,19 @@
+﻿{
+    "Host":  "DESKTOP-7TUKMBJ",
+    "Manufacturer":  "HP",
+    "Model":  "HP Z4 G4 Workstation",
+    "OS":  "Microsoft Windows 11 Pro build 26200 64-bit",
+    "BIOS":  "P61 v03.00 (2026-04-14)",
+    "CPU":  "Intel(R) Xeon(R) W-2123 CPU @ 3.60GHz (4c/8t)",
+    "RAM_GiB":  63.7,
+    "GPUs":  [
+                 {
+                     "Name":  "NVIDIA GeForce RTX 4070 Ti SUPER",
+                     "DriverVersion":  "32.0.16.1714",
+                     "DriverDate":  "\/Date(1789603200000)\/",
+                     "Status":  "OK"
+                 }
+             ],
+    "nvidia_smi":  "NVIDIA GeForce RTX 4070 Ti SUPER, 617.14, 16376 MiB, 8.9, 285.00 W, 32",
+    "GpuPciId":  "VEN_10DE\u0026DEV_2705\u0026SUBSYS_513D1462\u0026REV_A1"
+}

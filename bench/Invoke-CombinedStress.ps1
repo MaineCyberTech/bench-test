@@ -1,4 +1,4 @@
-# Invoke-CombinedStress.ps1 - run the GPU and CPU soak phases concurrently and report thermals.
+﻿# Invoke-CombinedStress.ps1 - run the GPU and CPU soak phases concurrently and report thermals.
 #
 # Stresses the GPU (matmul+conv, 4 streams) and the CPU (numpy GEMM soak) at the same time,
 # sampling GPU telemetry + total CPU utilisation once per interval, then writes a JSON+MD report.

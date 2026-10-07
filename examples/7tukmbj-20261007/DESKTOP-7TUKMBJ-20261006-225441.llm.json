@@ -1,0 +1,26 @@
+﻿{
+    "results":  [
+                    {
+                        "model":  "qwen3:8b",
+                        "tok_per_s":  98,
+                        "eval_tokens":  128,
+                        "eval_seconds":  1.31
+                    },
+                    {
+                        "model":  "deepseek-coder-v2-tools:latest",
+                        "tok_per_s":  215.9,
+                        "eval_tokens":  128,
+                        "eval_seconds":  0.59
+                    },
+                    {
+                        "model":  "deepseek-coder-v2:16b",
+                        "tok_per_s":  220.7,
+                        "eval_tokens":  128,
+                        "eval_seconds":  0.58
+                    }
+                ],
+    "ps":  [
+               "NAME                              ID              SIZE     PROCESSOR    CONTEXT    UNTIL              ",
+               "deepseek-coder-v2-tools:latest    f80f53b37abc    10 GB    100% GPU     4096       4 minutes from now    "
+           ]
+}

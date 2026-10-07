@@ -1,0 +1,20 @@
+﻿{
+    "ffmpeg":  "C:\\tools\\ffmpeg\\bin\\ffmpeg.exe",
+    "results":  [
+                    {
+                        "codec":  "h264_nvenc",
+                        "fps":  270,
+                        "enc_util_max":  48
+                    },
+                    {
+                        "codec":  "hevc_nvenc",
+                        "fps":  398,
+                        "enc_util_max":  48
+                    },
+                    {
+                        "codec":  "av1_nvenc",
+                        "fps":  363,
+                        "enc_util_max":  42
+                    }
+                ]
+}

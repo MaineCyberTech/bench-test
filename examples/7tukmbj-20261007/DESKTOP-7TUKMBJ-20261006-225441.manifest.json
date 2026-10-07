@@ -1,0 +1,12 @@
+﻿{
+    "host":  "DESKTOP-7TUKMBJ",
+    "timestamp":  "2026-10-06T22:54:41.4112527-04:00",
+    "artifacts":  {
+                      "info":  "C:\\temp\\bench-test\\bench\\..\\results\\DESKTOP-7TUKMBJ-20261006-225441.info.json",
+                      "cpu":  "C:\\temp\\bench-test\\results\\DESKTOP-7TUKMBJ-cpu-20261006-232116.json",
+                      "combined":  "C:\\temp\\bench-test\\results\\DESKTOP-7TUKMBJ-combined-20261006-232406.json",
+                      "llm":  "C:\\temp\\bench-test\\bench\\..\\results\\DESKTOP-7TUKMBJ-20261006-225441.llm.json",
+                      "nvenc":  "C:\\temp\\bench-test\\bench\\..\\results\\DESKTOP-7TUKMBJ-20261006-225441.nvenc.json",
+                      "valley":  "see screenshot in C:\\temp\\bench-test\\bench\\..\\results"
+                  }
+}
