@@ -21,6 +21,8 @@ Built to compare machines (e.g. before/after a GPU install or a driver update) w
 | LLM inference | `bench/Invoke-LlmBench.ps1` | tokens/s per model (Ollama) |
 | Video engine (NVENC) | `bench/Invoke-NvencBench.ps1` | fps h264/hevc/av1 + concurrent sessions |
 | Game-like render | `bench/Invoke-ValleyBench.ps1` | Unigine Valley score/FPS (optional) |
+| **RAM** | `bench/Invoke-RamBench.ps1` | bandwidth (copy/scale/add/triad GB/s), random-access latency, **integrity** (fill+verify a large fraction of RAM), soak |
+| **Disk (HDD/SSD/NVMe)** | `bench/Invoke-DiskBench.ps1` | sequential read/write MB/s, random 4 KiB IOPS, plus **SMART** health/temperature/wear |
 
 Telemetry (`bench/Sample-GpuTelemetry.ps1`) samples `util`, `temp`, `power`, `SM clock`, `VRAM`, `fan` once/second.
 
@@ -109,6 +111,10 @@ results/   output (git-ignored)
 | `gpu_bench.py` | matmul · membw · pcie · conv · integrity · streams · soak |
 | `Get-GpuInfo.ps1` | system/CPU/RAM/GPU + driver version + PCI id |
 | `Sample-GpuTelemetry.ps1` | standalone telemetry sampler |
+| `Invoke-CpuBench.ps1` / `cpu_bench.py` | CPU matmul fp32/fp64 + mem bandwidth + soak |
+| `Invoke-CombinedStress.ps1` | CPU+GPU concurrent stress |
+| `Invoke-RamBench.ps1` / `ram_bench.py` | RAM bandwidth/latency/integrity/soak |
+| `Invoke-DiskBench.ps1` / `disk_bench.py` | disk seq/random throughput + SMART |
 | `Invoke-LlmBench.ps1` | Ollama tokens/s |
 | `Invoke-NvencBench.ps1` | NVENC h264/hevc/av1 fps |
 | `Invoke-ValleyBench.ps1` | Unigine Valley game-like run |

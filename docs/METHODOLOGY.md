@@ -41,6 +41,23 @@ measured, and so a machine can be stress-tested for stability and thermals.
 
 Expect ±5–10 % run-to-run variance. Compare like-for-like (same resolution, same power limit).
 
+## RAM & disk phases
+| Phase | Load | What it reveals |
+|---|---|---|
+| `ram_bench.py bandwidth` | numpy STREAM copy/scale/add/triad | system RAM bandwidth (GB/s) |
+| `ram_bench.py latency` | large random gather | ~ns/access + gather GB/s |
+| `ram_bench.py integrity` | fill + verify a large fraction of free RAM | memory bit errors |
+| `ram_bench.py soak` | sustained bandwidth + alloc churn | stability / error count |
+| `disk_bench.py seqwrite/seqread` | 1 MiB sequential I/O | drive sequential MB/s |
+| `disk_bench.py randread/randwrite/randmix` | random 4 KiB | IOPS + MB/s |
+| `Invoke-DiskBench.ps1` | + `Get-StorageReliabilityCounter` | SMART temp / wear / error counts |
+
+Caveats:
+- **RAM bandwidth is single-threaded** (numpy), so it under-reports plain multi-channel peak;
+  it is a like-for-like comparison. Quad-channel DDR4-2666 typically shows ~15-25 GB/s here.
+- **Disk reads may be cache-served** (buffered I/O): use a file larger than RAM for truer reads.
+  Write numbers and random IOPS are representative; write to a **non-system** drive when possible.
+
 ## Gotchas learned in the field
 - **Old benchmarks are CPU-bound.** Unigine Valley/Heaven at 1080p won't load a modern GPU
   (GPU util < 50 %). For a GPU-bound gaming number use 4K/DSR or a modern engine (3DMark).
