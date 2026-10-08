@@ -51,22 +51,17 @@ ping 34.7 ms · upload 36.1 Mbps · download measured 0 (Cloudflare speed endpoi
 
 ## GPU-bound graphics (all stable)
 
-### Unigine Superposition — 1080p Medium (DirectX)
-**Score 14709** · avg 110.0 FPS (min 74.6 / max 160.9) · GPU max 83 °C · max util 98 % · driver 582.66.
+Re-run with the custom GPU fan curve active (`nvfancontrol`, `40:55 → 70:100`) to compare against
+the stock auto curve:
 
-### FurMark 2 — 1080p OpenGL, 60 s
-| Metric | Value |
-|---|---|
-| **Score** | **5750** |
-| FPS avg (min / max) | 95.9 (87 / 98) |
-| Max temperature | 85 °C |
-| Max utilisation | 100 % |
-| Core clock | 1532–1608 MHz |
-| API / driver | OpenGL 3.2.0 / 582.66 |
+| Test | Auto fan | Custom fan curve | Δ |
+|---|---|---|---|
+| FurMark 2 — 1080p OpenGL, 60 s | 5750 · max **85 °C** · 95.9 fps | **5850 · max 67 °C · 97.6 fps** | −18 °C, +1.7 % |
+| Unigine Superposition — 1080p Medium | 14709 · max **83 °C** · 110.0 fps | **14922 · max 69 °C · 111.6 fps** | −14 °C, +1.4 % |
 
-The card completed all three GPU-bound graphics loads (Valley, FurMark 60 s at 100 % util,
-Superposition 1080p Medium) with **no crash or hang** — confirming the graphics path is stable and
-only the **CUDA compute path** is faulty.
+The custom fan curve cuts peak GPU temperature by **14–18 °C** and gives a small score/FPS bump
+(higher sustained clocks, no thermal throttle). The card completed every GPU-bound graphics load
+with no crash or hang — the graphics path is stable; only the **CUDA compute path** is faulty.
 
 ## GPU compute — partial (card is faulty)
 
