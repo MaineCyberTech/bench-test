@@ -16,8 +16,8 @@ param(
     [switch]$NoTask
 )
 
-function Elevate([string]$file, [string]$args) {
-    Start-Process $file -ArgumentList $args -Verb RunAs -Wait
+function Elevate([string]$file, [string]$argStr) {
+    Start-Process $file -ArgumentList $argStr -Verb RunAs -Wait
 }
 
 if ($Uninstall) {

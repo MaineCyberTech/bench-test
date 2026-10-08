@@ -145,6 +145,10 @@ def phase_integrity(a):
 
 
 def phase_streams(a):
+    if torch.cuda.get_device_capability(0) < (7, 0):
+        print("streams skipped (pre-Volta GPU: multi-stream matmul hangs)")
+        jline({"phase": "streams", "skipped": True, "reason": "pre-Volta GPU"})
+        return
     N = a.size
     A = torch.randn(N, N, device=DEV, dtype=torch.bfloat16)
     B = torch.randn(N, N, device=DEV, dtype=torch.bfloat16)
@@ -169,18 +173,29 @@ def phase_streams(a):
 
 
 def phase_soak(a):
+    if torch.cuda.get_device_capability(0) < (7, 0):
+        print("soak skipped (pre-Volta GPU: matmul+conv loop hangs)")
+        jline({"phase": "soak", "skipped": True, "reason": "pre-Volta GPU"})
+        return
     N = min(a.size, 10240)
     A = torch.randn(N, N, device=DEV, dtype=torch.bfloat16)
     B = torch.randn(N, N, device=DEV, dtype=torch.bfloat16)
     w = torch.randn(128, 128, 3, 3, device=DEV, dtype=torch.float16)
     xi = torch.randn(32, 128, 128, 128, device=DEV, dtype=torch.float16)
-    streams = [torch.cuda.Stream() for _ in range(4)]
-    t0 = time.time(); mats = convs = 0
-    while time.time() - t0 < a.seconds:
-        for s in streams:
-            with torch.cuda.stream(s):
-                _ = A @ B; mats += 1
-                _ = F.conv2d(xi, w, padding=1); convs += 1
+    # Multi-stream matmul hangs on pre-Volta (Pascal) GPUs; run single-stream there.
+    if torch.cuda.get_device_capability(0) >= (7, 0):
+        streams = [torch.cuda.Stream() for _ in range(4)]
+        t0 = time.time(); mats = convs = 0
+        while time.time() - t0 < a.seconds:
+            for s in streams:
+                with torch.cuda.stream(s):
+                    _ = A @ B; mats += 1
+                    _ = F.conv2d(xi, w, padding=1); convs += 1
+    else:
+        t0 = time.time(); mats = convs = 0
+        while time.time() - t0 < a.seconds:
+            _ = A @ B; mats += 1
+            _ = F.conv2d(xi, w, padding=1); convs += 1
     torch.cuda.synchronize()
     dt = time.time() - t0
     out = {"phase": "soak", "seconds": round(dt, 1), "matmuls": mats, "convs": convs,
