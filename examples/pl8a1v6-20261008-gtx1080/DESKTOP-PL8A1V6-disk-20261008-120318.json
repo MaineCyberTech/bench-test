@@ -1,0 +1,76 @@
+﻿{
+    "host":  "DESKTOP-PL8A1V6",
+    "timestamp":  "2026-10-08T12:07:27.4109429-07:00",
+    "path":  "C:\\Users\\Admin\\AppData\\Local\\Temp",
+    "size_mb":  2048,
+    "health":  {
+                   "friendly":  "SanDisk SSD PLUS 1000GB",
+                   "media":  "SSD",
+                   "bus":  "SATA",
+                   "health":  "Healthy",
+                   "temperature_c":  null,
+                   "wear":  null,
+                   "read_errors":  null,
+                   "write_errors":  null,
+                   "power_on_hours":  null
+               },
+    "phases":  [
+                   {
+                       "phase":  "seqwrite",
+                       "size_mb":  2048,
+                       "seconds":  37.17,
+                       "mbps":  55.1
+                   },
+                   {
+                       "phase":  "seqread",
+                       "size_mb":  2048,
+                       "seconds":  1.24,
+                       "mbps":  1649.7
+                   },
+                   {
+                       "phase":  "randread",
+                       "seconds":  15.0,
+                       "ops":  1626592,
+                       "reads":  1626592,
+                       "writes":  0,
+                       "iops":  108407.0,
+                       "mbps":  444.0
+                   },
+                   {
+                       "phase":  "randwrite",
+                       "seconds":  48.4,
+                       "ops":  370146,
+                       "reads":  0,
+                       "writes":  370146,
+                       "iops":  7649.0,
+                       "mbps":  31.3
+                   },
+                   {
+                       "phase":  "randmix",
+                       "seconds":  38.4,
+                       "ops":  1073619,
+                       "reads":  752052,
+                       "writes":  321567,
+                       "iops":  27955.0,
+                       "mbps":  114.5
+                   },
+                   {
+                       "phase":  "latency",
+                       "ops":  300000,
+                       "iops":  105264.0,
+                       "us_p50":  6.0,
+                       "us_p90":  14.4,
+                       "us_p99":  29.3,
+                       "us_p999":  53.2
+                   },
+                   {
+                       "phase":  "steadywrite",
+                       "gib":  10,
+                       "seconds":  48.1,
+                       "overall_mbps":  223.3,
+                       "first10_mbps":  247.4,
+                       "last10_mbps":  254.4,
+                       "drop_pct":  -2.8
+                   }
+               ]
+}

@@ -1,0 +1,65 @@
+﻿{
+    "host":  "DESKTOP-PL8A1V6",
+    "timestamp":  "2026-10-08T12:01:03.8723061-07:00",
+    "phases":  {
+                   "info":  {
+                                "phase":  "info",
+                                "numpy":  "2.5.3",
+                                "logical_cpus":  12
+                            },
+                   "matmul":  {
+                                  "phase":  "matmul",
+                                  "n":  4096,
+                                  "results":  {
+                                                  "fp32":  {
+                                                               "iters":  37,
+                                                               "seconds":  10.02,
+                                                               "gflops":  507.7
+                                                           },
+                                                  "fp64":  {
+                                                               "iters":  18,
+                                                               "seconds":  10.14,
+                                                               "gflops":  244.0
+                                                           }
+                                              }
+                              },
+                   "membw":  {
+                                 "phase":  "membw",
+                                 "bytes_per_array":  268435456,
+                                 "results":  {
+                                                 "copy_gbps":  19.0,
+                                                 "add_gbps":  12.0,
+                                                 "reduce_gbps":  6.0
+                                             }
+                             },
+                   "hash":  {
+                                "phase":  "hash",
+                                "sha256_mbps":  408.0,
+                                "mb":  64
+                            },
+                   "compress":  {
+                                    "phase":  "compress",
+                                    "zlib_compress_mbps":  27.0,
+                                    "zlib_decompress_mbps":  954.0,
+                                    "lzma_compress_mbps":  4.0,
+                                    "lzma_decompress_mbps":  4.0
+                                },
+                   "aes":  {
+                               "phase":  "aes",
+                               "skipped":  true,
+                               "reason":  "cryptography not installed"
+                           },
+                   "flops":  {
+                                 "phase":  "flops",
+                                 "gflops":  1.4,
+                                 "elements":  67108864,
+                                 "dtype":  "fp32"
+                             },
+                   "soak":  {
+                                "phase":  "soak",
+                                "seconds":  120.0,
+                                "iters":  3234,
+                                "gflops":  463.0
+                            }
+               }
+}
