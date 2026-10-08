@@ -78,6 +78,20 @@ Evidence gathered on this machine with this card installed:
    not the cause.
 4. Temps were never the trigger — the card sat at ~70–76 °C with its fan working.
 
+### Software ruled out (driver/torch matrix)
+
+The CUDA-compute hang reproduces across **every** combination tested — two torch/CUDA builds and
+two drivers:
+
+| torch | driver | plain bf16 matmul loop |
+|---|---|---|
+| 2.14.1+cu126 | 582.66 | hangs |
+| 2.5.1+cu124 | 582.66 | hangs |
+| 2.5.1+cu124 | 560.94 | hangs |
+
+So the fault is the **card**, not the software stack. Graphics/D3D works (games and Valley run
+fine), so only the compute/memory/power path is failing.
+
 **Recommendation:** test the GTX 1080 in another system, or RMA/replace it. Re-fit the
 RTX 4070 Ti SUPER (or another known-good GPU) to run the full suite cleanly.
 
