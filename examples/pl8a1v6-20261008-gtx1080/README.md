@@ -49,6 +49,20 @@ ping 34.7 ms · upload 36.1 Mbps · download measured 0 (Cloudflare speed endpoi
 > Almost identical to the RTX 4070 Ti SUPER's **4508 / 107.7** on the same box — confirming Valley is
 > **CPU-bound** at 1080p (both runs use the same i7-6800K), not GPU-bound.
 
+## GPU-bound graphics — FurMark 2 (1080p OpenGL, 60 s)
+
+| Metric | Value |
+|---|---|
+| **Score** | **5750** |
+| FPS avg (min / max) | 95.9 (87 / 98) |
+| Max temperature | 85 °C |
+| Max utilisation | 100 % |
+| Core clock | 1532–1608 MHz |
+| API / driver | OpenGL 3.2.0 / 582.66 |
+
+The card completed a **60 s, 100 %-utilisation, GPU-bound graphics load with no crash or hang** —
+confirming the graphics path is stable and only the **CUDA compute path** is faulty.
+
 ## GPU compute — partial (card is faulty)
 
 The compute phases that ran before the card started faulting:
