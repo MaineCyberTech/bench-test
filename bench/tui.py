@@ -536,7 +536,7 @@ class BenchTUI:
             cbarw = max(10, barw - 30)
             self._bar(ry, MX + 2, cbarw, self.sys_cpu / 100, "cpu", "%3.0f %%" % self.sys_cpu, 1)
             ram, ram_t = self.sys_ram
-            extra = "ram %.1f/%.1f GiB · load %.2f" % (ram, ram_t, self.sys_load)
+            extra = "  ram %.1f/%.1f GiB · load %.2f" % (ram, ram_t, self.sys_load)
             if self.sys_swap[1] > 0:
                 extra += " · swap %.1f GiB" % self.sys_swap[0]
             self._put(ry, MX + 2 + cbarw + 14, extra, curses.color_pair(8) | curses.A_DIM)
