@@ -1,0 +1,2 @@
+conv2d fp16 TFLOPS=7.1
+RESULT_JSON:{"phase": "conv", "tflops": 7.1, "iters": 342}

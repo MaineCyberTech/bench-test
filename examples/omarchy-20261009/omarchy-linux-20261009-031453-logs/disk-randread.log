@@ -1,0 +1,2 @@
+disk randread  315497 IOPS, 1292.3 MB/s (r=4735519 w=0)
+RESULT_JSON:{"phase": "randread", "seconds": 15.0, "ops": 4735519, "reads": 4735519, "writes": 0, "iops": 315497.0, "mbps": 1292.3}

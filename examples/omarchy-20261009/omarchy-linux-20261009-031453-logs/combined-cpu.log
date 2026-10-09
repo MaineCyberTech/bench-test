@@ -1,0 +1,2 @@
+soak 300.2s iters=1696 GFLOPS=97.1
+RESULT_JSON:{"phase": "soak", "seconds": 300.2, "iters": 1696, "gflops": 97.1}

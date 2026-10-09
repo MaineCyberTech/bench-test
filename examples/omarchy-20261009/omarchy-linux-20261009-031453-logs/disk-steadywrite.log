@@ -1,0 +1,2 @@
+disk steadywrite 10 GiB: first10=192 last10=197 overall=153 MB/s (drop -3%)
+RESULT_JSON:{"phase": "steadywrite", "gib": 10, "seconds": 70.0, "overall_mbps": 153.4, "first10_mbps": 191.7, "last10_mbps": 197.5, "drop_pct": -3.0}

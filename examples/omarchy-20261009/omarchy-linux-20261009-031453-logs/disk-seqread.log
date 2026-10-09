@@ -1,0 +1,2 @@
+disk seqread 9148 MB/s (0.2 s for 2048 MiB)
+RESULT_JSON:{"phase": "seqread", "size_mb": 2048, "seconds": 0.22, "mbps": 9147.8}

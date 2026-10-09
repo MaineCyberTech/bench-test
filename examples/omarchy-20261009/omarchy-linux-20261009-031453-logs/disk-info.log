@@ -1,0 +1,2 @@
+disk path=/home/user/Projects/bench-test/results/disk-tmp total=929.5GiB free=891.1GiB
+RESULT_JSON:{"phase": "info", "path": "/home/user/Projects/bench-test/results/disk-tmp", "total_gib": 929.5, "free_gib": 891.1}

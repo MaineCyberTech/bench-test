@@ -1,0 +1,2 @@
+aes-256-gcm 1121 MB/s
+RESULT_JSON:{"phase": "aes", "aes256gcm_mbps": 1121.0, "mb": 64}

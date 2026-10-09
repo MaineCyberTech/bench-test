@@ -1,6 +1,8 @@
 # results output (generated)
 results/
 *.log
+# ...except logs inside example run reviews (evidence is part of the review)
+!examples/**/*.log
 
 # python
 __pycache__/

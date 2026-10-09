@@ -1,0 +1,136 @@
+(03:37:01)	FurMark 2.10.2.0 (build: Oct 22 2025@13:57:17)
+(03:37:01)	(c)2007-2025 Geeks3D
+(03:37:01)	homepage: https://www.geeks3d.com/furmark/
+(03:37:01)	discord server : https://geeks3d.com/discord/
+(03:37:01)	FurMark (GeeXLab engine) initialization...
+(03:37:01)	command line: ./furmark --demo furmark-gl --width 1920 --height 1080 --benchmark --duration-ms 60000 --no-score-box --vsync 0 --log-gpu-data --gpu-monitor-print --export-dir /home/user/Projects/bench-test/results/omarchy-linux-20261009-031453-logs/furmark --hw-polling-interval 1000 
+(03:37:01)	FurMark home directory: /home/user/Projects/bench-test/tools/furmark/FurMark_linux64/
+(03:37:01)	[stb] STB image loader. Supported formats: *.JPEG, *.PNG, *.TGA, *.BMP, *.PSD, *.GIF, *.HDR, *.PIC
+(03:37:01)	[tinyexr] EXR image loader.
+(03:37:01)	[lib3ds] Lib3ds loader (core plugin).
+(03:37:01)	[ObjLoaderV1] OBJ 3D loader (core plugin).
+(03:37:01)	[ObjLoaderV2] OBJ loader based on Tiny OBJ Loader (core plugin).
+(03:37:01)	[STL] STL (StereoLithography) 3D loader (core plugin).
+(03:37:01)	[glTF] glTF 3D loader (core plugin).
+(03:37:01)	[SQLite3] SQLite3 version 3.50.4
+(03:37:01)	GraphX Core 0.60.1.0 (codename: Dirac) initialization ok.
+(03:37:01)	Linux information:
+(03:37:01)	- sysname: Linux
+(03:37:01)	- release: 7.2.5-3-omarchy
+(03:37:01)	- version: #1 SMP PREEMPT_DYNAMIC Mon, 14 Sep 2026 19:55:01 +0000
+(03:37:01)	- machine: x86_64
+(03:37:01)	HW platform type: PC
+(03:37:01)	SW platform type: Linux 7.2.5-3-omarchy 64-bit
+(03:37:01)	FurMark is launched with admin (root) rights.
+(03:37:01)	[GpuMonitor] Linux x86_64 - CPU name: Intel(R) Core(TM) i7-3770 CPU @ 3.40GHz, CPU speed: 3755MHz, RAM: 15950MB
+(03:37:01)	[GpuMonitor] Operating system detected: Linux 7.2.5-3-omarchy 64-bit
+(03:37:01)	[GpuMonitor] NVIDIA CUDA library detected.
+(03:37:01)	[GpuMonitor]   - ROP counter (from driver): 56
+(03:37:01)	[GpuMonitor] Num GPUs detected: 1
+(03:37:01)	[GpuMonitor] > GPU0
+(03:37:01)	[GpuMonitor]   - name: NVIDIA GeForce GTX 970
+(03:37:01)	[GpuMonitor]   - PCI codes: 0x10DE-0x13C2
+(03:37:01)	[GpuMonitor]   - Bus ID: 1
+(03:37:01)	[GpuMonitor]   - core temperature: 30 degC
+(03:37:01)	FurMark (GeeXLab engine) started ok.
+(03:37:01)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 135.0 MHz, temp: 30.0 degC , usage: 0.0 %, power: 23047 W
+(03:37:01)	Display size: width=1920, height=1080
+(03:37:01)	Display size in mm: width=508, height=285
+(03:37:01)	X11 DPI scaling detected: 96
+(03:37:01)	X11 window resolution: 1920x1080
+(03:37:01)	[OpenGL] GLX version: 1.4
+(03:37:01)	[OpenGL] GLX_VENDOR (srv): SGI
+(03:37:01)	[OpenGL] GLX_VERSION (svr): 1.4
+(03:37:01)	[OpenGL] GLX_VENDOR (client): NVIDIA Corporation
+(03:37:01)	[OpenGL] GLX_VERSION (client): 1.4
+(03:37:01)	[OpenGL] GLX_RENDERER_VENDOR_ID_MESA: 0
+(03:37:01)	[OpenGL] GLX_RENDERER_DEVICE_ID_MESA: 0
+(03:37:01)	[OpenGL] GLX_RENDERER_VERSION_MESA: 0.0.0
+(03:37:01)	[OpenGL] GLX_RENDERER_ACCELERATED_MESA: 0
+(03:37:01)	[OpenGL] GLX_RENDERER_VIDEO_MEMORY_MESA: 0 MB
+(03:37:01)	[OpenGL] GLX_RENDERER_UNIFIED_MEMORY_ARCHITECTURE_MESA: NO
+(03:37:01)	GL_RENDERER: NVIDIA GeForce GTX 970/PCIe/SSE2
+(03:37:01)	GL_VENDOR: NVIDIA Corporation
+(03:37:01)	GL_VERSION: 3.2.0 NVIDIA 580.178.04
+(03:37:01)	GL_SHADING_LANGUAGE_VERSION: 1.50 NVIDIA via Cg compiler
+(03:37:01)	OpenGL version detected: 3.2
+(03:37:01)	OpenGL extensions: 385
+(03:37:01)	[ArtifactScanner] Artifact scanner for GPU stability checking.
+(03:37:02)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 911.0 MHz, temp: 37.0 degC , usage: 100.0 %, power: 148726 W
+(03:37:03)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 39.0 degC , usage: 100.0 %, power: 152860 W
+(03:37:04)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 40.0 degC , usage: 100.0 %, power: 153049 W
+(03:37:05)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 40.0 degC , usage: 100.0 %, power: 153144 W
+(03:37:06)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 41.0 degC , usage: 100.0 %, power: 153088 W
+(03:37:07)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 41.0 degC , usage: 100.0 %, power: 152954 W
+(03:37:08)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 42.0 degC , usage: 100.0 %, power: 153239 W
+(03:37:09)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 42.0 degC , usage: 100.0 %, power: 152515 W
+(03:37:10)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 43.0 degC , usage: 100.0 %, power: 152614 W
+(03:37:11)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 43.0 degC , usage: 100.0 %, power: 152709 W
+(03:37:12)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 44.0 degC , usage: 100.0 %, power: 153239 W
+(03:37:13)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 44.0 degC , usage: 100.0 %, power: 153088 W
+(03:37:14)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 44.0 degC , usage: 100.0 %, power: 153170 W
+(03:37:15)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 936.0 MHz, temp: 45.0 degC , usage: 100.0 %, power: 152253 W
+(03:37:16)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 936.0 MHz, temp: 45.0 degC , usage: 100.0 %, power: 152127 W
+(03:37:17)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 45.0 degC , usage: 100.0 %, power: 153713 W
+(03:37:18)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 46.0 degC , usage: 100.0 %, power: 153170 W
+(03:37:19)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 46.0 degC , usage: 100.0 %, power: 153902 W
+(03:37:20)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 936.0 MHz, temp: 46.0 degC , usage: 100.0 %, power: 152412 W
+(03:37:21)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 47.0 degC , usage: 100.0 %, power: 152640 W
+(03:37:22)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 47.0 degC , usage: 100.0 %, power: 151881 W
+(03:37:23)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 961.0 MHz, temp: 48.0 degC , usage: 100.0 %, power: 153549 W
+(03:37:24)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 48.0 degC , usage: 100.0 %, power: 152886 W
+(03:37:25)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 48.0 degC , usage: 100.0 %, power: 152791 W
+(03:37:26)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 48.0 degC , usage: 100.0 %, power: 152980 W
+(03:37:27)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 49.0 degC , usage: 100.0 %, power: 153075 W
+(03:37:28)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 49.0 degC , usage: 100.0 %, power: 152545 W
+(03:37:29)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 49.0 degC , usage: 100.0 %, power: 152670 W
+(03:37:30)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 50.0 degC , usage: 100.0 %, power: 152412 W
+(03:37:31)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 50.0 degC , usage: 100.0 %, power: 152916 W
+(03:37:32)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 50.0 degC , usage: 100.0 %, power: 153295 W
+(03:37:33)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 51.0 degC , usage: 100.0 %, power: 153010 W
+(03:37:34)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 51.0 degC , usage: 100.0 %, power: 152657 W
+(03:37:35)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 51.0 degC , usage: 100.0 %, power: 152954 W
+(03:37:36)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 51.0 degC , usage: 100.0 %, power: 152726 W
+(03:37:37)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 52.0 degC , usage: 100.0 %, power: 153049 W
+(03:37:38)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 52.0 degC , usage: 100.0 %, power: 153295 W
+(03:37:39)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 52.0 degC , usage: 100.0 %, power: 153019 W
+(03:37:40)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 53.0 degC , usage: 100.0 %, power: 152954 W
+(03:37:41)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 53.0 degC , usage: 100.0 %, power: 152791 W
+(03:37:42)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 936.0 MHz, temp: 53.0 degC , usage: 100.0 %, power: 152537 W
+(03:37:43)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 936.0 MHz, temp: 53.0 degC , usage: 100.0 %, power: 152347 W
+(03:37:44)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 54.0 degC , usage: 100.0 %, power: 153540 W
+(03:37:45)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 936.0 MHz, temp: 54.0 degC , usage: 100.0 %, power: 152632 W
+(03:37:46)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 54.0 degC , usage: 100.0 %, power: 153010 W
+(03:37:47)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 54.0 degC , usage: 100.0 %, power: 153105 W
+(03:37:48)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 936.0 MHz, temp: 55.0 degC , usage: 100.0 %, power: 151976 W
+(03:37:49)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 936.0 MHz, temp: 55.0 degC , usage: 100.0 %, power: 152575 W
+(03:37:50)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 936.0 MHz, temp: 55.0 degC , usage: 100.0 %, power: 152033 W
+(03:37:51)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 55.0 degC , usage: 100.0 %, power: 153768 W
+(03:37:52)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 56.0 degC , usage: 100.0 %, power: 153049 W
+(03:37:53)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 949.0 MHz, temp: 56.0 degC , usage: 100.0 %, power: 153484 W
+(03:37:54)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 936.0 MHz, temp: 56.0 degC , usage: 100.0 %, power: 152601 W
+(03:37:55)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 936.0 MHz, temp: 56.0 degC , usage: 100.0 %, power: 152632 W
+(03:37:56)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 936.0 MHz, temp: 56.0 degC , usage: 100.0 %, power: 152506 W
+(03:37:57)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 961.0 MHz, temp: 57.0 degC , usage: 100.0 %, power: 153635 W
+(03:37:58)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 961.0 MHz, temp: 57.0 degC , usage: 100.0 %, power: 153674 W
+(03:37:59)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 948.0 MHz, temp: 57.0 degC , usage: 100.0 %, power: 152670 W
+(03:38:00)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 948.0 MHz, temp: 57.0 degC , usage: 100.0 %, power: 152632 W
+(03:38:01)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 948.0 MHz, temp: 58.0 degC , usage: 100.0 %, power: 152537 W
+(03:38:02)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 948.0 MHz, temp: 57.0 degC , usage: 100.0 %, power: 152726 W
+(03:38:03)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 961.0 MHz, temp: 58.0 degC , usage: 100.0 %, power: 153863 W
+(03:38:04)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 948.0 MHz, temp: 58.0 degC , usage: 100.0 %, power: 153010 W
+(03:38:05)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 948.0 MHz, temp: 58.0 degC , usage: 100.0 %, power: 152632 W
+(03:38:06)	GPU 0 (NVIDIA GeForce GTX 970) core clock: 948.0 MHz, temp: 58.0 degC , usage: 100.0 %, power: 153105 W
+(03:38:07)	[ Demo Quick Stats ]
+(03:38:07)	- demo                 : FurMark (GL) (built-in: YES)
+(03:38:07)	- renderer             : NVIDIA GeForce GTX 970/PCIe/SSE2
+(03:38:07)	- 3D API               : OpenGL 3.2.0 NVIDIA 580.178.04
+(03:38:07)	- resolution           : 1920x1080
+(03:38:07)	- SCORE                : 3017
+(03:38:07)	- duration             : 60019 ms
+(03:38:07)	- FPS (min/avg/max)    : 50 / 50 / 52
+(03:38:07)	- GPU 0: NVIDIA GeForce GTX 970 [10DE-13C2]
+(03:38:07)	  .max temperature: 58°C
+(03:38:07)	FurMark (GeeXLab engine) is shutting down...
+(03:38:07)	GraphX Core stopped ok.
+(03:38:07)	FurMark (GeeXLab engine) shutdown ok.

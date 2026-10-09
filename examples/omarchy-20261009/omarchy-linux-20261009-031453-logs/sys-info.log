@@ -1,0 +1,4 @@
+host=Omarchy kernel=7.2.5-3-omarchy cpu=Intel(R) Core(TM) i7-3770 CPU @ 3.40GHz (8 threads) mem=15.6GiB gpu=NVIDIA GeForce GTX 970 driver=580.178.04
+storage: sda 931.5G disk 0 SanDisk SSD PLUS 1000GB; zram0 15.6G disk 0
+ifaces: enp5s0(up)
+RESULT_JSON:{"phase": "info", "distro": "Omarchy", "kernel": "7.2.5-3-omarchy", "arch": "x86_64", "cpu": {"model": "Intel(R) Core(TM) i7-3770 CPU @ 3.40GHz", "logical_cpus": 8, "max_mhz_observed": 3910}, "memory_gib": 15.6, "gpu": {"name": "NVIDIA GeForce GTX 970", "driver": "580.178.04", "vram": "4096 MiB", "pcie_link_gen": "1", "pcie_link_width": "16"}, "storage": ["sda 931.5G disk 0 SanDisk SSD PLUS 1000GB", "zram0 15.6G disk 0"], "network_ifaces": [{"name": "enp5s0", "state": "up", "speed_mbps": "1000"}], "booted": "2026-10-08 23:42:08", "errors_since_boot": 197}

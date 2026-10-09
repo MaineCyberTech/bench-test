@@ -1,0 +1,4 @@
+h264_nvenc skipped ([h264_nvenc @ 0x57e7eaf88a00] Driver does not support the required nvenc API version. Required: 13.1 Found: 13.0)
+hevc_nvenc skipped ([hevc_nvenc @ 0x5ea4fe1fda00] Driver does not support the required nvenc API version. Required: 13.1 Found: 13.0)
+av1_nvenc skipped ([av1_nvenc @ 0x637568779a00] Driver does not support the required nvenc API version. Required: 13.1 Found: 13.0)
+RESULT_JSON:{"phase": "bench", "width": 1920, "height": 1080, "frames": 1200, "results": {"h264_nvenc": {"skipped": true, "reason": "[h264_nvenc @ 0x57e7eaf88a00] Driver does not support the required nvenc API version. Required: 13.1 Found: 13.0"}, "hevc_nvenc": {"skipped": true, "reason": "[hevc_nvenc @ 0x5ea4fe1fda00] Driver does not support the required nvenc API version. Required: 13.1 Found: 13.0"}, "av1_nvenc": {"skipped": true, "reason": "[av1_nvenc @ 0x637568779a00] Driver does not support the required nvenc API version. Required: 13.1 Found: 13.0"}}}

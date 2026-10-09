@@ -1,0 +1,2 @@
+flops (fp32 mul+add) 1.4 GFLOPS
+RESULT_JSON:{"phase": "flops", "gflops": 1.4, "elements": 67108864, "dtype": "fp32"}

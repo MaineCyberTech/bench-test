@@ -1,0 +1,2 @@
+disk seqwrite 281 MB/s (7.3 s for 2048 MiB)
+RESULT_JSON:{"phase": "seqwrite", "size_mb": 2048, "seconds": 7.29, "mbps": 281.1}
