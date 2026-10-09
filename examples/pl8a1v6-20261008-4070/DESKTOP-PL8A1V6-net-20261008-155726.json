@@ -1,0 +1,12 @@
+﻿{
+    "host":  "DESKTOP-PL8A1V6",
+    "timestamp":  "2026-10-08T15:57:52.3312880-07:00",
+    "gateway":  "192.168.111.1",
+    "ping_gateway_ms":  0,
+    "ping_target":  "1.1.1.1",
+    "ping_target_ms":  34.4,
+    "download_mbps":  0,
+    "download_mbs":  0,
+    "upload_mbps":  36,
+    "upload_mbs":  4.5
+}

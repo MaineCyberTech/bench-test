@@ -1,0 +1,75 @@
+﻿{
+    "host":  "DESKTOP-PL8A1V6",
+    "timestamp":  "2026-10-08T15:52:03.3735407-07:00",
+    "phases":  [
+                   {
+                       "phase":  "info",
+                       "result":  {
+                                      "phase":  "info",
+                                      "total_gib":  31.9,
+                                      "available_gib":  27.2,
+                                      "used_pct":  14.0,
+                                      "logical_cpus":  12,
+                                      "numpy":  "2.5.3"
+                                  },
+                       "telemetry":  null
+                   },
+                   {
+                       "phase":  "bandwidth",
+                       "result":  {
+                                      "phase":  "bandwidth",
+                                      "elements":  134217728,
+                                      "gib_per_array":  1.0,
+                                      "results":  {
+                                                      "copy":  19.7,
+                                                      "scale":  11.5,
+                                                      "add":  12.6,
+                                                      "triad":  7.1
+                                                  }
+                                  },
+                       "telemetry":  null
+                   },
+                   {
+                       "phase":  "latency",
+                       "result":  {
+                                      "phase":  "latency",
+                                      "accesses":  5000000,
+                                      "ns_per_access_approx":  20.8,
+                                      "gather_gbps_approx":  0.4,
+                                      "note":  "numpy gather; not a pure dependent-load chase"
+                                  },
+                       "telemetry":  null
+                   },
+                   {
+                       "phase":  "integrity",
+                       "result":  {
+                                      "phase":  "integrity",
+                                      "giB":  19.0,
+                                      "chunks":  76,
+                                      "passes":  2,
+                                      "bad_elements":  0
+                                  },
+                       "telemetry":  {
+                                         "freeMiB_min":  8907,
+                                         "cpu_max":  47,
+                                         "cpu_avg":  36
+                                     }
+                   },
+                   {
+                       "phase":  "soak",
+                       "result":  {
+                                      "phase":  "soak",
+                                      "seconds":  120.3,
+                                      "iters":  327,
+                                      "gbps":  8.8,
+                                      "errors":  0,
+                                      "gib_per_array":  1.0
+                                  },
+                       "telemetry":  {
+                                         "freeMiB_min":  25293,
+                                         "cpu_max":  58,
+                                         "cpu_avg":  32
+                                     }
+                   }
+               ]
+}

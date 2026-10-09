@@ -1,0 +1,19 @@
+﻿{
+    "Host":  "DESKTOP-PL8A1V6",
+    "Manufacturer":  "ASUS",
+    "Model":  "All Series",
+    "OS":  "Microsoft Windows 11 Pro build 26100 64-bit",
+    "BIOS":  "2101 (2019-07-09)",
+    "CPU":  "Intel(R) Core(TM) i7-6800K CPU @ 3.40GHz (6c/12t)",
+    "RAM_GiB":  31.9,
+    "GPUs":  [
+                 {
+                     "Name":  "NVIDIA GeForce RTX 4070 Ti SUPER",
+                     "DriverVersion":  "32.0.16.1742",
+                     "DriverDate":  "\/Date(1790726400000)\/",
+                     "Status":  "OK"
+                 }
+             ],
+    "nvidia_smi":  "NVIDIA GeForce RTX 4070 Ti SUPER, 617.42, 16376 MiB, 8.9, 285.00 W, 35",
+    "GpuPciId":  "VEN_10DE\u0026DEV_2705\u0026SUBSYS_513D1462\u0026REV_A1"
+}

@@ -1,0 +1,64 @@
+﻿{
+    "host":  "DESKTOP-PL8A1V6",
+    "timestamp":  "2026-10-08T15:38:21.2793703-07:00",
+    "seconds":  300,
+    "gpu":  {
+                "phase":  "soak",
+                "seconds":  318.3,
+                "matmuls":  11892,
+                "convs":  11892,
+                "matmul_tflops":  80.2,
+                "peak_vram_gib":  1.1
+            },
+    "cpu":  {
+                "phase":  "soak",
+                "seconds":  300.0,
+                "iters":  6316,
+                "gflops":  361.7
+            },
+    "telemetry":  {
+                      "temp":  {
+                                   "avg":  58.1,
+                                   "max":  60
+                               },
+                      "fan":  {
+                                  "avg":  80.4,
+                                  "max":  84
+                              },
+                      "cpu":  {
+                                  "avg":  86.4,
+                                  "max":  97
+                              },
+                      "mem":  {
+                                  "avg":  3452.2,
+                                  "max":  3502
+                              },
+                      "sm":  {
+                                 "avg":  2722,
+                                 "max":  2790
+                             },
+                      "util":  {
+                                   "avg":  98.5,
+                                   "max":  100
+                               },
+                      "power":  {
+                                    "avg":  271.5,
+                                    "max":  278.6
+                                }
+                  },
+    "stability":  {
+                      "tdr_or_whea":  [
+
+                                      ],
+                      "throttle":  [
+                                       "SW Power Cap                                   : Not Active",
+                                       "HW Slowdown                                    : Not Active",
+                                       "HW Thermal Slowdown                        : Not Active",
+                                       "SW Thermal Slowdown                            : Not Active",
+                                       "SW Power Capping                               : 149529129 us",
+                                       "SW Thermal Slowdown                            : 0 us",
+                                       "HW Thermal Slowdown                            : 0 us",
+                                       "HW Power Braking                               : 0 us"
+                                   ]
+                  }
+}

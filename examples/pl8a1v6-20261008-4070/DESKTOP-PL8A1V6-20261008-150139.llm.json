@@ -1,0 +1,27 @@
+﻿{
+    "results":  [
+                    {
+                        "model":  "qwen3-coder:30b",
+                        "tok_per_s":  32.3,
+                        "eval_tokens":  128,
+                        "eval_seconds":  3.96
+                    },
+                    {
+                        "model":  "qwen2.5-coder:14b",
+                        "tok_per_s":  52.4,
+                        "eval_tokens":  128,
+                        "eval_seconds":  2.44
+                    },
+                    {
+                        "model":  "qwen2.5-coder:7b",
+                        "tok_per_s":  78.1,
+                        "eval_tokens":  128,
+                        "eval_seconds":  1.64
+                    }
+                ],
+    "ps":  [
+               "NAME                 ID              SIZE      PROCESSOR    CONTEXT    RUNNER      UNTIL              ",
+               "qwen2.5-coder:7b     dae161e27b0e    4.7 GB    100% GPU     4096       llamacpp    4 minutes from now    ",
+               "qwen2.5-coder:14b    9ec8897f747e    9.5 GB    100% GPU     4096       llamacpp    4 minutes from now    "
+           ]
+}
