@@ -16,11 +16,12 @@ sudo ./live/Build-LiveUSB.sh --gpu amd               # Mesa/RADV + ROCm PyTorch
 Then write it (destructive) — or build with `--write /dev/sdX` directly:
 
 ```bash
-sudo dd if=live/out/bench-live-*.iso of=/dev/sdX bs=4M status=progress conv=fsync
+sudo dd if=live/out-nvidia-legacy/bench-live-*.iso of=/dev/sdX bs=4M status=progress conv=fsync
 ```
 
-`Build-LiveUSB.sh --write` also creates a `BENCHDATA` exFAT/FAT partition in the
-remaining space for results.
+Each variant builds into its own `live/out-<variant>/` directory so they can
+coexist. `Build-LiveUSB.sh --write` also creates a `BENCHDATA` FAT partition in
+the remaining space for results.
 
 Requirements: 16 GB+ USB (the nvidia/amd images are ~7 GB, the base system alone
 ~2.5 GB), network during build, ~25 GiB free disk for the work dir (the build
