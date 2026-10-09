@@ -10,7 +10,10 @@ Requires PyTorch with CUDA (torch.cuda.is_available()).
 """
 import argparse
 import json
+import statistics
+import subprocess
 import sys
+import threading
 import time
 
 import torch
@@ -186,35 +189,65 @@ def phase_streams(a):
     jline(out)
 
 
+def _telemetry_loop(samples, stop):
+    while not stop.wait(2.0):
+        try:
+            r = subprocess.run(
+                ["nvidia-smi", "--query-gpu=temperature.gpu,fan.speed,power.draw,clocks.sm",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=5)
+            vals = [float(v.strip()) for v in r.stdout.strip().splitlines()[0].split(",")]
+            if len(vals) == 4:
+                samples.append(vals)
+        except Exception:
+            pass
+
+
+def _telemetry_summary(samples):
+    if not samples:
+        return None
+    cols = list(zip(*samples))
+    return {
+        "samples": len(samples),
+        "temp_c": [min(cols[0]), round(statistics.mean(cols[0]), 1), max(cols[0])],
+        "fan_pct": [min(cols[1]), round(statistics.mean(cols[1]), 1), max(cols[1])],
+        "power_w": [round(statistics.mean(cols[2]), 1), max(cols[2])],
+        "sm_mhz": [round(statistics.mean(cols[3]))],
+    }
+
+
 def phase_soak(a):
-    if torch.cuda.get_device_capability(0) < (7, 0):
-        print("soak skipped (pre-Volta GPU: matmul+conv loop hangs)")
-        jline({"phase": "soak", "skipped": True, "reason": "pre-Volta GPU"})
-        return
     N = min(a.size, 10240)
     A = torch.randn(N, N, device=DEV, dtype=torch.bfloat16)
     B = torch.randn(N, N, device=DEV, dtype=torch.bfloat16)
     w = torch.randn(128, 128, 3, 3, device=DEV, dtype=torch.float16)
     xi = torch.randn(32, 128, 128, 128, device=DEV, dtype=torch.float16)
-    # Multi-stream matmul hangs on pre-Volta (Pascal) GPUs; run single-stream there.
+    samples, stop = [], threading.Event()
+    tel = threading.Thread(target=_telemetry_loop, args=(samples, stop), daemon=True)
+    tel.start()
+    t0 = time.time(); mats = convs = 0
     if torch.cuda.get_device_capability(0) >= (7, 0):
         streams = [torch.cuda.Stream() for _ in range(4)]
-        t0 = time.time(); mats = convs = 0
         while time.time() - t0 < a.seconds:
             for s in streams:
                 with torch.cuda.stream(s):
                     _ = A @ B; mats += 1
                     _ = F.conv2d(xi, w, padding=1); convs += 1
     else:
-        t0 = time.time(); mats = convs = 0
+        # Single-stream on pre-Volta; sync each iteration to bound the kernel queue.
         while time.time() - t0 < a.seconds:
             _ = A @ B; mats += 1
             _ = F.conv2d(xi, w, padding=1); convs += 1
+            torch.cuda.synchronize()
     torch.cuda.synchronize()
     dt = time.time() - t0
+    stop.set(); tel.join(timeout=5)
     out = {"phase": "soak", "seconds": round(dt, 1), "matmuls": mats, "convs": convs,
            "matmul_tflops": round(2.0 * N ** 3 * mats / dt / 1e12, 1),
            "peak_vram_gib": round(torch.cuda.max_memory_allocated() / 1024 ** 3, 1)}
+    ts = _telemetry_summary(samples)
+    if ts:
+        out["telemetry"] = ts
     print("soak %.1fs matmuls=%d convs=%d matmul_TFLOPS=%.1f" % (
         dt, mats, convs, out["matmul_tflops"]))
     jline(out)

@@ -27,6 +27,17 @@ import numpy as np
 BLK = 1 << 20      # 1 MiB
 IO = 4096          # 4 KiB
 
+_RANDBUF = b""
+
+
+def randbytes(n):
+    """Incompressible fill data: constant bytes get zstd-compressed by btrfs/bcachefs,
+    which inflates throughput results on such filesystems."""
+    global _RANDBUF
+    if len(_RANDBUF) < n:
+        _RANDBUF = os.urandom(max(n, BLK))
+    return _RANDBUF[:n]
+
 
 def jline(obj):
     print("RESULT_JSON:" + json.dumps(obj), flush=True)
@@ -55,7 +66,7 @@ def phase_info(a):
 def ensure_file(a):
     f = datafile(a)
     if not os.path.exists(f) or os.path.getsize(f) < a.size_mb * BLK:
-        buf = b"\xA5" * BLK
+        buf = randbytes(BLK)
         with open(f, "wb", buffering=0) as fh:
             for _ in range(a.size_mb):
                 fh.write(buf)
@@ -65,7 +76,7 @@ def ensure_file(a):
 
 def phase_seqwrite(a):
     f = datafile(a)
-    buf = b"\x5A" * BLK
+    buf = randbytes(BLK)
     t0 = time.time()
     with open(f, "wb", buffering=0) as fh:
         for _ in range(a.size_mb):
@@ -109,7 +120,7 @@ def rand_loop(a, read_pct):
             if rnd.randrange(100) < read_pct:
                 fh.read(IO); reads += 1
             else:
-                fh.write(b"\x3C" * IO); writes += 1
+                fh.write(randbytes(IO)); writes += 1
             ops += 1
         fh.flush(); os.fsync(fh.fileno())
     dt = time.time() - t0
@@ -135,7 +146,7 @@ def phase_soak(a):
     seq_mb = 0; rand_ops = 0; seq_secs = 0.0
     while time.time() - t0 < a.seconds:
         # seq write then read
-        buf = b"\x11" * BLK
+        buf = randbytes(BLK)
         st = time.time()
         with open(datafile(a), "wb", buffering=0) as fh:
             for _ in range(min(a.size_mb, 256)):
@@ -159,19 +170,19 @@ def phase_soak(a):
 
 def phase_steadywrite(a):
     f = datafile(a)
-    chunk = 256 * BLK
+    chunk = 64 * BLK           # 64 MiB fsync-bounded windows
     total = int(a.steady_gb) * 1024 * 1024 * 1024
-    buf = b"\x5A" * chunk
+    buf = randbytes(chunk)
     buckets = []
     written = 0
     t0 = time.time()
     with open(f, "wb", buffering=0) as fh:
         while written < total:
             bt = time.time()
-            fh.write(buf); fh.flush()
+            fh.write(buf)
+            os.fsync(fh.fileno())   # window = data actually on stable storage
             buckets.append(chunk / (time.time() - bt))
             written += chunk
-        os.fsync(fh.fileno())
     dt = time.time() - t0
     n = len(buckets); k = max(1, n // 10)
     first = sum(buckets[:k]) / k / 1e6
