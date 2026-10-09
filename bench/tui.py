@@ -423,6 +423,9 @@ class BenchTUI:
 
     def _bar(self, y, x, width, frac, label, value, attr):
         self._put(y, x, "%-6s" % label, curses.color_pair(8))
+        if frac is None:              # no data (e.g. no GPU in a VM): no empty bar
+            self._put(y, x + 9 + width, value)
+            return
         frac = max(0.0, min(1.0, frac))
         filled = int(frac * width)
         self._put(y, x + 7, "█" * filled, curses.color_pair(attr))
@@ -509,18 +512,18 @@ class BenchTUI:
             return ry < top + tel_h - 1
 
         if room():
-            self._bar(ry, MX + 2, barw, (t or 0) / 100, "temp", "%5s" % (
+            self._bar(ry, MX + 2, barw, (t / 100) if t is not None else None, "temp", "%5s" % (
                 ("%.0f °C" % t) if t is not None else "--"), self._severity(t)); ry += 1
         if room():
             fan_txt = ("%.0f %%" % fan) if fan is not None else "--"
             if rpm:
                 fan_txt += " %.0frpm" % rpm
-            self._bar(ry, MX + 2, barw, (fan or 0) / 100, "fan", "%9s" % fan_txt, 1); ry += 1
+            self._bar(ry, MX + 2, barw, (fan / 100) if fan is not None else None, "fan", "%9s" % fan_txt, 1); ry += 1
         if room():
-            self._bar(ry, MX + 2, barw, (pw or 0) / 250, "power", "%5s" % (
+            self._bar(ry, MX + 2, barw, (pw / 250) if pw is not None else None, "power", "%5s" % (
                 ("%.0f W" % pw) if pw is not None else "--"), 3); ry += 1
         if room():
-            self._bar(ry, MX + 2, barw, (util or 0) / 100, "gpu", "%5s" % (
+            self._bar(ry, MX + 2, barw, (util / 100) if util is not None else None, "gpu", "%5s" % (
                 ("%.0f %%" % util) if util is not None else "--"), 2); ry += 1
         if room():
             total = None
