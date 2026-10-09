@@ -1,0 +1,16 @@
+[Unit]
+Description=NVIDIA GPU fan curve (bench-test default profile)
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/gpu-fan-curve.sh
+Restart=always
+RestartSec=5
+Environment=DISPLAY=:0
+Environment=LD_LIBRARY_PATH=/opt/nvidia-settings/usr/lib
+Environment="FAN_CURVE=35:26 45:34 55:44 60:52 68:64 75:76 82:90 88:100"
+ExecStopPost=/bin/sh -c '/opt/nvidia-settings/usr/bin/nvidia-settings -a GPUFanControlState=0 || true'
+
+[Install]
+WantedBy=multi-user.target

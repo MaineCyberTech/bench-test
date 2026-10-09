@@ -1,0 +1,371 @@
+{
+  "host": "omarchy",
+  "timestamp": "2026-10-09T01:32:22-04:00",
+  "platform": "Linux-7.2.5-3-omarchy-x86_64-with-glibc2.44",
+  "env": {
+    "python": "/home/user/Projects/bench-test/.venv/bin/python",
+    "torch": "2.14.1+cu126",
+    "torch_cuda": "12.6",
+    "cuda_available": true
+  },
+  "phases": [
+    {
+      "group": "gpu",
+      "phase": "info",
+      "result": {
+        "phase": "info",
+        "device": "NVIDIA GeForce GTX 970",
+        "torch": "2.14.1+cu126",
+        "cuda": "12.6",
+        "arch": [
+          5,
+          2
+        ],
+        "sm_count": 13,
+        "vram_gib": 3.9,
+        "cudnn": 91002
+      }
+    },
+    {
+      "group": "gpu",
+      "phase": "matmul",
+      "result": {
+        "phase": "matmul",
+        "n": 12288,
+        "results": {
+          "fp16": {
+            "iters": 7,
+            "seconds": 10.07,
+            "tflops": 2.6
+          },
+          "bf16": {
+            "iters": 5,
+            "seconds": 10.46,
+            "tflops": 1.8
+          },
+          "tf32": {
+            "iters": 9,
+            "seconds": 10.27,
+            "tflops": 3.3
+          },
+          "fp32": {
+            "iters": 9,
+            "seconds": 10.29,
+            "tflops": 3.2
+          }
+        }
+      }
+    },
+    {
+      "group": "gpu",
+      "phase": "membw",
+      "result": {
+        "phase": "membw",
+        "results": {
+          "fp32": {
+            "add_gbps": 144.0,
+            "reduce_gbps": 152.0
+          },
+          "bf16": {
+            "add_gbps": 148.0,
+            "reduce_gbps": 153.0
+          }
+        }
+      }
+    },
+    {
+      "group": "gpu",
+      "phase": "pcie",
+      "result": {
+        "phase": "pcie",
+        "h2d_gbps": 10.0,
+        "d2h_gbps": 9.0
+      }
+    },
+    {
+      "group": "gpu",
+      "phase": "conv",
+      "result": {
+        "phase": "conv",
+        "tflops": 7.0,
+        "iters": 341
+      }
+    },
+    {
+      "group": "gpu",
+      "phase": "integrity",
+      "result": {
+        "phase": "vram",
+        "chunks": 3,
+        "gib": 3.0,
+        "float_mismatched": 0,
+        "int_bad_elements": 0
+      }
+    },
+    {
+      "group": "gpu",
+      "phase": "streams",
+      "result": {
+        "phase": "streams",
+        "skipped": true,
+        "reason": "pre-Volta GPU"
+      }
+    },
+    {
+      "group": "gpu",
+      "phase": "soak",
+      "result": {
+        "phase": "soak",
+        "skipped": true,
+        "reason": "pre-Volta GPU"
+      }
+    },
+    {
+      "group": "cpu",
+      "phase": "info",
+      "result": {
+        "phase": "info",
+        "numpy": "2.5.3",
+        "logical_cpus": 8
+      }
+    },
+    {
+      "group": "cpu",
+      "phase": "matmul",
+      "result": {
+        "phase": "matmul",
+        "n": 4096,
+        "results": {
+          "fp32": {
+            "iters": 12,
+            "seconds": 10.4,
+            "gflops": 158.6
+          },
+          "fp64": {
+            "iters": 6,
+            "seconds": 11.04,
+            "gflops": 74.7
+          }
+        }
+      }
+    },
+    {
+      "group": "cpu",
+      "phase": "membw",
+      "result": {
+        "phase": "membw",
+        "bytes_per_array": 268435456,
+        "results": {
+          "copy_gbps": 16.0,
+          "add_gbps": 12.0,
+          "reduce_gbps": 13.0
+        }
+      }
+    },
+    {
+      "group": "cpu",
+      "phase": "hash",
+      "result": {
+        "phase": "hash",
+        "sha256_mbps": 369.0,
+        "mb": 64
+      }
+    },
+    {
+      "group": "cpu",
+      "phase": "compress",
+      "result": {
+        "phase": "compress",
+        "zlib_compress_mbps": 41.0,
+        "zlib_decompress_mbps": 1443.0,
+        "lzma_compress_mbps": 5.0,
+        "lzma_decompress_mbps": 5.0
+      }
+    },
+    {
+      "group": "cpu",
+      "phase": "aes",
+      "result": {
+        "phase": "aes",
+        "aes256gcm_mbps": 1123.0,
+        "mb": 64
+      }
+    },
+    {
+      "group": "cpu",
+      "phase": "flops",
+      "result": {
+        "phase": "flops",
+        "gflops": 1.4,
+        "elements": 67108864,
+        "dtype": "fp32"
+      }
+    },
+    {
+      "group": "cpu",
+      "phase": "soak",
+      "result": {
+        "phase": "soak",
+        "seconds": 30.1,
+        "iters": 268,
+        "gflops": 153.0
+      }
+    },
+    {
+      "group": "ram",
+      "phase": "info",
+      "result": {
+        "phase": "info",
+        "total_gib": 15.6,
+        "available_gib": 11.6,
+        "used_pct": 25.3,
+        "logical_cpus": 8,
+        "numpy": "2.5.3"
+      }
+    },
+    {
+      "group": "ram",
+      "phase": "bandwidth",
+      "result": {
+        "phase": "bandwidth",
+        "elements": 134217728,
+        "gib_per_array": 1.0,
+        "results": {
+          "copy": 16.9,
+          "scale": 11.4,
+          "add": 12.5,
+          "triad": 10.2
+        }
+      }
+    },
+    {
+      "group": "ram",
+      "phase": "latency",
+      "result": {
+        "phase": "latency",
+        "accesses": 5000000,
+        "ns_per_access_approx": 12.9,
+        "gather_gbps_approx": 0.6,
+        "note": "numpy gather; not a pure dependent-load chase"
+      }
+    },
+    {
+      "group": "ram",
+      "phase": "integrity",
+      "result": {
+        "phase": "integrity",
+        "giB": 8.0,
+        "chunks": 32,
+        "passes": 2,
+        "bad_elements": 0
+      }
+    },
+    {
+      "group": "ram",
+      "phase": "soak",
+      "result": {
+        "phase": "soak",
+        "seconds": 30.1,
+        "iters": 76,
+        "gbps": 8.1,
+        "errors": 0,
+        "gib_per_array": 1.0
+      }
+    },
+    {
+      "group": "disk",
+      "phase": "info",
+      "result": {
+        "phase": "info",
+        "path": "/home/user/Projects/bench-test/results/disk-tmp",
+        "total_gib": 929.5,
+        "free_gib": 891.2
+      }
+    },
+    {
+      "group": "disk",
+      "phase": "seqwrite",
+      "result": {
+        "phase": "seqwrite",
+        "size_mb": 2048,
+        "seconds": 0.62,
+        "mbps": 3302.1
+      }
+    },
+    {
+      "group": "disk",
+      "phase": "seqread",
+      "result": {
+        "phase": "seqread",
+        "size_mb": 2048,
+        "seconds": 0.19,
+        "mbps": 10629.5
+      }
+    },
+    {
+      "group": "disk",
+      "phase": "randread",
+      "result": {
+        "phase": "randread",
+        "seconds": 15.0,
+        "ops": 5060030,
+        "reads": 5060030,
+        "writes": 0,
+        "iops": 337335.0,
+        "mbps": 1381.7
+      }
+    },
+    {
+      "group": "disk",
+      "phase": "randwrite",
+      "result": {
+        "phase": "randwrite",
+        "seconds": 19.8,
+        "ops": 202223,
+        "reads": 0,
+        "writes": 202223,
+        "iops": 10195.0,
+        "mbps": 41.8
+      }
+    },
+    {
+      "group": "disk",
+      "phase": "randmix",
+      "result": {
+        "phase": "randmix",
+        "seconds": 16.3,
+        "ops": 573868,
+        "reads": 402354,
+        "writes": 171514,
+        "iops": 35259.0,
+        "mbps": 144.4
+      }
+    },
+    {
+      "group": "disk",
+      "phase": "latency",
+      "result": {
+        "phase": "latency",
+        "ops": 300000,
+        "iops": 318411.0,
+        "us_p50": 2.1,
+        "us_p90": 2.3,
+        "us_p99": 4.2,
+        "us_p999": 11.6
+      }
+    },
+    {
+      "group": "disk",
+      "phase": "steadywrite",
+      "result": {
+        "phase": "steadywrite",
+        "gib": 5,
+        "seconds": 3.0,
+        "overall_mbps": 1767.2,
+        "first10_mbps": 2847.3,
+        "last10_mbps": 1955.7,
+        "drop_pct": 31.3
+      }
+    }
+  ]
+}
