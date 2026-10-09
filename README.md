@@ -70,6 +70,33 @@ Options:
 | `-NoInstall` | never install anything; only run what's present |
 | `-OutDir <path>` | results directory (default `.\results`) |
 
+### Linux (GPU/CPU/RAM/disk + soaks, network, NVENC, graphics)
+
+The Python phases also run on Linux via `bench/Run-LinuxBench.sh` (no PowerShell needed):
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install numpy psutil cryptography        # core deps
+# GPU phases additionally need CUDA PyTorch; Maxwell/Pascal (pre-Turing) use cu126 wheels:
+.venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cu126
+
+BENCH_PY=.venv/bin/python ./bench/Run-LinuxBench.sh    # full run (all groups)
+BENCH_PY=.venv/bin/python ./bench/Run-LinuxBench.sh --skip-gfx --gpu-soak 60
+.venv/bin/python ./bench/gui.py                        # graphical dashboard (Tk)
+```
+
+Groups: `gpu` · `cpu` · `ram` · `disk` · `combined` (GPU+CPU) · `fullsoak`
+(GPU+CPU+RAM+disk) · `net` · `nvenc` (ffmpeg) · `sys` (inventory) · `gfx` (FurMark 2,
+optional — drop the linux64 build in `tools/furmark/` or set `$FURMARK`).
+Useful flags: `--gpu-soak S`, `--combined-seconds S`, `--fullsoak-seconds S`,
+`--gfx-seconds S`, `--skip-<group>`.
+
+Every run writes `results/<host>-linux-<stamp>.{json,md}` plus a **1 Hz telemetry time
+series** (`*.telemetry.csv`: GPU util/temp/fan/power/clocks + CPU package temp + RAM),
+raw per-phase stdout/stderr under `*-logs/` (with `nvidia-smi -q`, `sensors`, and
+kernel/error journal snapshots), and appends a row to `results/runs-index.jsonl` — the
+flat run index for trend analysis / datalake queries.
+
 ## Driver check / update
 
 `bench/Get-GpuInfo.ps1` reports the installed NVIDIA driver version and the GPU's PCI device id.
@@ -103,10 +130,10 @@ Custom GPU fan curve (more aggressive than the quiet stock curve; persistent at 
 ## Layout
 
 ```
-bench/     PowerShell runners + Python phases + telemetry sampler
+bench/     PowerShell runners + Python phases + telemetry sampler (+ Linux runner and collectors)
 docs/      METHODOLOGY.md (how it works, reference numbers, gotchas) · FUTURE_WORK.md (not-yet-collected data)
-examples/  a real result from an RTX 4070 Ti SUPER / Xeon W-2123 (for a template)
-results/   output (git-ignored)
+examples/  real results (Windows + Linux runs) for templates
+results/   output (git-ignored) — reports, telemetry CSVs, per-phase logs, runs-index.jsonl
 ```
 
 ## Scripts
@@ -114,6 +141,7 @@ results/   output (git-ignored)
 | Script | Purpose |
 |---|---|
 | `Run-WorkstationBench.ps1` | one-command battery (info + compute + optional LLM/NVENC/Valley) |
+| `Run-LinuxBench.sh` | Linux one-command battery (GPU/CPU/RAM/disk + combined + full-system soak + net/NVENC/sys/gfx) |
 | `Invoke-LongSoak.ps1` | multi-hour endurance soak with telemetry + report |
 | `Invoke-GpuBench.ps1` | compute phases with telemetry → JSON + Markdown report |
 | `gpu_bench.py` | matmul · membw · pcie · conv · integrity · streams · soak |
@@ -135,6 +163,13 @@ results/   output (git-ignored)
 | `Invoke-ValleyBench.ps1` | Unigine Valley game-like run |
 | `Set-GpuPowerLimit.ps1` | query/set power limit |
 | `Install-GpuFanCurve.ps1` | custom GPU fan curve + logon task |
+| `telemetry_log.py` | 1 Hz Linux telemetry CSV (GPU/CPU temps, fan, power, RAM, load) |
+| `tui.py` | htop-style console dashboard (live phases, telemetry bars, log, collect) |
+| `gui.py` | Tkinter dashboard (presets, live progress + telemetry graph, results, collect) |
+| `fan_curve.py` | portable GPU fan curve + fan-response test (NVIDIA nvidia-settings / AMD sysfs) |
+| `net_bench.py` | Linux network latency + Cloudflare download/upload Mbps |
+| `nvenc_bench.py` | Linux NVENC encode fps via ffmpeg |
+| `linux_info.py` | Linux inventory: OS/CPU/mem/GPU/PCIe/storage/NICs/boot/errors |
 
 ## License
 
