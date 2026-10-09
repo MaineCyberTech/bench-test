@@ -30,8 +30,12 @@ def timed(seconds, fn, flops=0, nbytes=0):
     it = 0
     while time.time() - t0 < seconds:
         fn()
+        # Sync every iteration: launches outpace a slow GPU by orders of
+        # magnitude (pre-Volta Maxwell: a 10 s unsynced loop queues hours of
+        # matmuls and the phase looks like it hangs). Overhead is negligible
+        # for the multi-millisecond ops these phases measure.
+        torch.cuda.synchronize()
         it += 1
-    torch.cuda.synchronize()
     dt = time.time() - t0
     out = {"iters": it, "seconds": round(dt, 2)}
     if flops:
@@ -126,16 +130,26 @@ def phase_vram(a):
         t.fill_(1.0)
     torch.cuda.synchronize()
     bad = sum(1 for t in ts if abs(t.sum().item() - chunk) > chunk * 1e-3)
+    # Free the fp32 pass before allocating the int32 pass: the two passes
+    # together need ~2x the fill size and OOM on small-VRAM GPUs (4 GB GTX 970).
+    # The fill loop's last `t` also holds one chunk alive, so drop it too.
+    del ts, t
+    torch.cuda.empty_cache()
     ints = [torch.empty(chunk, dtype=torch.int32, device=DEV) for _ in range(nt)]
     C = 0x7F3A2C1B
     for t in ints:
         t.fill_(C)
     torch.cuda.synchronize()
-    badbits = sum(int((t != C).sum().item()) for t in ints)
+    # Verify in slices: (t != C).sum() can materialize a multi-GiB temporary
+    # (bool -> int64), which OOMs a small-VRAM GPU filled to ~90%.
+    badbits = 0
+    for t in ints:
+        for s in t.split(32 * 1024 * 1024):
+            badbits += int((s != C).sum().item())
     out = {"phase": "vram", "chunks": nt, "gib": round(nt * chunk * 4 / 1024 ** 3, 1),
            "float_mismatched": bad, "int_bad_elements": badbits}
     print("VRAM filled=%.1fGiB mismatched=%d bad_elements=%d" % (out["gib"], bad, badbits))
-    del ts, ints
+    del ints, t
     torch.cuda.empty_cache()
     jline(out)
 
