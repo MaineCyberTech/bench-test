@@ -114,12 +114,37 @@ if [ -n "$WRITE_DEV" ]; then
     echo "[write] DESTRUCTIVE: writing $ISO to $WRITE_DEV"
     dd if="$ISO" of="$WRITE_DEV" bs=4M status=progress conv=fsync
     sync
-    if command -v sgdisk >/dev/null 2>&1; then
-        sgdisk -n 0:0:0 -t 0:0700 -c 0:BENCHDATA "$WRITE_DEV" || true
-        partprobe "$WRITE_DEV" || true
-        sleep 2
-        PART="$(lsblk -lno NAME,PARTLABEL "$WRITE_DEV" | awk '$2=="BENCHDATA" {print "/dev/"$1; exit}')"
-        [ -n "$PART" ] && mkfs.vfat -n BENCHDATA "$PART" || true
+    udevadm settle || true
+    # an automounter often mounts the new ISO partition; it must not be open
+    # for the kernel to re-read the partition table
+    for part in "$WRITE_DEV"*; do
+        [ -b "$part" ] && umount "$part" 2>/dev/null || true
+    done
+    partprobe "$WRITE_DEV" 2>/dev/null || true
+    partx -u "$WRITE_DEV" 2>/dev/null || true
+    sleep 2
+    ISO_BYTES=$(stat -c %s "$ISO")
+    START_MIB=$(( ISO_BYTES / 1048576 + 16 ))
+    echo "[write] creating BENCHDATA partition at ${START_MIB}MiB"
+    parted -s "$WRITE_DEV" mkpart primary fat32 "${START_MIB}MiB" 100% || true
+    partprobe "$WRITE_DEV" 2>/dev/null || true
+    partx -a "$WRITE_DEV" 2>/dev/null || true   # adds new partitions even if others are mounted
+    sleep 2
+    # pick the partition that starts at/after the end of the ISO image
+    PART=""
+    MIN_SECTOR=$(( ISO_BYTES / 512 ))
+    PART=$(lsblk -bno NAME,START "$WRITE_DEV" | tail -n +2 | awk -v m="$MIN_SECTOR" '$2 >= m {print $1}')
+    if [ -z "$PART" ]; then
+        echo "[write] BENCHDATA partition not visible to the kernel; format it manually:"
+        echo "        sudo partx -a $WRITE_DEV && sudo mkfs.vfat -n BENCHDATA ${WRITE_DEV}3"
+    else
+        SIZE_MB=$(( $(lsblk -bdno SIZE "/dev/$PART") / 1000000 ))
+        if [ "$SIZE_MB" -lt 1000 ]; then
+            echo "[write] refusing to format /dev/$PART (${SIZE_MB}MB - looks like a boot partition)"
+        else
+            mkfs.vfat -n BENCHDATA "/dev/$PART"
+            echo "[write] BENCHDATA on /dev/$PART (${SIZE_MB}MB)"
+        fi
     fi
-    echo "[write] done - boot the stick and run: bench-live-run --with-gfx"
+    echo "[write] done - boot the stick and run: bench-tui (auto-starts)"
 fi
