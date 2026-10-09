@@ -5,7 +5,7 @@ results/
 !examples/**/*.log
 
 # live USB build output (multi-GB ISOs)
-live/out/
+live/out*/
 
 # python
 __pycache__/

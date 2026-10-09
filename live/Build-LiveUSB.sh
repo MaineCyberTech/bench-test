@@ -15,7 +15,7 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIVE="$REPO/live"
-OUT="$REPO/live/out"
+OUT=""
 GPU=""
 WRITE_DEV=""
 
@@ -33,6 +33,7 @@ case "$GPU" in
     nvidia|nvidia-legacy|amd) ;;
     *) echo "error: --gpu nvidia|nvidia-legacy|amd is required" >&2; exit 1 ;;
 esac
+[ -n "$OUT" ] || OUT="$REPO/live/out-$GPU"
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "error: run as root (mkarchiso requires root)" >&2
