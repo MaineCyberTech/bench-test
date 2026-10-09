@@ -81,10 +81,14 @@ fi
 mkdir -p "$PROFILE/airootfs/opt/bench-test/tools/furmark"
 cp -r "$REPO/tools/furmark/FurMark_linux64" "$PROFILE/airootfs/opt/bench-test/tools/furmark/"
 
-# enable the dkms build unit (legacy NVIDIA)
+# enable the dkms build unit (legacy NVIDIA) and the TUI dashboards
 mkdir -p "$PROFILE/airootfs/etc/systemd/system/multi-user.target.wants"
 ln -sf ../bench-dkms.service \
     "$PROFILE/airootfs/etc/systemd/system/multi-user.target.wants/bench-dkms.service"
+ln -sf ../bench-tui@.service \
+    "$PROFILE/airootfs/etc/systemd/system/multi-user.target.wants/bench-tui@tty1.service"
+ln -sf ../bench-tui@.service \
+    "$PROFILE/airootfs/etc/systemd/system/multi-user.target.wants/bench-tui@ttyS0.service"
 
 # exec permissions for our helpers
 cat >> "$PROFILE/profiledef.sh" <<'EOF'

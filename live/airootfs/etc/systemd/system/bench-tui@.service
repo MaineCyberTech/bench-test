@@ -1,0 +1,18 @@
+[Unit]
+Description=bench-test dashboard on %I
+After=getty@%i.service
+Conflicts=getty@%i.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/bench-tui
+Environment=TERM=linux
+StandardInput=tty
+TTYPath=/dev/%i
+TTYReset=yes
+TTYVHangup=yes
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
