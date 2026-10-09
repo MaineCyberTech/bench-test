@@ -1,0 +1,17 @@
+bench-test live USB
+===================
+
+  bench-tui                       console dashboard (auto-starts on tty1)
+  bench-gui                       graphical dashboard (X + mouse)
+  bench-live-run                  plain console run (no dashboard)
+  bench-collect                   copy results to the BENCHDATA USB partition
+  bench-fan-curve status|set|off|check   GPU fan curve + fan-response test
+
+The dashboard detects the GPU/CPU, offers presets (quick/full/graphics),
+streams phase progress and live telemetry while running, shows the final
+report, and collects everything to BENCHDATA when done.
+
+Keys: s start · x stop · c collect · f fan-curve · p profile · 1-0 groups
+      r report · G graphical dashboard · t shell · PgUp/PgDn log · q quit
+
+Toolkit: /opt/bench-test        GPU tools: nvidia-smi / rocm-smi, FurMark in tools/furmark

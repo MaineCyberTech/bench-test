@@ -1,0 +1,14 @@
+[Unit]
+Description=Build DKMS modules for the live kernel (NVIDIA legacy variant)
+DefaultDependencies=no
+After=local-fs.target
+Before=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'command -v dkms >/dev/null 2>&1 && dkms autoinstall || true'
+TimeoutSec=900
+
+[Install]
+WantedBy=multi-user.target

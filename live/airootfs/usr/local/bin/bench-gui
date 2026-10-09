@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Launch the bench-test dashboard (starts X + openbox when no display is running).
+set -u
+export DISPLAY="${DISPLAY:-:0}"
+if ! xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
+    echo "[gui] starting X on $DISPLAY"
+    X "$DISPLAY" vt2 -ac -nolisten tcp > /tmp/x.log 2>&1 &
+    sleep 3
+    openbox > /tmp/openbox.log 2>&1 &
+    sleep 2
+fi
+exec python /opt/bench-test/bench/gui.py "$@"

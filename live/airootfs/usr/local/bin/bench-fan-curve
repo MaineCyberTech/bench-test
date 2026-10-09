@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# GPU fan-curve helper for the live environment (NVIDIA via nvidia-settings, AMD via sysfs).
+#
+#   bench-fan-curve status            show vendor/temp/fan + saved curve
+#   bench-fan-curve set [--curve C]   apply a curve now (default 40:40 55:55 70:75 80:95)
+#   bench-fan-curve run [--curve C]   resident daemon (systemd: bench-fan-curve.service)
+#   bench-fan-curve off               restore automatic fan control
+#   bench-fan-curve check [--seconds 90]   fan-response ramp test
+set -u
+exec /usr/bin/python /opt/bench-test/bench/fan_curve.py "$@"

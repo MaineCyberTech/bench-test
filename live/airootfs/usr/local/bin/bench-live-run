@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Run the bench-test battery from the live environment and copy results to BENCHDATA.
+#
+# Usage: bench-live-run [--with-gfx] [<extra Run-LinuxBench.sh flags>]
+#   default: console-safe groups (adds --skip-gfx)
+#   --with-gfx: starts a minimal X session and includes the FurMark/vkmark/glmark2 group
+#
+# Env: BENCH_DIR (default /opt/bench-test)
+set -u
+
+BENCH="${BENCH_DIR:-/opt/bench-test}"
+RUN="$BENCH/bench/Run-LinuxBench.sh"
+OUT="$BENCH/results"
+
+ARGS=()
+WITH_GFX=0
+for arg in "$@"; do
+    case "$arg" in
+        --with-gfx) WITH_GFX=1 ;;
+        *) ARGS+=("$arg") ;;
+    esac
+done
+[ "$WITH_GFX" = 0 ] && ARGS+=(--skip-gfx)
+
+# Legacy NVIDIA variant: make sure the DKMS module is built before GPU phases.
+if systemctl list-unit-files bench-dkms.service >/dev/null 2>&1; then
+    systemctl start bench-dkms.service 2>/dev/null || true
+fi
+
+XVFB_PID=""; WM_PID=""
+cleanup() {
+    [ -n "$WM_PID" ] && kill "$WM_PID" 2>/dev/null
+    [ -n "$XVFB_PID" ] && kill "$XVFB_PID" 2>/dev/null
+    /usr/local/bin/bench-collect || true
+}
+trap cleanup EXIT
+
+if [ "$WITH_GFX" = 1 ]; then
+    export DISPLAY=:0
+    if ! xdpyinfo -display :0 >/dev/null 2>&1; then
+        echo "[live] starting X on :0 for the graphics group"
+        X :0 vt2 -ac -nolisten tcp > /tmp/x.log 2>&1 &
+        XVFB_PID=$!
+        sleep 3
+        openbox > /tmp/openbox.log 2>&1 &
+        WM_PID=$!
+        sleep 2
+    fi
+fi
+
+echo "[live] gpu: $(lspci -nn 2>/dev/null | grep -iE 'VGA|3D|Display' | head -1)"
+BENCH_PY=/usr/bin/python "$RUN" "${ARGS[@]}" -o "$OUT"
+echo "[live] battery exit=$?; results under $OUT (collecting...)"

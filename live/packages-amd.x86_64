@@ -1,0 +1,6 @@
+# AMD variant: ROCm compute (RDNA+/supported GPUs) + ROCm tools.
+# Older GCN/Polaris cards still do graphics/telemetry; compute phases may skip.
+python-pytorch-rocm
+rocm-smi-lib
+rocminfo
+hsa-rocr

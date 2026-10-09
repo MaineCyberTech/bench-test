@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Copy bench-test results to the BENCHDATA partition of the USB stick
+# (falls back to /root/bench-results when no BENCHDATA partition is present).
+set -u
+
+SRC="${1:-/opt/bench-test/results}"
+LBL="${BENCHDATA_LABEL:-BENCHDATA}"
+DEST=""
+
+DEV="$(lsblk -lno NAME,LABEL 2>/dev/null | awk -v l="$LBL" '$2==l {print $1; exit}')"
+if [ -n "$DEV" ]; then
+    mkdir -p /mnt/benchdata
+    mountpoint -q /mnt/benchdata || mount "/dev/$DEV" /mnt/benchdata 2>/dev/null || true
+    mountpoint -q /mnt/benchdata && DEST=/mnt/benchdata
+fi
+if [ -z "$DEST" ]; then
+    DEST=/root/bench-results
+    mkdir -p "$DEST"
+    echo "[collect] no BENCHDATA partition found - saving to $DEST"
+fi
+
+HOST="$(hostname -s 2>/dev/null || echo unknown)"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+TARGET="$DEST/$HOST-$STAMP"
+mkdir -p "$TARGET"
+cp -a "$SRC/." "$TARGET/" 2>/dev/null || true
+{
+    echo "host: $HOST"
+    echo "collected: $(date -Iseconds)"
+    echo "kernel: $(uname -r)"
+    lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" || true
+    free -h 2>/dev/null | head -2
+} > "$TARGET/manifest.txt"
+echo "[collect] results copied to $TARGET"

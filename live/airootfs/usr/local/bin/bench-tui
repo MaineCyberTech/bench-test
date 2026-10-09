@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Launch the bench-test TUI (htop-style console dashboard).
+set -u
+exec /usr/bin/python /opt/bench-test/bench/tui.py "$@"
