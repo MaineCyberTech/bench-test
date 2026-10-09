@@ -22,8 +22,9 @@ sudo dd if=live/out/bench-live-*.iso of=/dev/sdX bs=4M status=progress conv=fsyn
 `Build-LiveUSB.sh --write` also creates a `BENCHDATA` exFAT/FAT partition in the
 remaining space for results.
 
-Requirements: 16 GB+ USB, network during build, ~10 GB disk for the work dir.
-ISO size is roughly 2.5–4 GB depending on variant.
+Requirements: 16 GB+ USB (the nvidia/amd images are ~7 GB, the base system alone
+~2.5 GB), network during build, ~25 GiB free disk for the work dir (the build
+refuses tmpfs paths - /tmp on many systems is RAM).
 
 ## On the target machine
 
@@ -73,7 +74,7 @@ the collection is local; upload/sync the `BENCHDATA` contents later.
 | Variant | GPU support | Compute | Notes |
 |---|---|---|---|
 | `nvidia` | Turing → RTX 50 (`nvidia-open` 610) | PyTorch CUDA | default for modern NVIDIA |
-| `nvidia-legacy` | Maxwell/Pascal/Volta (+ Turing..Ada) via 580 branch | PyTorch CUDA | uses the omarchy repo; DKMS module is built on first boot (bench-live-run waits for it) |
+| `nvidia-legacy` | Maxwell/Pascal/Volta (+ Turing..Ada) via 580 branch | PyTorch CUDA | uses the omarchy repo; the DKMS module is compiled into the ISO at build time (a boot service rebuilds it if needed) |
 | `amd` | GCN+ for graphics (Mesa/RADV) | PyTorch ROCm | ROCm compute only on supported cards (RDNA+); older cards still run graphics/telemetry and skip compute |
 
 The GPU phases call `nvidia-smi` or `rocm-smi`/amdgpu sysfs through

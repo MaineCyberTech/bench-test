@@ -1,8 +1,11 @@
 # results output (generated)
 results/
 *.log
-# ...except logs inside example run reviews (evidence is part of the review)
+# ....except logs inside example run reviews (evidence is part of the review)
 !examples/**/*.log
+
+# live USB build output (multi-GB ISOs)
+live/out/
 
 # python
 __pycache__/
