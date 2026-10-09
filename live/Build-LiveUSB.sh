@@ -66,10 +66,10 @@ fi
 
 cp -r "$LIVE/airootfs/." "$PROFILE/airootfs/"
 
-# toolkit into the image (no git/venv/results)
+# toolkit into the image (no git/venv/results/ISOs)
 mkdir -p "$PROFILE/airootfs/opt/bench-test"
 rsync -a \
-    --exclude '.git' --exclude '.venv' --exclude 'results' --exclude 'live/out' \
+    --exclude '.git' --exclude '.venv' --exclude 'results' --exclude 'live/out*' \
     "$REPO/" "$PROFILE/airootfs/opt/bench-test/"
 
 # FurMark 2 linux64 into tools/
