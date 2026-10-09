@@ -42,10 +42,19 @@ fi
 pacman -S --needed --noconfirm archiso dosfstools >/dev/null || true
 command -v mkarchiso >/dev/null 2>&1 || { echo "mkarchiso missing"; exit 1; }
 
-WORK="$(mktemp -d /tmp/bench-live.XXXXXX)"
+WORK_BASE="${BENCH_WORK_DIR:-/var/tmp}"
+mkdir -p "$WORK_BASE"
+FREE_GB="$(df -BG --output=avail "$WORK_BASE" | tail -1 | tr -dc '0-9')"
+if [ -z "$FREE_GB" ] || [ "$FREE_GB" -lt 25 ]; then
+    echo "error: need >= 25 GiB free at $WORK_BASE (found ${FREE_GB:-0} GiB)" >&2
+    echo "       (do not build in /tmp - it is often tmpfs)" >&2
+    exit 1
+fi
+WORK="$(mktemp -d "$WORK_BASE/bench-live.XXXXXX")"
 PROFILE="$WORK/profile"
 echo "[build] gpu=$GPU profile=$PROFILE"
 cp -r /usr/share/archiso/configs/releng/. "$PROFILE/"
+sed -i 's/^iso_name=.*/iso_name="bench-live"/; s/^iso_label=.*/iso_label="BENCH_LIVE"/; s/^iso_publisher=.*/iso_publisher="bench-test"/; s/^iso_application=.*/iso_application="bench-test live environment"/' "$PROFILE/profiledef.sh"
 
 cat "$LIVE/packages.x86_64" >> "$PROFILE/packages.x86_64"
 cat "$LIVE/packages-$GPU.x86_64" >> "$PROFILE/packages.x86_64"
