@@ -134,7 +134,22 @@ fi
 if [ "$DO_DISK" = 1 ]; then
     FSTYPE="$(df -T "$DISK_PATH" 2>/dev/null | awk 'NR==2 {print $2}')"
     if [ "$FSTYPE" = "tmpfs" ]; then
-        echo "    [warn] disk path $DISK_PATH is tmpfs (RAM) -- pass --disk-path for a real volume"
+        # Live systems keep everything in RAM; a real-volume target keeps disk
+        # tests (and the 10 GiB steady write) from filling memory. Prefer the
+        # BENCHDATA partition of the live USB when one is present.
+        BDEV="$(lsblk -lno NAME,LABEL 2>/dev/null | awk -v l="${BENCHDATA_LABEL:-BENCHDATA}" '$2==l {print $1; exit}')"
+        if [ -n "$BDEV" ]; then
+            mkdir -p /mnt/benchdata
+            mountpoint -q /mnt/benchdata || mount "/dev/$BDEV" /mnt/benchdata 2>/dev/null || true
+            if mountpoint -q /mnt/benchdata; then
+                DISK_PATH=/mnt/benchdata
+                echo "    [info] disk path -> BENCHDATA (/dev/$BDEV) - not RAM-backed"
+            else
+                echo "    [warn] disk path $DISK_PATH is tmpfs and BENCHDATA could not be mounted"
+            fi
+        else
+            echo "    [warn] disk path $DISK_PATH is tmpfs (RAM) -- pass --disk-path for a real volume"
+        fi
     fi
     DISK_ARGS=(--path "$DISK_PATH" --size-mb "$DISK_SIZE_MB" --seconds "$DISK_SECONDS" --force)
     run_phase disk disk_bench.py info "${DISK_ARGS[@]}"
