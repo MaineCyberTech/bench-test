@@ -702,6 +702,7 @@ class BenchTUI:
         curses.curs_set(0)
         self.scr.timeout(250)
         deadline = time.time() + self.exit_after if self.exit_after else None
+        frame = 0
         while True:
             self._drain()
             self._read_telemetry()
@@ -711,6 +712,11 @@ class BenchTUI:
                 self.gpu = gpu_util.sample() or {}
             except Exception:
                 self.gpu = {}
+            frame += 1
+            if frame % 40 == 0:
+                # self-heal: something wrote outside curses (kernel/VT) and the
+                # screen model desynced; force a full repaint occasionally
+                self.scr.clearok(True)
             self.draw()
             if deadline and time.time() > deadline:
                 return

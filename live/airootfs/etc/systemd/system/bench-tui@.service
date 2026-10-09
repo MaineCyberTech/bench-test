@@ -5,7 +5,7 @@ Conflicts=getty@%i.service
 
 [Service]
 Type=simple
-ExecStartPre=/usr/bin/dmesg -n 1
+ExecStartPre=/bin/sh -c 'dmesg -n 1; sleep 2; for t in /dev/tty1 /dev/ttyS0; do clear > $t 2>/dev/null; done; true'
 ExecStart=/usr/local/bin/bench-tui
 Environment=TERM=linux
 StandardInput=tty
