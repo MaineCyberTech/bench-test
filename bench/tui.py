@@ -53,6 +53,7 @@ class BenchTUI:
     def __init__(self, scr, opts):
         self.scr = scr
         self.results_dir = opts["results_dir"]
+        self.collected_ok = False
         self.demo = opts["demo"]
         self.exit_after = opts["exit_after"]
         self.preset = 1
@@ -164,6 +165,7 @@ class BenchTUI:
                     lines = [ln for ln in out.splitlines() if ln.strip()]
                     last = (lines[-1] if lines else "no output").replace("[collect] ", "")
                     if r.returncode == 0:
+                        self.collected_ok = True
                         self._set("saved to USB: %s" % last[:64], 1)
                     else:
                         self._set("USB save FAILED - %s" % last[:52], 3)
@@ -672,6 +674,20 @@ class BenchTUI:
             if self.running:
                 self._set("stop the run first (x)", 3)
                 return True
+            # never exit with uncollected results: if the auto-collect has not
+            # succeeded yet, do a final synchronous attempt before quitting
+            if os.path.exists(RESULT_COLLECTOR) and not self.collected_ok:
+                self._set("saving results to USB before exit...", 2)
+                try:
+                    r = subprocess.run([RESULT_COLLECTOR, self.results_dir],
+                                       timeout=60, capture_output=True, text=True)
+                    self.collected_ok = (r.returncode == 0)
+                    lines = [ln for ln in ((r.stdout or "") + (r.stderr or "")).splitlines() if ln.strip()]
+                    if lines:
+                        self._set(lines[-1].replace("[collect] ", "")[:72],
+                                  1 if self.collected_ok else 3)
+                except Exception:
+                    pass
             return False
         if ch == ord("s"):
             self.start()
