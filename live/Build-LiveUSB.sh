@@ -127,39 +127,59 @@ echo "[build] ISO ready: $ISO  ($(du -h "$ISO" | cut -f1))"
 
 if [ -n "$WRITE_DEV" ]; then
     echo "[write] DESTRUCTIVE: writing $ISO to $WRITE_DEV"
+    DEVNAME="$(basename "$WRITE_DEV")"
+    RULE=/run/udev/rules.d/99-bench-flash.rules
+    cleanup_rule() {
+        rm -f "$RULE"
+        udevadm control --reload 2>/dev/null || true
+        udevadm trigger --subsystem-match=block --sysname-match="${DEVNAME}*" 2>/dev/null || true
+    }
+    # keep automounters (udisks) from grabbing partitions mid-flash: an open
+    # partition stops the kernel from re-reading the table
+    mkdir -p /run/udev/rules.d
+    echo "SUBSYSTEM==\"block\", KERNEL==\"${DEVNAME}*\", ENV{UDISKS_IGNORE}=\"1\"" > "$RULE"
+    udevadm control --reload 2>/dev/null || true
+    udevadm trigger --subsystem-match=block --sysname-match="${DEVNAME}*" 2>/dev/null || true
+    trap cleanup_rule EXIT
+
+    for i in 1 2 3 4 5; do
+        for part in "$WRITE_DEV"*; do
+            [ -b "$part" ] && umount "$part" 2>/dev/null || true
+        done
+        mount | grep -q "$WRITE_DEV" || break
+        sleep 1
+    done
+
     dd if="$ISO" of="$WRITE_DEV" bs=4M status=progress conv=fsync
     sync
     udevadm settle || true
-    # an automounter often mounts the new ISO partition; it must not be open
-    # for the kernel to re-read the partition table
-    for part in "$WRITE_DEV"*; do
-        [ -b "$part" ] && umount "$part" 2>/dev/null || true
-    done
-    partprobe "$WRITE_DEV" 2>/dev/null || true
-    partx -u "$WRITE_DEV" 2>/dev/null || true
-    sleep 2
+
     ISO_BYTES=$(stat -c %s "$ISO")
     START_MIB=$(( ISO_BYTES / 1048576 + 16 ))
     echo "[write] creating BENCHDATA partition at ${START_MIB}MiB"
+    blockdev --rereadpt "$WRITE_DEV" 2>/dev/null || true
+    sleep 1
     parted -s "$WRITE_DEV" mkpart primary fat32 "${START_MIB}MiB" 100% || true
-    partprobe "$WRITE_DEV" 2>/dev/null || true
-    partx -a "$WRITE_DEV" 2>/dev/null || true   # adds new partitions even if others are mounted
+    sleep 1
+    blockdev --rereadpt "$WRITE_DEV" 2>/dev/null || true
+    partx -a "$WRITE_DEV" 2>/dev/null || true
     sleep 2
-    # pick the partition that starts at/after the end of the ISO image
-    PART=""
+
+    # the new partition starts at/after the end of the ISO image
     MIN_SECTOR=$(( ISO_BYTES / 512 ))
     PART=$(lsblk -lbno NAME,START "$WRITE_DEV" | tail -n +2 | awk -v m="$MIN_SECTOR" '$2 >= m {print $1; exit}')
     if [ -z "$PART" ]; then
-        echo "[write] BENCHDATA partition not visible to the kernel; format it manually:"
+        echo "[write] BENCHDATA partition not visible to the kernel; finish manually:"
         echo "        sudo partx -a $WRITE_DEV && sudo mkfs.vfat -n BENCHDATA ${WRITE_DEV}3"
     else
         SIZE_MB=$(( $(lsblk -bdno SIZE "/dev/$PART") / 1000000 ))
         if [ "$SIZE_MB" -lt 1000 ]; then
-            echo "[write] refusing to format /dev/$PART (${SIZE_MB}MB - looks like a boot partition)"
+            echo "[write] refusing to format /dev/$PART (${SIZE_MB}MB - boot partition?)"
         else
             mkfs.vfat -n BENCHDATA "/dev/$PART"
             echo "[write] BENCHDATA on /dev/$PART (${SIZE_MB}MB)"
         fi
     fi
-    echo "[write] done - boot the stick and run: bench-tui (auto-starts)"
+    cleanup_rule
+    echo "[write] done - boot the stick; the dashboard auto-starts"
 fi
