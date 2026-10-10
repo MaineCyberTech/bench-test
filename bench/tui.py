@@ -153,8 +153,20 @@ class BenchTUI:
 
             def work():
                 try:
-                    subprocess.run([RESULT_COLLECTOR, self.results_dir], timeout=900)
-                    self._set("collected to BENCHDATA", 1)
+                    r = subprocess.run([RESULT_COLLECTOR, self.results_dir], timeout=900,
+                                       capture_output=True, text=True)
+                    out = ((r.stdout or "") + (r.stderr or "")).strip()
+                    try:
+                        with open(os.path.join(self.results_dir, "collect.log"), "a") as fh:
+                            fh.write(out + "\n")
+                    except Exception:
+                        pass
+                    lines = [ln for ln in out.splitlines() if ln.strip()]
+                    last = (lines[-1] if lines else "no output").replace("[collect] ", "")
+                    if r.returncode == 0:
+                        self._set("saved to USB: %s" % last[:64], 1)
+                    else:
+                        self._set("USB save FAILED - %s" % last[:52], 3)
                 except Exception as exc:
                     self._set("collect failed: %s" % exc, 3)
             threading.Thread(target=work, daemon=True).start()

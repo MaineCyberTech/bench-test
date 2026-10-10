@@ -1,36 +1,109 @@
 #!/usr/bin/env bash
-# Copy bench-test results to the BENCHDATA partition of the USB stick
-# (falls back to /root/bench-results when no BENCHDATA partition is present).
+# Copy bench-test results to the BENCHDATA partition of the USB stick.
+# Saves to /root/bench-results (RAM!) only when no writable vfat partition can
+# be found - and says so loudly. Exit 0 = saved to the stick, 4 = RAM fallback.
+#
+# Usage: bench-collect [SRC_DIR]
+#
+# Detection is deliberately udev-independent: partitions are re-read from the
+# actual table (partx) and filesystems are probed directly (blkid -p), so a
+# missing label or an empty udev database cannot hide the partition.
 set -u
 
 SRC="${1:-/opt/bench-test/results}"
 LBL="${BENCHDATA_LABEL:-BENCHDATA}"
-DEST=""
 
-DEV="$(lsblk -lno NAME,LABEL 2>/dev/null | awk -v l="$LBL" '$2==l {print $1; exit}')"
-if [ -z "$DEV" ]; then
-    DEV="$(blkid -o device -t "LABEL=$LBL" 2>/dev/null | head -1 | sed 's|^/dev/||')"
+# --- make sure the kernel knows the partitions --------------------------
+for d in /dev/sd? /dev/nvme?n? /dev/mmcblk?; do
+    [ -b "$d" ] || continue
+    partx -a "$d" >/dev/null 2>&1 || true
+done
+udevadm settle --timeout=10 2>/dev/null || true
+
+# --- gather candidates: label -> direct probe -> big vfat -> any vfat ---
+CANDS=""
+add_cand() { [ -n "${1:-}" ] && CANDS="$CANDS $1"; }
+# heuristics (any-vfat fallbacks) only ever consider removable disks, so an
+# internal ESP can never be mistaken for the benchmark stick
+removable() {
+    disk="$(lsblk -no PKNAME "$1" 2>/dev/null | head -1)"
+    [ -n "$disk" ] && [ "$(cat "/sys/block/$disk/removable" 2>/dev/null)" = "1" ]
+}
+
+[ -e "/dev/disk/by-label/$LBL" ] && add_cand "$(readlink -f "/dev/disk/by-label/$LBL")"
+for p in /dev/sd*[0-9] /dev/nvme*n*p*[0-9] /dev/mmcblk*p*[0-9]; do
+    [ -b "$p" ] || continue
+    lb="$(blkid -p -o value -s LABEL "$p" 2>/dev/null || true)"
+    [ "$lb" = "$LBL" ] && add_cand "$p"
+done
+for p in /dev/sd*[0-9] /dev/nvme*n*p*[0-9] /dev/mmcblk*p*[0-9]; do
+    [ -b "$p" ] || continue
+    sz="$(lsblk -bdno SIZE "$p" 2>/dev/null || echo 0)"
+    ty="$(blkid -p -o value -s TYPE "$p" 2>/dev/null || true)"
+    [ "$ty" = "vfat" ] && [ "${sz:-0}" -gt 1000000000 ] && removable "$p" && add_cand "$p"
+done
+for p in /dev/sd*[0-9] /dev/nvme*n*p*[0-9] /dev/mmcblk*p*[0-9]; do
+    [ -b "$p" ] || continue
+    ty="$(blkid -p -o value -s TYPE "$p" 2>/dev/null || true)"
+    [ "$ty" = "vfat" ] && removable "$p" && add_cand "$p"
+done
+
+# --- mount the first candidate that works -------------------------------
+DEST="" FOUND_DEV=""
+modprobe vfat 2>/dev/null || true
+modprobe nls_cp437 2>/dev/null || true
+modprobe nls_iso8859-1 2>/dev/null || true
+for c in $CANDS; do
+    mnt="$(findmnt -no TARGET --source "$c" 2>/dev/null | head -1)"
+    if [ -n "$mnt" ] && [ -w "$mnt" ]; then
+        DEST="$mnt" FOUND_DEV="$c"; break
+    fi
+    if ! mountpoint -q /mnt/benchdata; then
+        mkdir -p /mnt/benchdata
+        mount -t vfat -o rw,umask=0022 "$c" /mnt/benchdata 2>/dev/null || true
+    fi
+    if mountpoint -q /mnt/benchdata; then
+        DEST=/mnt/benchdata FOUND_DEV="$c"; break
+    fi
+done
+if [ -z "$DEST" ] && mountpoint -q /mnt/benchdata; then
+    DEST=/mnt/benchdata
 fi
-if [ -z "$DEV" ]; then
-    # last resort: the big vfat partition (not the ~260MB ISO EFI slice)
-    DEV="$(lsblk -lbno NAME,FSTYPE,SIZE 2>/dev/null | awk '$2=="vfat" && $3 > 1000000000 {print $1; exit}')"
-fi
-if [ -n "$DEV" ]; then
-    mkdir -p /mnt/benchdata
-    mountpoint -q /mnt/benchdata || mount "/dev/$DEV" /mnt/benchdata 2>/dev/null || true
-    mountpoint -q /mnt/benchdata && DEST=/mnt/benchdata
-fi
+
+FALLBACK=0
 if [ -z "$DEST" ]; then
+    FALLBACK=1
     DEST=/root/bench-results
     mkdir -p "$DEST"
-    echo "[collect] no BENCHDATA partition found - saving to $DEST"
+    echo "[collect] no writable BENCHDATA partition found - saving to $DEST (RAM - copy off before reboot!)"
 fi
 
 HOST="$(hostname -s 2>/dev/null || echo unknown)"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 TARGET="$DEST/$HOST-$STAMP"
 mkdir -p "$TARGET"
+
+# diagnostics first, so even a partial copy explains itself
+{
+    echo "collector: bench-collect v3"
+    echo "timestamp: $(date -Iseconds)"
+    echo "host: $HOST   kernel: $(uname -r)"
+    echo "source: $SRC"
+    echo "chosen device: ${FOUND_DEV:-none}   dest: $DEST"
+    echo "candidates:${CANDS:- none}"
+    echo
+    echo "--- lsblk ---"; lsblk -o NAME,SIZE,FSTYPE,LABEL,UUID,MOUNTPOINT 2>&1
+    echo; echo "--- blkid -p (candidates) ---"
+    for c in $CANDS; do echo "$c: $(blkid -p "$c" 2>&1)"; done
+    echo; echo "--- /proc/partitions ---"; cat /proc/partitions
+    echo; echo "--- mount ---"; mount
+} > "$TARGET/collect-diag.txt" 2>&1
+
 cp -a "$SRC/." "$TARGET/" 2>/dev/null || true
+# keep the diagnostics also in RAM for a post-reboot autopsy
+mkdir -p /root/bench-results
+cp "$TARGET/collect-diag.txt" "/root/bench-results/collect-diag-${STAMP}.txt" 2>/dev/null || true
+
 {
     echo "host: $HOST"
     echo "collected: $(date -Iseconds)"
@@ -38,4 +111,11 @@ cp -a "$SRC/." "$TARGET/" 2>/dev/null || true
     lspci -nn 2>/dev/null | grep -iE "VGA|3D|Display" || true
     free -h 2>/dev/null | head -2
 } > "$TARGET/manifest.txt"
+
+sync
 echo "[collect] results copied to $TARGET"
+if [ "$FALLBACK" = 1 ]; then
+    echo "[collect] WARNING: destination is RAM - back it up before rebooting"
+    exit 4
+fi
+exit 0

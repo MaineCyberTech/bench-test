@@ -136,20 +136,41 @@ if [ "$DO_DISK" = 1 ]; then
     if [ "$FSTYPE" = "tmpfs" ]; then
         # Live systems keep everything in RAM; a real-volume target keeps disk
         # tests (and the 10 GiB steady write) from filling memory. Prefer the
-        # BENCHDATA partition of the live USB when one is present.
-        BDEV="$(lsblk -lno NAME,LABEL 2>/dev/null | awk -v l="${BENCHDATA_LABEL:-BENCHDATA}" '$2==l {print $1; exit}')"
+        # BENCHDATA partition of the live USB when one is present. Probe
+        # directly (partx + blkid -p) so a missing udev label cannot hide it.
+        BDEV=""
+        for d in /dev/sd? /dev/nvme?n? /dev/mmcblk?; do
+            [ -b "$d" ] && partx -a "$d" >/dev/null 2>&1 || true
+        done
+        udevadm settle --timeout=10 2>/dev/null || true
+        [ -e "/dev/disk/by-label/${BENCHDATA_LABEL:-BENCHDATA}" ] && \
+            BDEV="$(readlink -f "/dev/disk/by-label/${BENCHDATA_LABEL:-BENCHDATA}")"
         if [ -z "$BDEV" ]; then
-            BDEV="$(blkid -o device -t "LABEL=${BENCHDATA_LABEL:-BENCHDATA}" 2>/dev/null | head -1 | sed 's|^/dev/||')"
+            for p in /dev/sd*[0-9]; do
+                [ -b "$p" ] || continue
+                if [ "$(blkid -p -o value -s LABEL "$p" 2>/dev/null)" = "${BENCHDATA_LABEL:-BENCHDATA}" ]; then
+                    BDEV="$p"; break
+                fi
+            done
         fi
         if [ -z "$BDEV" ]; then
-            BDEV="$(lsblk -lbno NAME,FSTYPE,SIZE 2>/dev/null | awk '$2=="vfat" && $3 > 1000000000 {print $1; exit}')"
+            for p in /dev/sd*[0-9]; do
+                [ -b "$p" ] || continue
+                disk="$(lsblk -no PKNAME "$p" 2>/dev/null | head -1)"
+                sz="$(lsblk -bdno SIZE "$p" 2>/dev/null || echo 0)"
+                if [ "$(blkid -p -o value -s TYPE "$p" 2>/dev/null)" = "vfat" ] && [ "${sz:-0}" -gt 1000000000 ] \
+                   && [ -n "$disk" ] && [ "$(cat "/sys/block/$disk/removable" 2>/dev/null)" = "1" ]; then
+                    BDEV="$p"; break
+                fi
+            done
         fi
         if [ -n "$BDEV" ]; then
+            modprobe vfat 2>/dev/null || true
             mkdir -p /mnt/benchdata
-            mountpoint -q /mnt/benchdata || mount "/dev/$BDEV" /mnt/benchdata 2>/dev/null || true
+            mountpoint -q /mnt/benchdata || mount -t vfat -o rw,umask=0022 "$BDEV" /mnt/benchdata 2>/dev/null || true
             if mountpoint -q /mnt/benchdata; then
                 DISK_PATH=/mnt/benchdata
-                echo "    [info] disk path -> BENCHDATA (/dev/$BDEV) - not RAM-backed"
+                echo "    [info] disk path -> BENCHDATA ($BDEV) - not RAM-backed"
             else
                 echo "    [warn] disk path $DISK_PATH is tmpfs and BENCHDATA could not be mounted"
             fi

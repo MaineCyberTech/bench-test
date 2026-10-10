@@ -697,15 +697,34 @@ class Dashboard:
 
             def work():
                 try:
-                    subprocess.run(["/usr/local/bin/bench-collect", self.results_dir], timeout=600)
-                    self._set_status("results collected to the BENCHDATA partition", GOOD)
+                    r = subprocess.run(["/usr/local/bin/bench-collect", self.results_dir], timeout=600,
+                                       capture_output=True, text=True)
+                    out = ((r.stdout or "") + (r.stderr or "")).strip()
+                    try:
+                        with open(os.path.join(self.results_dir, "collect.log"), "a") as fh:
+                            fh.write(out + "\n")
+                    except Exception:
+                        pass
+                    lines = [ln for ln in out.splitlines() if ln.strip()]
+                    last = (lines[-1] if lines else "no output").replace("[collect] ", "")
+                    if r.returncode == 0:
+                        self._set_status("saved to USB: %s" % last[:70], GOOD)
+                    else:
+                        self._set_status("USB save failed - %s" % last[:60], WARN)
                 except Exception as exc:
                     self._set_status("collect failed: %s" % exc, WARN)
             threading.Thread(target=work, daemon=True).start()
 
     def collect(self):
         if os.path.exists("/usr/local/bin/bench-collect"):
-            subprocess.run(["/usr/local/bin/bench-collect", self.results_dir], timeout=600)
+            try:
+                r = subprocess.run(["/usr/local/bin/bench-collect", self.results_dir], timeout=600,
+                                   capture_output=True, text=True)
+                out = ((r.stdout or "") + (r.stderr or "")).strip()
+                self.results.insert("end", "\n" + out + "\n")
+                self.results.see("end")
+            except Exception as exc:
+                self.results.insert("end", "collect failed: %s\n" % exc)
             return
         dest = filedialog.askdirectory(title="Copy results to...")
         if not dest:
