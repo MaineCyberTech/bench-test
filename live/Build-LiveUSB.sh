@@ -133,7 +133,7 @@ if [ -n "$WRITE_DEV" ]; then
     # pick the partition that starts at/after the end of the ISO image
     PART=""
     MIN_SECTOR=$(( ISO_BYTES / 512 ))
-    PART=$(lsblk -bno NAME,START "$WRITE_DEV" | tail -n +2 | awk -v m="$MIN_SECTOR" '$2 >= m {print $1}')
+    PART=$(lsblk -lbno NAME,START "$WRITE_DEV" | tail -n +2 | awk -v m="$MIN_SECTOR" '$2 >= m {print $1; exit}')
     if [ -z "$PART" ]; then
         echo "[write] BENCHDATA partition not visible to the kernel; format it manually:"
         echo "        sudo partx -a $WRITE_DEV && sudo mkfs.vfat -n BENCHDATA ${WRITE_DEV}3"
