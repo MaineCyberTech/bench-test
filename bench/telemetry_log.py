@@ -30,16 +30,29 @@ HEADER = ("elapsed_s,time,gpu_util_pct,mem_util_pct,temp_c,fan_pct,power_w,"
 
 
 def gpu_sample():
+    """NVIDIA via nvidia-smi; otherwise fall back to gpu_util (AMD/rocm-sysfs)."""
     try:
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=" + GPU_FIELDS, "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=5).stdout.strip()
-        if not out:
-            return None
-        vals = [v.strip() for v in out.splitlines()[0].split(",")]
-        return vals if len(vals) == 11 else None
+        if out:
+            vals = [v.strip() for v in out.splitlines()[0].split(",")]
+            if len(vals) == 11:
+                return vals
     except Exception:
-        return None
+        pass
+    try:
+        import gpu_util
+        s = gpu_util.sample() or {}
+        if s.get("temp_c") is not None or s.get("fan_pct") is not None or s.get("power_w") is not None:
+            def v(x):
+                return "" if x is None else x
+            return [v(s.get("util")), v(s.get("mem_util")), v(s.get("temp_c")), v(s.get("fan_pct")),
+                    v(s.get("power_w")), v(s.get("sm_mhz")), v(s.get("mem_mhz")),
+                    v(s.get("vram_used_mib")), s.get("pstate") or "", "", ""]
+    except Exception:
+        pass
+    return None
 
 
 def sensors_temps():
@@ -163,27 +176,33 @@ def main():
         fh.flush()
         while not stop["now"]:
             g = gpu_sample()
+            cur_cpu = cpu_snapshot()
+            cpu_pct = ""
+            if prev_cpu and cur_cpu:
+                di = cur_cpu[0] - prev_cpu[0]
+                dt = cur_cpu[1] - prev_cpu[1]
+                cpu_pct = round(100.0 * (1.0 - di / dt), 1) if dt > 0 else ""
+            prev_cpu = cur_cpu
+            pkg, maxcore, maxfan = sensors_temps()
+            ram, swap = meminfo()
+            try:
+                load1 = round(os.getloadavg()[0], 2)
+            except Exception:
+                load1 = ""
+            # GPU fields go blank when no driver tool answers; the rest of the
+            # row is still recorded so dashboards show system load regardless.
             if g:
-                cur_cpu = cpu_snapshot()
-                cpu_pct = ""
-                if prev_cpu and cur_cpu:
-                    di = cur_cpu[0] - prev_cpu[0]
-                    dt = cur_cpu[1] - prev_cpu[1]
-                    cpu_pct = round(100.0 * (1.0 - di / dt), 1) if dt > 0 else ""
-                prev_cpu = cur_cpu
-                pkg, maxcore, maxfan = sensors_temps()
-                ram, swap = meminfo()
-                try:
-                    load1 = round(os.getloadavg()[0], 2)
-                except Exception:
-                    load1 = ""
+                gpu = g[:9]
                 enc = g[9] if g[9] not in ("[N/A]", "N/A") else ""
                 dec = g[10] if g[10] not in ("[N/A]", "N/A") else ""
-                row = ([round(time.time() - t0, 1), datetime.now().strftime("%H:%M:%S")] + g[:9]
-                       + [pkg, ram, load1, maxcore, swap, cpu_pct, nvme_temp(), enc, dec,
-                          maxfan, gpu_fan_rpm()])
-                fh.write(",".join(str(x) for x in row) + "\n")
-                fh.flush()
+            else:
+                gpu = [""] * 9
+                enc = dec = ""
+            row = ([round(time.time() - t0, 1), datetime.now().strftime("%H:%M:%S")] + gpu
+                   + [pkg, ram, load1, maxcore, swap, cpu_pct, nvme_temp(), enc, dec,
+                      maxfan, gpu_fan_rpm()])
+            fh.write(",".join(str(x) for x in row) + "\n")
+            fh.flush()
             if a.duration and time.time() - t0 >= a.duration:
                 break
             time.sleep(max(0.2, a.interval))
