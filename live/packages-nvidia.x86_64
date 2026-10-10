@@ -1,5 +1,4 @@
 # NVIDIA variant: Turing+ (RTX 20/30/40/50) with the open kernel modules.
-python-pytorch-cuda
 nvidia-open
 nvidia-utils
 nvidia-settings

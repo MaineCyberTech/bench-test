@@ -1,6 +1,5 @@
 # NVIDIA legacy variant: Maxwell/Pascal/Volta (+ Turing..Ada) using the 580 branch.
 # Requires the omarchy repo (added to pacman.conf by Build-LiveUSB.sh).
-python-pytorch-cuda
 nvidia-580xx-dkms
 nvidia-580xx-utils
 opencl-nvidia-580xx

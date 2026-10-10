@@ -60,6 +60,20 @@ sed -i 's/^iso_name=.*/iso_name="bench-live"/; s/^iso_label=.*/iso_label="BENCH_
 cat "$LIVE/packages.x86_64" >> "$PROFILE/packages.x86_64"
 cat "$LIVE/packages-$GPU.x86_64" >> "$PROFILE/packages.x86_64"
 
+# NVIDIA variants: bake the toolkit venv's Maxwell/Pascal-safe PyTorch (cu126).
+# Arch's python-pytorch-cuda is built for CUDA 13, which has no kernels for
+# pre-Turing GPUs (GTX 9xx/10xx) - GPU phases would error instantly there.
+if [ "$GPU" != "amd" ] && "$REPO/.venv/bin/python" -c 'import torch' >/dev/null 2>&1; then
+    echo "[build] baking venv PyTorch: $("$REPO/.venv/bin/python" -c 'import torch; print(torch.__version__)')"
+    SP="$PROFILE/airootfs/usr/lib/python3.14/site-packages"
+    mkdir -p "$SP"
+    rsync -a --exclude '__pycache__' --exclude 'pip*' --exclude 'setuptools*' \
+        "$REPO/.venv/lib/python3.14/site-packages/" "$SP/"
+elif [ "$GPU" != "amd" ]; then
+    echo "[build] WARNING: no toolkit venv with torch - falling back to python-pytorch-cuda (NOT Maxwell-compatible)"
+    echo "python-pytorch-cuda" >> "$PROFILE/packages.x86_64"
+fi
+
 if [ "$GPU" = "nvidia-legacy" ]; then
     printf '\n[omarchy]\nServer = https://pkgs.omarchy.org/stable/$arch\n' >> "$PROFILE/pacman.conf"
 fi

@@ -8,6 +8,13 @@ LBL="${BENCHDATA_LABEL:-BENCHDATA}"
 DEST=""
 
 DEV="$(lsblk -lno NAME,LABEL 2>/dev/null | awk -v l="$LBL" '$2==l {print $1; exit}')"
+if [ -z "$DEV" ]; then
+    DEV="$(blkid -o device -t "LABEL=$LBL" 2>/dev/null | head -1 | sed 's|^/dev/||')"
+fi
+if [ -z "$DEV" ]; then
+    # last resort: the big vfat partition (not the ~260MB ISO EFI slice)
+    DEV="$(lsblk -lbno NAME,FSTYPE,SIZE 2>/dev/null | awk '$2=="vfat" && $3 > 1000000000 {print $1; exit}')"
+fi
 if [ -n "$DEV" ]; then
     mkdir -p /mnt/benchdata
     mountpoint -q /mnt/benchdata || mount "/dev/$DEV" /mnt/benchdata 2>/dev/null || true

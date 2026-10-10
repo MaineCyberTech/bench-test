@@ -138,6 +138,12 @@ if [ "$DO_DISK" = 1 ]; then
         # tests (and the 10 GiB steady write) from filling memory. Prefer the
         # BENCHDATA partition of the live USB when one is present.
         BDEV="$(lsblk -lno NAME,LABEL 2>/dev/null | awk -v l="${BENCHDATA_LABEL:-BENCHDATA}" '$2==l {print $1; exit}')"
+        if [ -z "$BDEV" ]; then
+            BDEV="$(blkid -o device -t "LABEL=${BENCHDATA_LABEL:-BENCHDATA}" 2>/dev/null | head -1 | sed 's|^/dev/||')"
+        fi
+        if [ -z "$BDEV" ]; then
+            BDEV="$(lsblk -lbno NAME,FSTYPE,SIZE 2>/dev/null | awk '$2=="vfat" && $3 > 1000000000 {print $1; exit}')"
+        fi
         if [ -n "$BDEV" ]; then
             mkdir -p /mnt/benchdata
             mountpoint -q /mnt/benchdata || mount "/dev/$BDEV" /mnt/benchdata 2>/dev/null || true
