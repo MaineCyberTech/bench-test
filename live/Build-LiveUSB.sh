@@ -66,6 +66,21 @@ fi
 
 cp -r "$LIVE/airootfs/." "$PROFILE/airootfs/"
 
+# NVIDIA console: fbdev gives the VT a framebuffer once nvidia-drm loads.
+# Without it the text console goes dark on real hardware (a live system has no
+# compositor to take over the display) - the dashboard would run invisibly.
+mkdir -p "$PROFILE/airootfs/etc/modprobe.d"
+printf 'options nvidia_drm modeset=1 fbdev=1\n' > "$PROFILE/airootfs/etc/modprobe.d/zz-bench-nvidia.conf"
+for f in "$PROFILE"/efiboot/loader/entries/0[12]-archiso-*.conf; do
+    [ -f "$f" ] && sed -i -E 's/^(options .*)$/\1 nvidia_drm.modeset=1 nvidia_drm.fbdev=1/' "$f"
+done
+[ -f "$PROFILE/syslinux/archiso_sys-linux.cfg" ] && \
+    sed -i -E 's/^(APPEND .*archisobasedir.*)$/\1 nvidia_drm.modeset=1 nvidia_drm.fbdev=1/' \
+        "$PROFILE/syslinux/archiso_sys-linux.cfg"
+for f in "$PROFILE/grub/grub.cfg" "$PROFILE/grub/loopback.cfg"; do
+    [ -f "$f" ] && sed -i -E 's/^(linux .*)$/\1 nvidia_drm.modeset=1 nvidia_drm.fbdev=1/' "$f"
+done
+
 # toolkit into the image (no git/venv/results/ISOs)
 mkdir -p "$PROFILE/airootfs/opt/bench-test"
 rsync -a \
