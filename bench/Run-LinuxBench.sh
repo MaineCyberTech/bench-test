@@ -154,13 +154,17 @@ if [ "$DO_DISK" = 1 ]; then
             done
         fi
         if [ -z "$BDEV" ]; then
+            ROOTDEV="$(findmnt -no SOURCE /run/archiso/bootmnt 2>/dev/null || true)"
             for p in /dev/sd*[0-9]; do
                 [ -b "$p" ] || continue
-                disk="$(lsblk -no PKNAME "$p" 2>/dev/null | head -1)"
                 sz="$(lsblk -bdno SIZE "$p" 2>/dev/null || echo 0)"
-                if [ "$(blkid -p -o value -s TYPE "$p" 2>/dev/null)" = "vfat" ] && [ "${sz:-0}" -gt 1000000000 ] \
-                   && [ -n "$disk" ] && [ "$(cat "/sys/block/$disk/removable" 2>/dev/null)" = "1" ]; then
-                    BDEV="$p"; break
+                [ "$(blkid -p -o value -s TYPE "$p" 2>/dev/null)" = "vfat" ] || continue
+                [ "${sz:-0}" -gt 1000000000 ] || continue
+                if udevadm info -q path -n "$p" 2>/dev/null | grep -q usb; then BDEV="$p"; break; fi
+                PD="$(lsblk -no PKNAME "$p" 2>/dev/null | head -1)"
+                if [ -n "$ROOTDEV" ] && [ -n "$PD" ]; then
+                    RD="$(lsblk -no PKNAME "$ROOTDEV" 2>/dev/null | head -1)"; [ -z "$RD" ] && RD="${ROOTDEV#/dev/}"
+                    [ "$PD" = "$RD" ] && { BDEV="$p"; break; }
                 fi
             done
         fi

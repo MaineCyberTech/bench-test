@@ -23,11 +23,22 @@ udevadm settle --timeout=10 2>/dev/null || true
 # --- gather candidates: label -> direct probe -> big vfat -> any vfat ---
 CANDS=""
 add_cand() { [ -n "${1:-}" ] && CANDS="$CANDS $1"; }
-# heuristics (any-vfat fallbacks) only ever consider removable disks, so an
-# internal ESP can never be mistaken for the benchmark stick
-removable() {
-    disk="$(lsblk -no PKNAME "$1" 2>/dev/null | head -1)"
-    [ -n "$disk" ] && [ "$(cat "/sys/block/$disk/removable" 2>/dev/null)" = "1" ]
+# heuristic fallbacks only ever consider the boot stick: a partition is picked
+# if it sits on a USB transport, on a device flagged removable, or on the
+# physical disk that backs the running live ISO. An internal ESP can therefore
+# never be mistaken for the benchmark stick.
+is_stick_part() {
+    local p="$1" path root_dev root_disk part_disk
+    path="$(udevadm info -q path -n "$p" 2>/dev/null || true)"
+    case "$path" in *usb*) return 0 ;; esac
+    part_disk="$(lsblk -no PKNAME "$p" 2>/dev/null | head -1)"
+    [ -n "$part_disk" ] && [ "$(cat "/sys/block/$part_disk/removable" 2>/dev/null)" = "1" ] && return 0
+    root_dev="$(findmnt -no SOURCE /run/archiso/bootmnt 2>/dev/null || true)"
+    [ -n "$root_dev" ] || return 1
+    root_disk="$(lsblk -no PKNAME "$root_dev" 2>/dev/null | head -1)"
+    [ -z "$root_disk" ] && root_disk="${root_dev#/dev/}"
+    [ -n "$part_disk" ] && [ "$part_disk" = "$root_disk" ] && return 0
+    return 1
 }
 
 [ -e "/dev/disk/by-label/$LBL" ] && add_cand "$(readlink -f "/dev/disk/by-label/$LBL")"
@@ -40,12 +51,12 @@ for p in /dev/sd*[0-9] /dev/nvme*n*p*[0-9] /dev/mmcblk*p*[0-9]; do
     [ -b "$p" ] || continue
     sz="$(lsblk -bdno SIZE "$p" 2>/dev/null || echo 0)"
     ty="$(blkid -p -o value -s TYPE "$p" 2>/dev/null || true)"
-    [ "$ty" = "vfat" ] && [ "${sz:-0}" -gt 1000000000 ] && removable "$p" && add_cand "$p"
+    [ "$ty" = "vfat" ] && [ "${sz:-0}" -gt 1000000000 ] && is_stick_part "$p" && add_cand "$p"
 done
 for p in /dev/sd*[0-9] /dev/nvme*n*p*[0-9] /dev/mmcblk*p*[0-9]; do
     [ -b "$p" ] || continue
     ty="$(blkid -p -o value -s TYPE "$p" 2>/dev/null || true)"
-    [ "$ty" = "vfat" ] && removable "$p" && add_cand "$p"
+    [ "$ty" = "vfat" ] && is_stick_part "$p" && add_cand "$p"
 done
 
 # --- mount the first candidate that works -------------------------------
