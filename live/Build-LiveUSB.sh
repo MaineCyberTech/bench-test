@@ -65,10 +65,14 @@ cat "$LIVE/packages-$GPU.x86_64" >> "$PROFILE/packages.x86_64"
 # pre-Turing GPUs (GTX 9xx/10xx) - GPU phases would error instantly there.
 if [ "$GPU" != "amd" ] && "$REPO/.venv/bin/python" -c 'import torch' >/dev/null 2>&1; then
     echo "[build] baking venv PyTorch: $("$REPO/.venv/bin/python" -c 'import torch; print(torch.__version__)')"
-    SP="$PROFILE/airootfs/usr/lib/python3.14/site-packages"
-    mkdir -p "$SP"
+    # keep packages OUTSIDE pacman-owned site-packages (overlay is copied before
+    # pacstrap, and shadowed files abort the install). A .pth file adds the dir.
+    PP="$PROFILE/airootfs/opt/bench-test/py-packages"
+    mkdir -p "$PP" "$PROFILE/airootfs/usr/lib/python3.14/site-packages"
     rsync -a --exclude '__pycache__' --exclude 'pip*' --exclude 'setuptools*' \
-        "$REPO/.venv/lib/python3.14/site-packages/" "$SP/"
+        "$REPO/.venv/lib/python3.14/site-packages/" "$PP/"
+    printf '%s\n' "/opt/bench-test/py-packages" \
+        > "$PROFILE/airootfs/usr/lib/python3.14/site-packages/zz-bench-torch.pth"
 elif [ "$GPU" != "amd" ]; then
     echo "[build] WARNING: no toolkit venv with torch - falling back to python-pytorch-cuda (NOT Maxwell-compatible)"
     echo "python-pytorch-cuda" >> "$PROFILE/packages.x86_64"
