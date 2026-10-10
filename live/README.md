@@ -89,3 +89,19 @@ live/packages.x86_64          common packages (appended to the archiso releng li
 live/packages-{nvidia,nvidia-legacy,amd}.x86_64
 live/airootfs/                overlay: bench-tui, bench-gui, bench-live-run, bench-collect, motd, dkms unit
 ```
+
+## Results & collection
+
+Results live in RAM while the run happens and are collected to the stick's
+**BENCHDATA** partition automatically when the run finishes, on `c`, and as a
+final attempt when you quit the dashboard. The collector does not trust udev
+labels: it re-reads the partition table (`partx`) and probes filesystems
+directly (`blkid -p`), falling back through *by-label -> probed label -> the
+big vFAT partition on the boot stick -> the ISO's small EFI partition*. Every
+save includes a `collect-diag.txt` with the full device picture, and the
+dashboard reports the true outcome ("saved to USB: ..." or a red
+"USB save FAILED - ...").
+
+If no writable stick partition can be found, results are kept in
+`/root/bench-results` (**RAM**) - the collector says so loudly and exits with
+code 4. Copy them off before rebooting.

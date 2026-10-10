@@ -85,6 +85,7 @@ class Dashboard:
         self.exited = False
         self._curve_on = False
         self.run_t0 = None
+        self.collected_ok = False
 
         self._fonts()
         self._styles()
@@ -101,6 +102,7 @@ class Dashboard:
             self.root.after(3000, self.root.destroy)
         self.root.after(200, self._poll)
         self.root.after(1000, self._tick)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ------------------------------------------------------------- fonts ----
     def _fonts(self):
@@ -708,12 +710,24 @@ class Dashboard:
                     lines = [ln for ln in out.splitlines() if ln.strip()]
                     last = (lines[-1] if lines else "no output").replace("[collect] ", "")
                     if r.returncode == 0:
+                        self.collected_ok = True
                         self._set_status("saved to USB: %s" % last[:70], GOOD)
                     else:
                         self._set_status("USB save failed - %s" % last[:60], WARN)
                 except Exception as exc:
                     self._set_status("collect failed: %s" % exc, WARN)
             threading.Thread(target=work, daemon=True).start()
+
+    def _on_close(self):
+        # never close with uncollected results: final synchronous attempt
+        if os.path.exists("/usr/local/bin/bench-collect") and not self.collected_ok:
+            try:
+                r = subprocess.run(["/usr/local/bin/bench-collect", self.results_dir],
+                                   timeout=60, capture_output=True, text=True)
+                self.collected_ok = (r.returncode == 0)
+            except Exception:
+                pass
+        self.root.destroy()
 
     def collect(self):
         if os.path.exists("/usr/local/bin/bench-collect"):
