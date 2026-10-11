@@ -23,9 +23,16 @@ from tkinter import filedialog, font as tkfont, ttk
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BENCH = os.path.join(REPO, "bench")
-RUNNER = os.path.join(BENCH, "Run-LinuxBench.sh")
 FAN_CURVE = os.path.join(BENCH, "fan_curve.py")
 sys.path.insert(0, BENCH)
+
+# --- runner: Linux shell script, or the Windows battery via run_win.py ---
+if os.name == "nt":
+    RUNNER = sys.executable
+    RUNNER_PREFIX = [os.path.join(BENCH, "run_win.py")]
+else:
+    RUNNER = os.path.join(BENCH, "Run-LinuxBench.sh")
+    RUNNER_PREFIX = []
 
 # ---------------------------------------------------------------- palette ---
 BG = "#0f1218"
@@ -427,7 +434,7 @@ class Dashboard:
         env = os.environ.copy()
         env.setdefault("BENCH_PY", sys.executable)
         try:
-            self.proc = subprocess.Popen([RUNNER] + args, cwd=REPO, env=env,
+            self.proc = subprocess.Popen([RUNNER] + RUNNER_PREFIX + args, cwd=REPO, env=env,
                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                          text=True, bufsize=1, start_new_session=True)
         except Exception as exc:
@@ -437,7 +444,7 @@ class Dashboard:
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
         self._set_status("running · %s" % PRESETS[self.preset][0].split(" (")[0], ACCENT)
-        self._log("[gui] %s %s" % (RUNNER, " ".join(args)))
+        self._log("[gui] %s %s" % (RUNNER, " ".join(RUNNER_PREFIX + args)))
         threading.Thread(target=self._reader, args=(self.proc,), daemon=True).start()
 
     def _reader(self, proc):
@@ -451,7 +458,11 @@ class Dashboard:
     def stop(self):
         if self.proc and self.proc.poll() is None:
             try:
-                os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
+                if os.name == "nt":
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.proc.pid)],
+                                   capture_output=True)
+                else:
+                    os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
             except Exception:
                 pass
             self._set_status("stopping...", WARN)
@@ -537,7 +548,7 @@ class Dashboard:
         self.root.after(1000, self._tick)
 
     def _read_telemetry(self):
-        files = glob.glob(os.path.join(self.results_dir, "*-linux-*.telemetry.csv"))
+        files = glob.glob(os.path.join(self.results_dir, "*.telemetry.csv"))
         if files:
             newest = max(files, key=os.path.getmtime)
             if newest != self.tele_path:
@@ -645,7 +656,8 @@ class Dashboard:
     # ------------------------------------------------------------ results ---
     def _load_results(self):
         try:
-            js = sorted(glob.glob(os.path.join(self.results_dir, "*-linux-*.json")),
+            js = sorted(glob.glob(os.path.join(self.results_dir, "*-linux-*.json")) or
+                        glob.glob(os.path.join(self.results_dir, "*.json")),
                         key=os.path.getmtime)
             if not js:
                 return
@@ -658,6 +670,8 @@ class Dashboard:
                 pass
             cards = self.summary_tiles
             for ph in data.get("phases", []):
+                if "group" not in ph:
+                    continue
                 r = ph.get("result") or {}
                 if ph["group"] == "gpu" and ph["phase"] == "soak" and r.get("matmul_tflops") is not None:
                     t = r.get("telemetry") or {}
@@ -678,6 +692,10 @@ class Dashboard:
             # markdown text with light styling
             self.results.delete("1.0", "end")
             md = report[:-5] + ".md"
+            if not os.path.exists(md):
+                cands = sorted(glob.glob(os.path.join(self.results_dir, "*.md")),
+                               key=os.path.getmtime)
+                md = cands[-1] if cands else md
             if os.path.exists(md):
                 with open(md, errors="replace") as fh:
                     for line in fh.read().splitlines():
