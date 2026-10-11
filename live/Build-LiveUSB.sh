@@ -113,15 +113,21 @@ rsync -a \
     --exclude '.git' --exclude '.venv' --exclude 'results' --exclude 'live/out*' \
     "$REPO/" "$PROFILE/airootfs/opt/bench-test/"
 
-# FurMark 2 linux64 into tools/
-if [ ! -x "$REPO/tools/furmark/FurMark_linux64/furmark" ]; then
+# FurMark 2 linux64 into tools/ (repo copy if present, else download to work dir)
+FM_SRC="$REPO/tools/furmark/FurMark_linux64"
+if [ ! -x "$FM_SRC/furmark" ]; then
     echo "[build] downloading FurMark 2 (linux64)"
     mkdir -p "$WORK/furmark"
     curl -fsSL -A "Mozilla/5.0" -o "$WORK/furmark.7z" "https://geeks3d.com/dl/get/833"
     bsdtar -xf "$WORK/furmark.7z" -C "$WORK/furmark"
+    FM_SRC="$(find "$WORK/furmark" -maxdepth 2 -type f -name furmark -printf '%h\n' 2>/dev/null | head -1)"
 fi
-mkdir -p "$PROFILE/airootfs/opt/bench-test/tools/furmark"
-cp -r "$REPO/tools/furmark/FurMark_linux64" "$PROFILE/airootfs/opt/bench-test/tools/furmark/"
+if [ -n "${FM_SRC:-}" ] && [ -x "$FM_SRC/furmark" ]; then
+    mkdir -p "$PROFILE/airootfs/opt/bench-test/tools/furmark"
+    cp -r "$FM_SRC" "$PROFILE/airootfs/opt/bench-test/tools/furmark/"
+else
+    echo "[build] WARNING: FurMark not available - gfx phase will skip" >&2
+fi
 
 # enable the dkms build unit (legacy NVIDIA) and the TUI dashboards
 mkdir -p "$PROFILE/airootfs/etc/systemd/system/multi-user.target.wants"
