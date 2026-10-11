@@ -63,6 +63,7 @@ done
 
 # --- mount the first candidate that works -------------------------------
 DEST="" FOUND_DEV=""
+MOUNT_ERR="$(mktemp)"
 modprobe vfat 2>/dev/null || true
 modprobe nls_cp437 2>/dev/null || true
 modprobe nls_iso8859-1 2>/dev/null || true
@@ -73,7 +74,9 @@ for c in $CANDS; do
     fi
     if ! mountpoint -q /mnt/benchdata; then
         mkdir -p /mnt/benchdata
-        mount -t vfat -o rw,umask=0022 "$c" /mnt/benchdata 2>/dev/null || true
+        # if anything (initramfs, firmware) marked the device read-only, undo it
+        blockdev --setrw "$c" 2>>"$MOUNT_ERR" || true
+        mount -t vfat -o rw,umask=0022 "$c" /mnt/benchdata 2>>"$MOUNT_ERR" || true
     fi
     if mountpoint -q /mnt/benchdata; then
         DEST=/mnt/benchdata FOUND_DEV="$c"; break
@@ -83,7 +86,8 @@ if [ -z "$DEST" ] && mountpoint -q /mnt/benchdata; then
     DEST=/mnt/benchdata
 fi
 
-HOST="$(hostname -s 2>/dev/null || echo unknown)"
+HOST="$(hostname -s 2>/dev/null)"
+[ -n "$HOST" ] || HOST="bench-live"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 
 write_diag() {  # $1 = output file
@@ -99,6 +103,9 @@ write_diag() {  # $1 = output file
         echo; echo "--- blkid -p (candidates) ---"
         for c in $CANDS; do echo "$c: $(blkid -p "$c" 2>&1)"; done
         echo; echo "--- /proc/partitions ---"; cat /proc/partitions
+        echo; echo "--- /dev/sd* ---"; ls -l /dev/sd* 2>&1
+        echo; for dd in /dev/sd?; do [ -b "$dd" ] && echo "$dd ro=$(blockdev --getro "$dd" 2>/dev/null)"; done
+        echo; echo "--- mount attempts ---"; cat "${MOUNT_ERR:-/dev/null}" 2>/dev/null
         echo; echo "--- mount ---"; mount
         echo; echo "--- dmesg (tail) ---"; dmesg 2>/dev/null | tail -30
     } > "$1" 2>&1
@@ -143,6 +150,9 @@ TARGET="$DEST/$HOST-$STAMP"
 mkdir -p "$TARGET"
 write_diag "$TARGET/collect-diag.txt"
 cp -a "$SRC/." "$TARGET/" 2>/dev/null || true
+# also drop the diag into the results dir itself: whatever uploads the results
+# (auto-upload from RAM, manual 'u') then carries the in-guest device picture
+cp "$TARGET/collect-diag.txt" "$SRC/collect-diag.txt" 2>/dev/null || true
 # keep the diagnostics also in RAM for a post-reboot autopsy
 mkdir -p /root/bench-results
 cp "$TARGET/collect-diag.txt" "/root/bench-results/collect-diag-${STAMP}.txt" 2>/dev/null || true

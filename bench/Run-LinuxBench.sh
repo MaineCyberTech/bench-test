@@ -64,7 +64,8 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-HOST="$(hostname -s)"
+HOST="$(hostname -s 2>/dev/null)"
+[ -n "$HOST" ] || HOST="bench-live"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 ISO="$(date -Iseconds)"
 mkdir -p "$OUT" "$DISK_PATH"
@@ -168,10 +169,24 @@ if [ "$DO_DISK" = 1 ]; then
                 fi
             done
         fi
+        {
+            echo "disk path detection diag $(date -Iseconds)"
+            echo "BDEV=${BDEV:-none}"
+            lsblk -o NAME,SIZE,FSTYPE,LABEL,UUID,MOUNTPOINT 2>&1
+            echo
+            for dd in /dev/sd?; do [ -b "$dd" ] && echo "$dd ro=$(blockdev --getro "$dd" 2>/dev/null)"; done
+            echo
+            ls -l /dev/sd* 2>&1
+            echo
+            for p in /dev/sd*[0-9]; do [ -b "$p" ] || continue; echo "--- $p"; blkid -p "$p" 2>&1; done
+            echo
+            cat /proc/partitions
+        } > "$LOGDIR/boot-diag.txt" 2>&1
         if [ -n "$BDEV" ]; then
             modprobe vfat 2>/dev/null || true
             mkdir -p /mnt/benchdata
-            mountpoint -q /mnt/benchdata || mount -t vfat -o rw,umask=0022 "$BDEV" /mnt/benchdata 2>/dev/null || true
+            blockdev --setrw "$BDEV" 2>>"$LOGDIR/boot-diag.txt" || true
+            mountpoint -q /mnt/benchdata || mount -t vfat -o rw,umask=0022 "$BDEV" /mnt/benchdata 2>>"$LOGDIR/boot-diag.txt" || true
             if mountpoint -q /mnt/benchdata; then
                 DISK_PATH=/mnt/benchdata
                 echo "    [info] disk path -> BENCHDATA ($BDEV) - not RAM-backed"

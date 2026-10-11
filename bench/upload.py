@@ -19,6 +19,7 @@ Usage: upload.py [RESULTS_DIR]     (default: /opt/bench-test/results)
 Exit codes: 0 all good, 3 missing config/dir/nothing to send, 5 total failure.
 """
 import base64
+import glob
 import json
 import os
 import sys
@@ -98,6 +99,11 @@ def main():
         return 3
 
     folder = os.path.basename(src.rstrip("/"))
+    if folder in ("results", ""):
+        # uploads of a live-session results dir: name the target after the run
+        cands = sorted(glob.glob(os.path.join(src, "*-linux-*.json")), key=os.path.getmtime)
+        if cands:
+            folder = os.path.basename(cands[-1])[:-5]
     files = []
     for root, _dirs, names in os.walk(src):
         for n in names:
