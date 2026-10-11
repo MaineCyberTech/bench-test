@@ -19,6 +19,12 @@ Then write it (destructive) — or build with `--write /dev/sdX` directly:
 sudo dd if=live/out-nvidia-legacy/bench-live-*.iso of=/dev/sdX bs=4M status=progress conv=fsync
 ```
 
+Note: the `nvidia-legacy` image covers **every NVIDIA card from Maxwell
+through Ada** (GTX 9xx/10xx and RTX 20/30/40 series) - the 580 driver's GPU
+table includes e.g. the RTX 4070 Ti SUPER. One stick for all of those. The
+`nvidia` variant (open kernel modules, 610) is only needed for Blackwell
+(RTX 50).
+
 Each variant builds into its own `live/out-<variant>/` directory so they can
 coexist. `Build-LiveUSB.sh --write` also creates a `BENCHDATA` FAT partition in
 the remaining space for results.
@@ -105,3 +111,23 @@ dashboard reports the true outcome ("saved to USB: ..." or a red
 If no writable stick partition can be found, results are kept in
 `/root/bench-results` (**RAM**) - the collector says so loudly and exits with
 code 4. Copy them off before rebooting.
+
+### Uploading to GitHub
+
+`u` in the dashboard (or `bench-upload` in a shell) sends the newest results
+into your repository via the GitHub API. Put the token once on the stick:
+
+```
+/mnt/benchdata/bench-upload.conf
+--------------------------------
+GITHUB_TOKEN=github_pat_xxx        # fine-grained PAT: Contents Read/Write
+GITHUB_REPO=MaineCyberTech/bench-test
+# GITHUB_BRANCH=main               # defaults to main
+# UPLOAD_PATH=results
+# AUTO_UPLOAD=1                    # upload right after a successful collect
+--------------------------------
+```
+
+The config survives reflashing: `Build-LiveUSB.sh --write` preserves
+`bench-upload.conf` across the wipe. On the desktop you can run
+`bench/upload.py` directly against any results folder.
