@@ -1,0 +1,104 @@
+name: Build live ISO
+
+# Builds the bench-test live ISO on a self-hosted runner and attaches it to a
+# GitHub release, so the machine with the USB stick can just download + flash.
+#
+# Runner requirements (Arch Linux):
+#   - passwordless sudo (`sudo -n true` must pass; mkarchiso needs root)
+#   - python 3.14 with venv + pip, network access (pacman + PyTorch wheels)
+#   - >= 40 GiB free on /var/tmp
+#
+# Trigger: Actions tab -> "Build live ISO" -> Run workflow (pick the variant).
+# Download afterwards:  gh release download iso-<gpu>-<run> -p '*.iso'
+# or via the API/UI; the SHA256SUMS asset verifies the transfer.
+
+on:
+  workflow_dispatch:
+    inputs:
+      gpu:
+        description: "GPU variant"
+        type: choice
+        options: [nvidia-legacy, nvidia, amd]
+        default: nvidia-legacy
+      runner_labels:
+        description: "JSON array of runner labels"
+        default: '["self-hosted","linux","x64"]'
+      upload_release:
+        description: "Attach the ISO to a GitHub release"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-iso-${{ inputs.gpu }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install upload credentials (optional secret)
+        run: |
+          if [ -n "${{ secrets.BENCH_UPLOAD_CONF }}" ]; then
+            mkdir -p live/private
+            printf '%s\n' "${{ secrets.BENCH_UPLOAD_CONF }}" > live/private/bench-upload.conf
+            chmod 600 live/private/bench-upload.conf
+            echo "upload credentials baked into the image"
+          else
+            echo "no BENCH_UPLOAD_CONF secret set - image carries no upload credentials"
+          fi
+
+      - name: Cache pip (PyTorch cu126 wheels)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-torch-cu126-v1
+
+      - name: Provision build venv (Maxwell-safe PyTorch)
+        if: ${{ inputs.gpu != 'amd' }}
+        run: |
+          set -euo pipefail
+          if ! .venv/bin/python -c 'import torch' 2>/dev/null; then
+            python3 -m venv .venv
+            .venv/bin/pip install --upgrade pip
+            .venv/bin/pip install torch numpy psutil cryptography \
+              --index-url https://download.pytorch.org/whl/cu126 \
+              --extra-index-url https://pypi.org/simple
+          fi
+          .venv/bin/python -c 'import torch; print("torch", torch.__version__, "cuda", torch.version.cuda)'
+
+      - name: Requirements check
+        run: |
+          set -euo pipefail
+          echo "user: $(id -un)  uid: $(id -u)"
+          sudo -n true && echo "passwordless sudo: ok" || { echo "ERROR: sudo -n unavailable"; exit 1; }
+          df -BG --output=avail /var/tmp | tail -1
+          python3 --version
+
+      - name: Build ISO (${{ inputs.gpu }})
+        run: |
+          set -euo pipefail
+          sudo -n env BENCH_WORK_DIR=/var/tmp ./live/Build-LiveUSB.sh --gpu ${{ inputs.gpu }}
+          mkdir -p dist
+          cp "$(ls -t live/out-${{ inputs.gpu }}/*.iso | head -1)" "dist/bench-live-${{ inputs.gpu }}.iso"
+          sha256sum dist/*.iso | tee dist/SHA256SUMS
+          du -h dist/*.iso
+
+      - name: Attach to release
+        if: ${{ inputs.upload_release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: iso-${{ inputs.gpu }}-${{ github.run_number }}
+          name: "ISO ${{ inputs.gpu }} #${{ github.run_number }}"
+          files: |
+            dist/bench-live-${{ inputs.gpu }}.iso
+            dist/SHA256SUMS
+          make_latest: false
+          body: |
+            Self-hosted build of the `${{ inputs.gpu }}` live ISO (run ${{ github.run_number }}).
+            Flash it with `sudo dd if=bench-live-${{ inputs.gpu }}.iso of=/dev/sdX bs=4M conv=fsync status=progress`.
