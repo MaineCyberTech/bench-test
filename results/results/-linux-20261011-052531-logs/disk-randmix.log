@@ -1,0 +1,2 @@
+disk randmix   316233 IOPS, 1295.3 MB/s (r=3319932 w=1423572)
+RESULT_JSON:{"phase": "randmix", "seconds": 15.0, "ops": 4743504, "reads": 3319932, "writes": 1423572, "iops": 316233.0, "mbps": 1295.3}
