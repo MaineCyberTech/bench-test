@@ -7,7 +7,8 @@
 #
 # Usage: bash live/ci-build.sh <nvidia-legacy|nvidia|amd>
 set -euo pipefail
-GPU="${1:?usage: ci-build.sh <nvidia-legacy|nvidia|amd>}"
+GPU="${1:?usage: ci-build.sh <nvidia-legacy|nvidia|amd> [xz|zstd]}"
+COMP="${2:-xz}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 
@@ -48,7 +49,7 @@ build_native() {
             --index-url https://download.pytorch.org/whl/cu126 \
             --extra-index-url https://pypi.org/simple
     fi
-    sudo -n env BENCH_WORK_DIR="$WORKROOT/work" ./live/Build-LiveUSB.sh --gpu "$GPU"
+    sudo -n env BENCH_WORK_DIR="$WORKROOT/work" ./live/Build-LiveUSB.sh --gpu "$GPU" --comp "$COMP"
 }
 
 build_container() {
@@ -77,7 +78,7 @@ build_container() {
                     --index-url https://download.pytorch.org/whl/cu126 \
                     --extra-index-url https://pypi.org/simple
             fi
-            ./live/Build-LiveUSB.sh --gpu "$GPU"
+            ./live/Build-LiveUSB.sh --gpu "$GPU" --comp '"$COMP"'
         '
     # the container re-pointed the symlinks; restore them for host-side use
     ln -sfn "$WORKROOT/venv" .venv

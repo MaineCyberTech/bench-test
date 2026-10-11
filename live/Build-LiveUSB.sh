@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build a bench-test live ISO with archiso and optionally write it to a USB device.
 #
-# Usage: sudo ./live/Build-LiveUSB.sh --gpu nvidia|nvidia-legacy|amd [--out DIR] [--write /dev/sdX]
+# Usage: sudo ./live/Build-LiveUSB.sh --gpu nvidia|nvidia-legacy|amd [--out DIR] [--comp xz|zstd] [--write /dev/sdX]
 #
 #   --gpu nvidia         Turing+ (RTX 20/30/40/50) with nvidia-open (610)
 #   --gpu nvidia-legacy  Maxwell/Pascal/Volta (and up) with the 580 branch (omarchy repo)
@@ -17,12 +17,14 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIVE="$REPO/live"
 OUT=""
 GPU=""
+COMP="xz"
 WRITE_DEV=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --gpu) GPU="${2:-}"; shift 2 ;;
         --out) OUT="${2:-}"; shift 2 ;;
+        --comp) COMP="${2:-}"; shift 2 ;;
         --write) WRITE_DEV="${2:-}"; shift 2 ;;
         -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 1 ;;
@@ -56,6 +58,15 @@ PROFILE="$WORK/profile"
 echo "[build] gpu=$GPU profile=$PROFILE"
 cp -r /usr/share/archiso/configs/releng/. "$PROFILE/"
 sed -i 's/^iso_name=.*/iso_name="bench-live"/; s/^iso_label=.*/iso_label="BENCH_LIVE"/; s/^iso_publisher=.*/iso_publisher="bench-test"/; s/^iso_application=.*/iso_application="bench-test live environment"/' "$PROFILE/profiledef.sh"
+
+case "$COMP" in
+    xz) ;;
+    zstd)
+        sed -i "s|^airootfs_image_tool_options=.*|airootfs_image_tool_options=('-comp' 'zstd' '-Xcompression-level' '15' '-b' '1M')|" "$PROFILE/profiledef.sh"
+        echo "[build] squashfs compression: zstd level 15 (faster build, larger ISO)"
+        ;;
+    *) echo "error: --comp must be xz or zstd" >&2; exit 1 ;;
+esac
 
 cat "$LIVE/packages.x86_64" >> "$PROFILE/packages.x86_64"
 cat "$LIVE/packages-$GPU.x86_64" >> "$PROFILE/packages.x86_64"
