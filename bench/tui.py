@@ -108,6 +108,16 @@ class BenchTUI:
         args += ["--gpu-soak", self.dur["gpu"], "--combined-seconds", self.dur["combined"],
                  "--fullsoak-seconds", self.dur["fullsoak"], "--gfx-seconds", self.dur["gfx"],
                  "-o", self.results_dir]
+        # disk phases on the internal SSD when it has been unlocked and mounted
+        # (live session:  cryptsetup open /dev/sda2 cryptroot
+        #                  mkdir -p /mnt/internal && mount /dev/mapper/cryptroot /mnt/internal)
+        try:
+            if os.path.ismount("/mnt/internal"):
+                scratch = "/mnt/internal/bench-scratch"
+                os.makedirs(scratch, exist_ok=True)
+                args += ["--disk-path", scratch]
+        except Exception:
+            pass
         return args
 
     # ---------------------------------------------------------------- run ---

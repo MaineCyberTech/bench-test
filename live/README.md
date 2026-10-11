@@ -112,6 +112,25 @@ If no writable stick partition can be found, results are kept in
 `/root/bench-results` (**RAM**) - the collector says so loudly and exits with
 code 4. Copy them off before rebooting.
 
+### Disk tests on the internal SSD (live session)
+
+By default the disk phases target BENCHDATA (the USB stick - real but modest
+throughput). To measure the machine's own disk instead, unlock and mount it
+before starting the run:
+
+```
+press t (shell)
+cryptsetup open /dev/sda2 cryptroot        # your LUKS passphrase
+mkdir -p /mnt/internal
+mount /dev/mapper/cryptroot /mnt/internal
+exit                                        # back to the dashboard
+```
+
+The dashboard detects `/mnt/internal` automatically and points the disk
+phases at `/mnt/internal/bench-scratch` (test files are cleaned up by the
+phase scripts; peak usage ~12 GiB while the steady write runs). Results still
+collect to the stick / upload as usual.
+
 ### Uploading to GitHub
 
 `u` in the dashboard (or `bench-upload` in a shell) sends the newest results
