@@ -1,0 +1,13 @@
+[Unit]
+Description=bench-test GPU fan curve daemon
+After=multi-user.target
+ConditionPathExists=/etc/bench-fan-curve.conf
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/bench-fan-curve run
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

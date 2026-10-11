@@ -165,6 +165,10 @@ ln -sf ../bench-tui@.service \
     "$PROFILE/airootfs/etc/systemd/system/multi-user.target.wants/bench-tui@tty1.service"
 ln -sf ../bench-tui@.service \
     "$PROFILE/airootfs/etc/systemd/system/multi-user.target.wants/bench-tui@ttyS0.service"
+# fan-curve daemon: starts at boot only when a curve conf exists (off by
+# default); the dashboard's 'f' key starts it explicitly
+ln -sf ../bench-fan-curve.service \
+    "$PROFILE/airootfs/etc/systemd/system/multi-user.target.wants/bench-fan-curve.service"
 
 # exec permissions for our helpers
 cat >> "$PROFILE/profiledef.sh" <<'EOF'

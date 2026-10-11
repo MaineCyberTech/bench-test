@@ -232,22 +232,35 @@ class BenchTUI:
         return None
 
     def toggle_curve(self):
-        if self.running:
-            self._set("stop the run first (x)", 3)
-            return
         script = FAN_CURVE if os.path.exists(FAN_CURVE) else None
         if not script:
             self._set("fan_curve.py not found", 4)
             return
-        cmd = "off" if self.curve else "set"
+        on = not self.curve
 
         def work():
             try:
-                r = subprocess.run([sys.executable, script, cmd], capture_output=True,
+                if on:
+                    # write the conf + apply now, then hand over to the resident
+                    # daemon so the curve keeps following the temperature
+                    subprocess.run([sys.executable, script, "set"], capture_output=True,
                                    text=True, timeout=90)
-                out = (r.stdout or r.stderr).strip().splitlines()
-                self._set(out[-1] if out else "fan curve %s: rc=%s" % (cmd, r.returncode),
-                          (1 if r.returncode == 0 else 3))
+                    r = subprocess.run(["systemctl", "start", "bench-fan-curve.service"],
+                                       capture_output=True, text=True, timeout=60)
+                    msg = "fan curve ON - resident daemon following temps" if r.returncode == 0 \
+                        else "fan curve ON (one-shot; daemon unavailable)"
+                    rc = 0
+                else:
+                    subprocess.run(["systemctl", "stop", "bench-fan-curve.service"],
+                                   capture_output=True, text=True, timeout=60)
+                    r = subprocess.run([sys.executable, script, "off"], capture_output=True,
+                                       text=True, timeout=90)
+                    out = (r.stdout or r.stderr).strip().splitlines()
+                    msg = "fan curve OFF - automatic fan control"
+                    rc = r.returncode
+                    if rc != 0 and out:
+                        msg = out[-1][:60]
+                self._set(msg, 1 if rc == 0 else 3)
             except Exception as exc:
                 self._set("fan curve failed: %s" % exc, 3)
             self.curve = self._curve_state()
@@ -702,6 +715,10 @@ class BenchTUI:
                       curses.color_pair(2) | curses.A_REVERSE)
             self.scr.refresh()
             k = self.scr.getch()
+            if k == -1:
+                continue  # input timeout: keep showing the report
+            if k == curses.KEY_RESIZE:
+                continue
             if k == curses.KEY_PGUP:
                 offset = max(0, offset - 5)
             elif k == curses.KEY_PGDN:
