@@ -7,7 +7,7 @@ Before=multi-user.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/sh -c 'command -v dkms >/dev/null 2>&1 && dkms autoinstall || true'
+ExecStart=/bin/sh -c 'if command -v lspci >/dev/null 2>&1 && ! lspci -nn 2>/dev/null | grep -qi "10de:"; then echo "no NVIDIA GPU present - skipping dkms"; exit 0; fi; command -v dkms >/dev/null 2>&1 && dkms autoinstall || true'
 TimeoutSec=900
 
 [Install]

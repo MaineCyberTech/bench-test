@@ -69,12 +69,50 @@ def _nvidia_settings():
     return None
 
 
+def _ensure_x(env):
+    """NV-CONTROL needs an X server; live consoles have none. Start a bare X
+    on :0/vt2 (the same display the GUI dashboard uses) when needed."""
+    disp = env.get("DISPLAY", ":0")
+
+    def alive():
+        try:
+            return subprocess.run(["xdpyinfo", "-display", disp],
+                                  capture_output=True, timeout=10).returncode == 0
+        except Exception:
+            return False
+
+    if alive():
+        return True
+    if not shutil.which("X") or not shutil.which("xdpyinfo"):
+        return False
+    try:
+        with open("/tmp/bench-fan-x.log", "ab") as log:
+            subprocess.Popen(["X", disp, "vt2", "-ac", "-nolisten", "tcp"],
+                             stdout=log, stderr=subprocess.STDOUT,
+                             start_new_session=True)
+    except Exception:
+        return False
+    for _ in range(24):
+        time.sleep(0.5)
+        if alive():
+            if shutil.which("openbox"):
+                try:
+                    with open("/tmp/bench-fan-x.log", "ab") as log:
+                        subprocess.Popen(["openbox"], stdout=log, stderr=subprocess.STDOUT,
+                                         start_new_session=True)
+                except Exception:
+                    pass
+            return True
+    return False
+
+
 def _ns_env():
     env = os.environ.copy()
     env.setdefault("DISPLAY", ":0")
     for lib in ("/opt/nvidia-settings/usr/lib", "/usr/lib/nvidia"):
         if os.path.isdir(lib):
             env["LD_LIBRARY_PATH"] = lib + (":" + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else "")
+    _ensure_x(env)
     return env
 
 
