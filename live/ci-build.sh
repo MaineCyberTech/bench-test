@@ -61,8 +61,9 @@ build_container() {
             pacman-key --populate archlinux 2>/dev/null || true
             pacman -Sy --noconfirm --needed archiso dosfstools python python-pip rsync
             [ -x /bigwork/venv/bin/python ] || python3 -m venv --clear /bigwork/venv
-            # the host-side symlink is absolute; re-point it for this container
+            # host-side absolute symlinks do not resolve in here; re-point them
             ln -sfn /bigwork/venv .venv
+            ln -sfn /bigwork/out-'"$GPU"' live/out-'"$GPU"'
             if [ "$GPU" != "amd" ] && ! .venv/bin/python -c "import torch" 2>/dev/null; then
                 .venv/bin/pip install torch numpy psutil cryptography \
                     --index-url https://download.pytorch.org/whl/cu126 \
@@ -70,6 +71,9 @@ build_container() {
             fi
             ./live/Build-LiveUSB.sh --gpu "$GPU"
         '
+    # the container re-pointed the symlinks; restore them for host-side use
+    ln -sfn "$WORKROOT/venv" .venv
+    ln -sfn "$WORKROOT/out-$GPU" live/out-"$GPU"
 }
 
 if [ -f /etc/arch-release ] && command -v pacman >/dev/null 2>&1; then
