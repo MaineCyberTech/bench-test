@@ -1,0 +1,2 @@
+pcie H2D=10.0 GB/s D2H=9.0 GB/s
+RESULT_JSON:{"phase": "pcie", "h2d_gbps": 10.0, "d2h_gbps": 9.0}
