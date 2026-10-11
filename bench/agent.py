@@ -28,7 +28,7 @@ REPO = os.path.dirname(BENCH)
 sys.path.insert(0, BENCH)
 
 from benchreport import (Reporter, PhaseTracker, TelemetryTail,  # noqa: E402
-                         build_summary, read_runs_index)
+                         build_summary, read_runs_index, load_identity)
 
 DEFAULT_GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "sys", "gfx"]
 
@@ -86,8 +86,11 @@ class Agent:
     def __init__(self, a):
         self.a = a
         self.out_dir = os.path.abspath(a.out)
+        ident = load_identity(a.server)
         self.rep = Reporter(a.server, a.token, name=a.name, kind="agent",
-                            version=git_commit(), git=git_commit(), log=self.log)
+                            version=git_commit(), git=git_commit(), log=self.log,
+                            runner_id=ident.get("runner_id"), api_key=ident.get("api_key"),
+                            persist=True)
         self.caps = probe_capabilities()
         self.proc = None
         self.run_label = None

@@ -14,6 +14,7 @@ let TOKEN = new URLSearchParams(location.search).get("token") || localStorage.ge
 let STATE = { runners: [], active: [], recent: [], metrics: [] };
 let TEL = {};               // run_id -> [{elapsed,temp,power,util,fan}]
 let HOSTS = [];
+let SCHEDULES = [];
 let es = null;
 
 /* ------------------------------------------------------------------ dom -- */
@@ -66,6 +67,7 @@ function connect() {
   es.addEventListener("phase", (e) => onPhase(JSON.parse(e.data)));
   es.addEventListener("telemetry", (e) => onTelemetry(JSON.parse(e.data)));
   es.addEventListener("command", () => refresh());
+  es.addEventListener("schedule", () => renderSchedules());
   es.addEventListener("event", () => {});
 }
 function setConn(on) {
@@ -114,7 +116,7 @@ function onPhase(p) {
 }
 
 /* -------------------------------------------------------------- render -- */
-function renderAll() { renderTop(); renderRunners(); renderActive(); renderHistory(); renderTrends(); renderCompareOptions(); }
+function renderAll() { renderTop(); renderRunners(); renderActive(); renderHistory(); renderTrends(); renderCompareOptions(); renderSchedules(); }
 
 function renderTop() {
   const online = STATE.runners.filter((r) => r.online).length;
@@ -397,6 +399,11 @@ async function showDetail(runId) {
     <div class="phases" style="max-height:320px">${r.phases.map(phaseRow).join("")}</div>
     ${r.events && r.events.length ? `<details><summary class="muted">${r.events.length} log events</summary>
       <pre class="mono muted" style="max-height:200px;overflow:auto;font-size:11px">${esc(r.events.map((e) => e.message).join("\n"))}</pre></details>` : ""}
+    <div class="formrow" style="gap:8px;flex-wrap:wrap;margin-top:12px">
+      <span class="muted">downloads:</span>
+      <a class="dl" href="/api/v1/runs/${runId}/telemetry.csv?token=${encodeURIComponent(TOKEN)}">telemetry.csv</a>
+      ${(r.artifacts || []).map((a) => `<a class="dl" href="/api/v1/runs/${runId}/artifact/${encodeURIComponent(a.name)}?token=${encodeURIComponent(TOKEN)}">${esc(a.name)} <span class="muted">${a.size >= 1024 ? Math.round(a.size / 1024) + "K" : (a.size || 0) + "B"}</span></a>`).join("")}
+    </div>
     <div class="formrow" style="justify-content:flex-end"><button class="ghost" onclick="closeModal()">close</button></div>`);
   drawChart($("#dChart"), [
     { name: "temp", color: C.temp, points: pts("temp_c") },
@@ -404,6 +411,56 @@ async function showDetail(runId) {
     { name: "util", color: C.util, points: pts("gpu_util") },
   ], { yLabel: "telemetry" });
 }
+
+/* ----------------------------------------------------------- schedules --- */
+async function renderSchedules() {
+  try {
+    const d = await api("/schedules");
+    SCHEDULES = d.schedules || [];
+  } catch (e) { return; }
+  const rname = (id) => { const r = STATE.runners.find((x) => x.id === id); return r ? r.name : String(id).slice(0, 8); };
+  $("#schedTable tbody").innerHTML = SCHEDULES.map((s) => {
+    const when = s.kind === "daily" ? "daily " + esc(s.at_time) : "every " + dur(s.every_s);
+    return `<tr>
+      <td>${esc(rname(s.runner_id))}</td><td>${esc(s.label)}</td><td>${when}</td>
+      <td class="mono">${ts(s.next_run)}</td>
+      <td class="muted">${s.last_run ? ts(s.last_run) : "—"}</td>
+      <td><button class="danger" data-sched-del="${s.id}">delete</button></td></tr>`;
+  }).join("") || `<tr><td colspan="6" class="muted" style="padding:16px">No schedules.</td></tr>`;
+}
+
+function newSchedule() {
+  const opts = STATE.runners.map((r) => `<option value="${r.id}">${esc(r.name)}</option>`).join("");
+  openModal(`<h3>New schedule</h3>
+    <div class="formrow"><label>runner</label><select id="scRunner" style="flex:1">${opts}</select></div>
+    <div class="formrow"><label>label</label><input id="scLabel" style="flex:1" value="scheduled run"></div>
+    <div class="formrow"><label>repeat</label>
+      <select id="scKind"><option value="every">every…</option><option value="daily">daily at…</option></select>
+      <input id="scEvery" type="number" value="3600" style="width:90px"> seconds
+      <input id="scAt" type="time" value="03:00" style="display:none"></div>
+    <div class="formrow"><label>preset</label>
+      <select id="scPreset">${Object.keys(PRESETS).map((k) => `<option>${esc(k)}</option>`).join("")}</select></div>
+    <div class="formrow" style="justify-content:flex-end">
+      <button class="ghost" onclick="closeModal()">cancel</button>
+      <button class="accent" id="scGo">create</button></div>`);
+  $("#scKind").onchange = () => {
+    const daily = $("#scKind").value === "daily";
+    $("#scAt").style.display = daily ? "" : "none";
+    $("#scEvery").style.display = daily ? "none" : "";
+  };
+  $("#scGo").onclick = async () => {
+    const p = PRESETS[$("#scPreset").value] || {};
+    const profile = { label: $("#scPreset").value,
+      skip: p.groups ? GROUPS.filter((g) => !p.groups[g]) : [] };
+    if (p.spin) Object.assign(profile, { gpu_soak: p.spin.gpu, combined: p.spin.combined,
+      fullsoak: p.spin.fullsoak, gfx: p.spin.gfx });
+    await api("/schedules", "POST", {
+      runner_id: $("#scRunner").value, label: $("#scLabel").value, profile,
+      kind: $("#scKind").value, every_s: +$("#scEvery").value, at_time: $("#scAt").value });
+    closeModal(); renderSchedules();
+  };
+}
+async function deleteSchedule(id) { await api("/schedules/" + id, "DELETE"); renderSchedules(); }
 
 /* -------------------------------------------------------------- modal --- */
 function openModal(html) { $("#modalbox").innerHTML = html; $("#modal").classList.add("show"); }
@@ -419,13 +476,14 @@ function fillSelect(sel, values, placeholder) {
 }
 
 document.addEventListener("click", (e) => {
-  const t = e.target.closest("[data-tab],[data-start],[data-stop],[data-update],[data-fan],[data-detail]");
+  const t = e.target.closest("[data-tab],[data-start],[data-stop],[data-update],[data-fan],[data-detail],[data-sched-del]");
   if (!t) return;
   if (t.dataset.tab) {
     $$("#tabs button").forEach((b) => b.classList.toggle("active", b === t));
     $$(".tabpane").forEach((p) => p.classList.toggle("active", p.id === "tab-" + t.dataset.tab));
     if (t.dataset.tab === "history") renderHistory();
     if (t.dataset.tab === "trends") renderTrends();
+    if (t.dataset.tab === "schedules") renderSchedules();
     return;
   }
   if (t.dataset.start) return startRun(t.dataset.start);
@@ -433,9 +491,11 @@ document.addEventListener("click", (e) => {
   if (t.dataset.update) return cmd(t.dataset.update, "update");
   if (t.dataset.fan) return cmd(t.dataset.fan, "fan_curve", { on: true });
   if (t.dataset.detail) return showDetail(t.dataset.detail);
+  if (t.dataset.schedDel) return deleteSchedule(t.dataset.schedDel);
 });
 
 $("#tokenBtn").onclick = askToken;
+$("#schedNew").onclick = newSchedule;
 $("#histRefresh").onclick = renderHistory;
 $("#histHost").onchange = renderHistory;
 $("#histSearch").oninput = () => { clearTimeout(window._hs); window._hs = setTimeout(renderHistory, 200); };

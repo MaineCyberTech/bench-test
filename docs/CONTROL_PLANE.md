@@ -91,6 +91,10 @@ The live USB already starts `bench-tui`; add the flags via `bench-agent` or an
 - **Trends** — any metric over time for a host (or all hosts), one or two metrics
   at once, so a driver/GPU/cooling change is visible as a step.
 - **Compare** — pick two runs and see per-metric deltas (%).
+- **Schedules** — recurring runs (every N seconds, or daily at a wall-clock time)
+  per runner; the server queues them automatically.
+- **Downloads** — from a run's detail view: the telemetry CSV and any artifacts
+  the runner attached (report JSON, manifests).
 
 ## API reference (prefix `/api/v1`, `Authorization: Bearer <token>`)
 
@@ -98,7 +102,7 @@ Runner-facing:
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/register` | register/heartbeat identity → `runner_id` |
+| POST | `/register` | register/heartbeat identity → `runner_id` + per-runner `api_key` |
 | POST | `/runners/<id>/heartbeat` | liveness + status + capabilities |
 | GET | `/runners/<id>/commands` | poll queued commands (drains the queue) |
 | POST | `/runners/<id>/commands/<cid>/ack` | acknowledge a command |
@@ -117,7 +121,10 @@ UI-facing:
 | GET | `/stream?token=` | SSE: `snapshot`/`runner`/`run`/`phase`/`telemetry`/`command` |
 | GET | `/runners` · `/runs` · `/runs/<id>` | fleet / history / detail |
 | GET | `/runs/<id>/telemetry?max=N` | downsampled series |
+| GET | `/runs/<id>/telemetry.csv?token=` | full 1 Hz telemetry as CSV (download) |
+| GET | `/runs/<id>/artifact/<name>?token=` | download an attached artifact |
 | GET | `/trends?host=&metric=` | metric-over-time series |
+| GET/POST/DELETE | `/schedules` · `/schedules/<id>` | list / create / remove recurring runs |
 | POST | `/runners/<id>/commands` | issue `start`/`stop`/`update`/`fan_curve`/`power_limit`/`restart` |
 
 Telemetry sample order (10 floats): `elapsed, temp_c, fan_pct, power_w, gpu_util,
@@ -137,13 +144,15 @@ gpu_fan_rpm, cpu_util, ram_used, sm_mhz, mem_used`.
 
 ## Security
 
-- One **shared bearer token** protects the whole API; the UI passes it as
-  `?token=` for the SSE stream (EventSource can't set headers).
+- Two auth tiers: **runners** use a per-runner API key issued at registration
+  (stored in `~/.config/bench-agent.json`); **operators/UI** use the shared join
+  token (`BENCHD_TOKEN`) as a bearer, or `?token=` for the SSE stream and file
+  downloads (EventSource / link navigation can't set headers).
 - Bind to the LAN/lab address only. On the lab overlay it is reachable over the
   `wgaudit0` WireGuard network — keep `wg0` untouched.
 - Put a TLS reverse proxy in front if it is ever exposed beyond the lab.
-- `server/benchd.conf` and `server/data/` are git-ignored — never commit the token
-  or the database.
+- `server/benchd.conf`, `server/data/` and `~/.config/bench-agent.json` are
+  git-ignored — never commit the token, keys or the database.
 
 ## Operating notes
 
@@ -157,7 +166,7 @@ gpu_fan_rpm, cpu_util, ram_used, sm_mhz, mem_used`.
 
 ## Roadmap
 
-- Per-runner keys + operator logins (replace the shared token).
-- Server-side run scheduling / queues and nightly soak jobs.
-- Artifact download (raw reports, telemetry CSV, phase logs) from the UI.
+- Operator logins (per-user accounts) instead of the shared join token.
+- Server-side run queues with priorities and nightly soak jobs.
+- Phase-log artifacts and richer artifact browsing from the UI.
 - Prometheus/`/metrics` export and alerting (throttle, TDR, over-temp).

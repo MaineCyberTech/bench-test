@@ -34,7 +34,7 @@ GUI_LAUNCHER = "/usr/local/bin/bench-gui"
 sys.path.insert(0, BENCH)
 try:
     from benchreport import (Reporter, PhaseTracker, ReporterPump,
-                             build_summary, newest_report)
+                             build_summary, newest_report, load_identity)
 except Exception:  # reporting is optional
     Reporter = None
 
@@ -110,9 +110,11 @@ class BenchTUI:
             return
         try:
             import platform as _p
+            ident = load_identity(self.server)
             self.rep = Reporter(self.server, self.token, name=self.name or _p.node(),
                                 kind="tui", os_name=_p.system(),
-                                log=lambda m: self.log.append(m))
+                                runner_id=ident.get("runner_id"), api_key=ident.get("api_key"),
+                                persist=True, log=lambda m: self.log.append(m))
             if self.rep.register({"os": _p.system(), "platform": _p.platform(), "kind": "tui"}):
                 self.pump = ReporterPump(self.rep, on_command=self._pending.put,
                                          log=lambda m: self.log.append(m))

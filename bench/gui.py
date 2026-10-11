@@ -27,7 +27,7 @@ FAN_CURVE = os.path.join(BENCH, "fan_curve.py")
 sys.path.insert(0, BENCH)
 try:
     from benchreport import (Reporter, PhaseTracker, ReporterPump,
-                             build_summary, newest_report)
+                             build_summary, newest_report, load_identity)
 except Exception:  # reporting is optional
     Reporter = None
 
@@ -418,8 +418,11 @@ class Dashboard:
             return
         try:
             import platform as _p
+            ident = load_identity(self.server)
             self.rep = Reporter(self.server, self.token, name=self.name or _p.node(),
-                                kind="gui", os_name=_p.system(), log=self._log)
+                                kind="gui", os_name=_p.system(), log=self._log,
+                                runner_id=ident.get("runner_id"), api_key=ident.get("api_key"),
+                                persist=True)
             if self.rep.register({"os": _p.system(), "platform": _p.platform(), "kind": "gui"}):
                 self.pump = ReporterPump(self.rep, on_command=self._remote_command, log=self._log)
                 self.pump.start()

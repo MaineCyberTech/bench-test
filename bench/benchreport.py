@@ -52,11 +52,52 @@ def _f(v):
         return None
 
 
+def identity_path():
+    return os.environ.get("BENCH_AGENT_IDENTITY") or os.path.expanduser("~/.config/bench-agent.json")
+
+
+def load_identity(server):
+    """Return {runner_id, api_key} previously issued for this server, if any."""
+    try:
+        with open(identity_path()) as fh:
+            data = json.load(fh)
+        return data.get((server or "").rstrip("/"), {}) or {}
+    except Exception:
+        return {}
+
+
+def save_identity(server, runner_id, api_key):
+    try:
+        p = identity_path()
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        data = {}
+        if os.path.isfile(p):
+            try:
+                with open(p) as fh:
+                    data = json.load(fh)
+            except Exception:
+                data = {}
+        data[(server or "").rstrip("/")] = {"runner_id": runner_id, "api_key": api_key}
+        with open(p, "w") as fh:
+            json.dump(data, fh, indent=2)
+        try:
+            os.chmod(p, 0o600)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 class Reporter:
     def __init__(self, server, token, name=None, kind="agent", version=None,
-                 os_name=None, timeout=6, log=None, git=None):
+                 os_name=None, timeout=6, log=None, git=None, runner_id=None,
+                 api_key=None, persist=False):
         self.server = (server or "").rstrip("/")
-        self.token = token or ""
+        self.join_token = token or ""
+        self.token = api_key or token or ""
+        self.runner_id = runner_id
+        self.api_key = api_key
+        self.persist = persist
         self.name = name or socket.gethostname()
         self.kind = kind
         self.os_name = os_name or sys.platform
@@ -64,7 +105,6 @@ class Reporter:
         self.git = git
         self.timeout = timeout
         self.log = log or (lambda *_a: None)
-        self.runner_id = None
         self.run_id = None
         self.enabled = bool(self.server and self.token)
         self.last_error = None
@@ -94,12 +134,17 @@ class Reporter:
     # -- lifecycle ---------------------------------------------------------
     def register(self, capabilities=None, status="idle"):
         s, r = self._req("POST", "/api/v1/register", {
-            "runner_id": self.runner_id, "name": self.name, "os": self.os_name,
-            "kind": self.kind, "version": self.version, "git": self.git,
-            "capabilities": capabilities or {}, "status": status,
+            "runner_id": self.runner_id, "api_key": self.api_key,
+            "name": self.name, "os": self.os_name, "kind": self.kind, "version": self.version,
+            "git": self.git, "capabilities": capabilities or {}, "status": status,
             "current_run": self.run_id})
         if s == 200 and r.get("runner_id"):
             self.runner_id = r["runner_id"]
+            if r.get("api_key"):
+                self.api_key = r["api_key"]
+                self.token = r["api_key"]
+                if self.persist:
+                    save_identity(self.server, self.runner_id, self.api_key)
             self.log("[report] registered as %s (%s)" % (self.runner_id[:8], self.server))
             return True
         self.log("[report] register failed (%s)" % (self.last_error or s))

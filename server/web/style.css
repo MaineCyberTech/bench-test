@@ -126,3 +126,6 @@ tbody tr:hover{background:#1a2029}
 .kv .kvitem{background:var(--card2);border-radius:9px;padding:9px 11px}
 .kv .kvitem .k{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.7px}
 .kv .kvitem .v{font-family:var(--mono);font-size:15px;font-weight:700}
+.dl{text-decoration:none;color:var(--text);border:1px solid var(--border);border-radius:8px;
+  padding:6px 10px;font-size:12px;font-family:var(--mono)}
+.dl:hover{border-color:var(--accent);color:var(--accent)}

@@ -28,6 +28,7 @@
   <button data-tab="history">History</button>
   <button data-tab="trends">Trends</button>
   <button data-tab="compare">Compare</button>
+  <button data-tab="schedules">Schedules</button>
 </nav>
 
 <main>
@@ -85,6 +86,19 @@
       <button class="accent" id="cmpRun">compare</button>
     </div>
     <div class="grid2" id="cmpResult"></div>
+  </section>
+
+  <section id="tab-schedules" class="tabpane">
+    <div class="section-head">
+      <h2>Schedules</h2>
+      <div class="filters"><button class="accent" id="schedNew">new schedule</button></div>
+    </div>
+    <div class="card tablecard">
+      <table id="schedTable">
+        <thead><tr><th>runner</th><th>label</th><th>when</th><th>next run</th><th>last</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
   </section>
 </main>
 

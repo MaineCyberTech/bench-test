@@ -7,37 +7,32 @@ A dependency-free HTTP + SSE server that:
     stream live phase + telemetry data,
   * queues operator commands (start/stop a run, update the toolkit, set the fan
     curve / power limit) for runners to pick up,
-  * serves a self-contained web dashboard over history, live runs, trends and
-    side-by-side comparisons.
+  * schedules runs (every N seconds, or daily at a wall-clock time),
+  * serves a self-contained web dashboard with operator login over history, live
+    runs, trends and side-by-side comparisons.
 
-Storage is SQLite (stdlib).  Nothing outside the Python standard library is
+Auth model
+  operators   the shared join token, as a bearer (API/CLI) or ?token= (web UI/SSE)
+  runners     per-runner API keys, issued at registration and used as a bearer
+              thereafter; the join token also registers a *new* runner
+
+Storage is SQLite (stdlib); nothing outside the Python standard library is
 required, so it runs on the Proxmox lab box and on the live USB alike.
 
     python3 server/benchd.py --host 0.0.0.0 --port 8722
 
 Config (first wins): --token flag, $BENCHD_TOKEN, server/benchd.conf,
-~/.config/benchd.conf   (key=value, `BENCHD_TOKEN=...`).
-
-API (all under /api/v1, bearer-token protected except /health):
-  runner  POST /register
-          POST /runners/<id>/heartbeat
-          GET  /runners/<id>/commands
-          POST /runners/<id>/commands/<cid>/ack
-          POST /runs
-          POST /runs/<id>/phase
-          POST /runs/<id>/telemetry
-          POST /runs/<id>/event
-          POST /runs/<id>/artifact
-          POST /runs/<id>/finish
-  ui      GET  /state  /stream  /runners  /runs  /runs/<id>
-          GET  /runs/<id>/telemetry  /trends  /metrics
-          POST /runners/<id>/commands
+~/.config/benchd.conf, /etc/benchd.conf   (key=value).
+  BENCHD_TOKEN=...              join/registration token + operator API bearer
 """
 import argparse
 import base64
+import csv
+import io
 import json
 import os
 import re
+import secrets
 import sqlite3
 import threading
 import time
@@ -49,11 +44,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 WEB_DIR = os.path.join(HERE, "web")
 DEFAULT_DB = os.path.join(HERE, "data", "benchd.sqlite")
 
-# canonical telemetry sample order (matches bench/agent.py)
 SAMPLE_FIELDS = ["elapsed", "temp_c", "fan_pct", "power_w", "gpu_util",
                  "gpu_fan_rpm", "cpu_util", "ram_used", "sm_mhz", "mem_used"]
 
-# metrics offered for trends/compare, as dotted paths into a run's summary row
 METRICS = [
     ("gpu_matmul_tflops.fp16", "GPU matmul fp16 (TFLOPS)"),
     ("gpu_matmul_tflops.bf16", "GPU matmul bf16 (TFLOPS)"),
@@ -68,13 +61,13 @@ METRICS = [
     ("fullsoak.result.verdict.clean", "Full-system soak clean (0/1)"),
 ]
 
-ONLINE_WINDOW = 15.0  # seconds since last heartbeat before a runner is offline
+ONLINE_WINDOW = 15.0
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runners (
   id TEXT PRIMARY KEY, name TEXT, os TEXT, kind TEXT, version TEXT,
   capabilities TEXT, first_seen REAL, last_seen REAL, status TEXT,
-  current_run TEXT, addr TEXT, git TEXT
+  current_run TEXT, addr TEXT, git TEXT, api_key TEXT
 );
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY, runner_id TEXT, host TEXT, label TEXT, profile TEXT,
@@ -101,19 +94,23 @@ CREATE TABLE IF NOT EXISTS artifacts (
   id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, name TEXT, kind TEXT,
   size INTEGER, sha256 TEXT, content TEXT
 );
+CREATE TABLE IF NOT EXISTS schedules (
+  id TEXT PRIMARY KEY, runner_id TEXT, label TEXT, profile TEXT, kind TEXT,
+  every_s INTEGER, at_time TEXT, next_run REAL, enabled INTEGER,
+  last_run REAL, created REAL, last_status TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_runs_started ON runs(started);
 CREATE INDEX IF NOT EXISTS idx_runs_runner ON runs(runner_id);
 CREATE INDEX IF NOT EXISTS idx_phases_run ON phases(run_id, seq);
 CREATE INDEX IF NOT EXISTS idx_tele_run ON telemetry(run_id, ts);
 CREATE INDEX IF NOT EXISTS idx_cmd_runner ON commands(runner_id, status);
 CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, ts);
+CREATE INDEX IF NOT EXISTS idx_sched_next ON schedules(enabled, next_run);
 """
 
 
 # --------------------------------------------------------------------- store --
 class Store:
-    """SQLite access, serialised behind one lock (low write volume)."""
-
     def __init__(self, path):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         self.lock = threading.RLock()
@@ -122,7 +119,13 @@ class Store:
         with self.lock:
             self.conn.executescript("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
             self.conn.executescript(SCHEMA)
+            self._migrate()
             self.conn.commit()
+
+    def _migrate(self):
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(runners)")}
+        if "api_key" not in cols:
+            self.conn.execute("ALTER TABLE runners ADD COLUMN api_key TEXT")
 
     def ex(self, sql, args=()):
         with self.lock:
@@ -141,8 +144,6 @@ class Store:
 
 # ----------------------------------------------------------------------- bus --
 class Bus:
-    """Fan-out of live events to SSE subscribers."""
-
     def __init__(self):
         self.lock = threading.Lock()
         self.subs = set()
@@ -168,7 +169,7 @@ class Bus:
                 pass
 
 
-# --------------------------------------------------------------- helpers -----
+# ------------------------------------------------------------------ helpers ---
 def now():
     return time.time()
 
@@ -194,6 +195,7 @@ def dotted(obj, path):
 
 def runner_public(r):
     r = dict(r)
+    r.pop("api_key", None)
     r["online"] = online(r.get("last_seen"))
     try:
         r["capabilities"] = json.loads(r.get("capabilities") or "{}")
@@ -204,22 +206,40 @@ def runner_public(r):
 
 def run_public(r):
     r = dict(r)
-    if r.get("summary"):
-        try:
-            r["summary"] = json.loads(r["summary"])
-        except Exception:
-            pass
-    if r.get("profile"):
-        try:
-            r["profile"] = json.loads(r["profile"])
-        except Exception:
-            pass
+    for k in ("summary", "profile"):
+        if r.get(k):
+            try:
+                r[k] = json.loads(r[k])
+            except Exception:
+                pass
     return r
+
+
+def schedule_public(s):
+    s = dict(s)
+    try:
+        s["profile"] = json.loads(s.get("profile") or "{}")
+    except Exception:
+        s["profile"] = {}
+    return s
+
+
+def next_daily(at_time, after=None):
+    after = after or time.time()
+    try:
+        hh, mm = [int(x) for x in at_time.split(":")]
+    except Exception:
+        hh, mm = 3, 0
+    lt = time.localtime(after)
+    cand = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, hh, mm, 0, 0, 0, -1))
+    if cand <= after:
+        cand += 86400
+    return cand
 
 
 # ------------------------------------------------------------------ server ----
 class Handler(BaseHTTPRequestHandler):
-    server_version = "benchd/1.0"
+    server_version = "benchd/2.0"
     protocol_version = "HTTP/1.0"
     store = None
     bus = None
@@ -230,16 +250,17 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         if getattr(self.server, "quiet", False):
             return
-        ts = time.strftime("%H:%M:%S")
-        print("[benchd] %s %s" % (ts, fmt % args), flush=True)
+        print("[benchd] %s %s" % (time.strftime("%H:%M:%S"), fmt % args), flush=True)
 
-    def _send(self, code, obj=None, raw=None, ctype="application/json"):
+    def _send(self, code, obj=None, raw=None, ctype="application/json", headers=None):
         body = raw if raw is not None else json.dumps(obj).encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         try:
             self.wfile.write(body)
@@ -261,13 +282,35 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
-    def _auth(self, q):
+    # -- auth --------------------------------------------------------------
+    def _bearer(self):
+        h = self.headers.get("Authorization", "")
+        return h[7:] if h.startswith("Bearer ") else None
+
+    def _runner_from_bearer(self):
+        b = self._bearer()
+        if not b:
+            return None
+        return self.store.one("SELECT * FROM runners WHERE api_key=?", (b,))
+
+    def _is_operator(self, q=None):
         if self.token is None:
             return True
-        hdr = self.headers.get("Authorization", "")
-        if hdr.startswith("Bearer ") and hdr[7:] == self.token:
+        b = self._bearer()
+        if b and b == self.token:
             return True
-        if q.get("token", [None])[0] == self.token:
+        if q and q.get("token", [None])[0] == self.token:
+            return True
+        return False
+
+    def _runner_ok(self, rid=None):
+        if self.token is None:
+            return True
+        b = self._bearer()
+        if b and b == self.token:
+            return True
+        r = self._runner_from_bearer()
+        if r and (rid is None or r["id"] == rid):
             return True
         return False
 
@@ -275,20 +318,28 @@ class Handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Authorization,Content-Type")
         self.send_header("Content-Length", "0")
         self.end_headers()
 
     def do_GET(self):
         u = urlparse(self.path)
-        q = parse_qs(u.query)
-        path = u.path
+        path, q = u.path, parse_qs(u.query)
         if path == "/health":
-            return self._send(200, {"ok": True, "runners": len(self.store.q("SELECT id FROM runners")),
-                                    "time": now()})
+            return self._send(200, {"ok": True, "time": now(),
+                                    "runners": len(self.store.q("SELECT id FROM runners"))})
         if path.startswith("/api/"):
-            if not self._auth(q):
+            if path == "/api/v1/stream":
+                if not self._is_operator(q):
+                    return self._err(401, "unauthorized")
+                return self._stream()
+            m = re.match(r"^/api/v1/runners/([^/]+)/commands$", path)
+            if m:
+                if not self._runner_ok(m.group(1)):
+                    return self._err(401, "unauthorized")
+                return self._runner_commands(m.group(1))
+            if not self._is_operator(q):
                 return self._err(401, "unauthorized")
             try:
                 return self._api_get(path, q)
@@ -296,13 +347,26 @@ class Handler(BaseHTTPRequestHandler):
                 return self._err(500, "%s: %s" % (type(exc).__name__, exc))
         return self._static(path)
 
-    def do_POST(self):
+    def do_DELETE(self):
         u = urlparse(self.path)
-        q = parse_qs(u.query)
-        path = u.path
+        path, q = u.path, parse_qs(u.query)
         if not path.startswith("/api/"):
             return self._err(404, "not found")
-        if not self._auth(q):
+        if not self._is_operator(q):
+            return self._err(401, "unauthorized")
+        m = re.match(r"^/api/v1/schedules/([^/]+)$", path)
+        if m:
+            self.store.ex("DELETE FROM schedules WHERE id=?", (m.group(1),))
+            self.bus.publish({"event": "schedule", "data": {"id": m.group(1), "deleted": True}})
+            return self._send(200, {"ok": True})
+        return self._err(404, "not found")
+
+    def do_POST(self):
+        u = urlparse(self.path)
+        path, q = u.path, parse_qs(u.query)
+        if not path.startswith("/api/"):
+            return self._err(404, "not found")
+        if not self._is_operator(q) and not self._runner_ok():
             return self._err(401, "unauthorized")
         try:
             return self._api_post(path, q, self._body())
@@ -317,9 +381,8 @@ class Handler(BaseHTTPRequestHandler):
             active = [run_public(r) for r in
                       S.q("SELECT * FROM runs WHERE status='running' ORDER BY started DESC")]
             for a in active:
-                last = S.one("SELECT * FROM telemetry WHERE run_id=? ORDER BY ts DESC LIMIT 1",
-                             (a["id"],))
-                a["latest"] = last
+                a["latest"] = S.one("SELECT * FROM telemetry WHERE run_id=? ORDER BY ts DESC LIMIT 1",
+                                    (a["id"],))
                 a["phases"] = S.q("SELECT seq,grp,label,status,t0,t1,detail FROM phases "
                                   "WHERE run_id=? ORDER BY seq", (a["id"],))
             recent = [run_public(r) for r in
@@ -331,21 +394,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/v1/runners":
             return self._send(200, {"runners": [runner_public(r) for r in
                                                 S.q("SELECT * FROM runners ORDER BY name")]})
-        m = re.match(r"^/api/v1/runners/([^/]+)/commands$", path)
-        if m:
-            rows = S.q("SELECT id,run_id,kind,payload,status,created,result FROM commands "
-                       "WHERE runner_id=? AND status='queued' ORDER BY created", (m.group(1),))
-            out = []
-            for r in rows:
-                try:
-                    r["payload"] = json.loads(r["payload"] or "{}")
-                except Exception:
-                    r["payload"] = {}
-                out.append(r)
-            if out:
-                S.ex("UPDATE commands SET status='sent', sent=? WHERE runner_id=? AND status='queued'",
-                     (now(), m.group(1)))
-            return self._send(200, {"commands": out})
+        if path == "/api/v1/schedules":
+            return self._send(200, {"schedules": [schedule_public(s) for s in
+                                                  S.q("SELECT * FROM schedules ORDER BY created")]})
         if path == "/api/v1/runs":
             lim = min(int(q.get("limit", ["100"])[0]), 1000)
             off = int(q.get("offset", ["0"])[0])
@@ -358,9 +409,15 @@ class Handler(BaseHTTPRequestHandler):
                 args + [lim, off])]
             total = S.one("SELECT COUNT(*) c FROM runs %s" % where, args)["c"]
             return self._send(200, {"runs": rows, "total": total})
+        m = re.match(r"^/api/v1/runs/([^/]+)/telemetry\.csv$", path)
+        if m:
+            return self._telemetry_csv(m.group(1))
         m = re.match(r"^/api/v1/runs/([^/]+)/telemetry$", path)
         if m:
             return self._run_telemetry(m.group(1), q)
+        m = re.match(r"^/api/v1/runs/([^/]+)/artifact/([^/]+)$", path)
+        if m:
+            return self._artifact_download(m.group(1), m.group(2))
         m = re.match(r"^/api/v1/runs/([^/]+)$", path)
         if m:
             run = S.one("SELECT * FROM runs WHERE id=?", (m.group(1),))
@@ -376,15 +433,27 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, run)
         if path == "/api/v1/trends":
             return self._trends(q)
-        if path == "/api/v1/stream":
-            return self._stream()
         return self._err(404, "not found")
 
+    def _runner_commands(self, rid):
+        rows = self.store.q("SELECT id,run_id,kind,payload,status,created FROM commands "
+                            "WHERE runner_id=? AND status='queued' ORDER BY created", (rid,))
+        out = []
+        for r in rows:
+            try:
+                r["payload"] = json.loads(r["payload"] or "{}")
+            except Exception:
+                r["payload"] = {}
+            out.append(r)
+        if out:
+            self.store.ex("UPDATE commands SET status='sent', sent=? "
+                          "WHERE runner_id=? AND status='queued'", (now(), rid))
+        return self._send(200, {"commands": out})
+
     def _run_telemetry(self, run_id, q):
-        S = self.store
         maxn = min(int(q.get("max", ["600"])[0]), 5000)
-        rows = S.q("SELECT * FROM telemetry WHERE run_id=? ORDER BY ts", (run_id,))
-        if len(rows) > maxn:  # downsample evenly, keeping the last sample
+        rows = self.store.q("SELECT * FROM telemetry WHERE run_id=? ORDER BY ts", (run_id,))
+        if len(rows) > maxn:
             step = len(rows) / float(maxn)
             picked, i = [], 0.0
             while int(i) < len(rows):
@@ -397,11 +466,34 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, {"run_id": run_id, "fields": fields,
                                 "rows": [[r.get(f) for f in fields] for r in rows]})
 
+    def _telemetry_csv(self, run_id):
+        rows = self.store.q("SELECT ts,elapsed,temp_c,fan_pct,power_w,gpu_util,gpu_fan_rpm,"
+                            "cpu_util,ram_used,sm_mhz,mem_used FROM telemetry "
+                            "WHERE run_id=? ORDER BY ts", (run_id,))
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["ts", "elapsed_s", "temp_c", "fan_pct", "power_w", "gpu_util_pct",
+                    "gpu_fan_rpm", "cpu_util_pct", "ram_used_gib", "sm_mhz", "mem_used_gib"])
+        for r in rows:
+            w.writerow([r[k] for k in ("ts", "elapsed", "temp_c", "fan_pct", "power_w",
+                                       "gpu_util", "gpu_fan_rpm", "cpu_util", "ram_used",
+                                       "sm_mhz", "mem_used")])
+        return self._send(200, raw=buf.getvalue().encode(), ctype="text/csv",
+                          headers={"Content-Disposition":
+                                   'attachment; filename="%s-telemetry.csv"' % run_id})
+
+    def _artifact_download(self, run_id, name):
+        a = self.store.one("SELECT * FROM artifacts WHERE run_id=? AND name=?", (run_id, name))
+        if not a:
+            return self._err(404, "no such artifact")
+        ctype = "application/json" if a["kind"] == "json" else "text/plain; charset=utf-8"
+        return self._send(200, raw=(a["content"] or "").encode(), ctype=ctype,
+                          headers={"Content-Disposition":
+                                   'attachment; filename="%s"' % a["name"]})
+
     def _trends(self, q):
         host = q.get("host", [None])[0]
-        metrics = q.get("metric", [])
-        if not metrics:
-            metrics = [m[0] for m in METRICS[:4]]
+        metrics = q.get("metric", []) or [m[0] for m in METRICS[:4]]
         rows = self.store.q("SELECT id,host,label,started,summary FROM runs "
                             "WHERE status!='running' ORDER BY started")
         series = {m: [] for m in metrics}
@@ -431,7 +523,6 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         try:
-            # initial snapshot
             self._sse("snapshot", {"server_time": now()})
             while True:
                 try:
@@ -453,21 +544,7 @@ class Handler(BaseHTTPRequestHandler):
     def _api_post(self, path, q, b):
         S = self.store
         if path == "/api/v1/register":
-            rid = b.get("runner_id") or str(uuid.uuid4())
-            S.ex("INSERT INTO runners(id,name,os,kind,version,capabilities,first_seen,last_seen,"
-                 "status,current_run,addr,git) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) "
-                 "ON CONFLICT(id) DO UPDATE SET name=excluded.name, os=excluded.os, "
-                 "kind=excluded.kind, version=excluded.version, capabilities=excluded.capabilities, "
-                 "last_seen=excluded.last_seen, status=excluded.status, addr=excluded.addr, "
-                 "git=excluded.git",
-                 (rid, b.get("name"), b.get("os"), b.get("kind", "agent"), b.get("version"),
-                  json.dumps(b.get("capabilities") or {}), now(), now(),
-                  b.get("status", "idle"), b.get("current_run"),
-                  self.client_address[0], b.get("git")))
-            r = runner_public(S.one("SELECT * FROM runners WHERE id=?", (rid,)))
-            self.bus.publish({"event": "runner", "data": r})
-            return self._send(200, {"runner_id": rid, "poll_interval": 2.0,
-                                    "telemetry_interval": 1.0, "server_time": now()})
+            return self._register(b)
         m = re.match(r"^/api/v1/runners/([^/]+)/heartbeat$", path)
         if m:
             rid = m.group(1)
@@ -485,17 +562,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "commands": pending, "server_time": now()})
         m = re.match(r"^/api/v1/runners/([^/]+)/commands$", path)
         if m:
-            kind = b.get("kind")
-            if kind not in ("start", "stop", "update", "fan_curve", "power_limit", "restart"):
-                return self._err(400, "unknown command kind")
-            cid = str(uuid.uuid4())
-            S.ex("INSERT INTO commands(id,runner_id,kind,payload,status,created) "
-                 "VALUES(?,?,?,?,?,?)",
-                 (cid, m.group(1), kind, json.dumps(b.get("payload") or {}), "queued", now()))
-            cmd = S.one("SELECT * FROM commands WHERE id=?", (cid,))
-            self.bus.publish({"event": "command", "data": {"id": cid, "runner_id": m.group(1),
-                                                           "kind": kind, "status": "queued"}})
-            return self._send(200, {"id": cid, "status": "queued"})
+            if not self._is_operator(q):
+                return self._err(401, "unauthorized")
+            return self._issue_command(m.group(1), b)
         m = re.match(r"^/api/v1/runners/([^/]+)/commands/([^/]+)/ack$", path)
         if m:
             S.ex("UPDATE commands SET status=?, acked=?, result=? WHERE id=?",
@@ -504,6 +573,8 @@ class Handler(BaseHTTPRequestHandler):
                                                            "status": b.get("status", "done"),
                                                            "result": b.get("result")}})
             return self._send(200, {"ok": True})
+        if path == "/api/v1/schedules":
+            return self._create_schedule(b)
         if path == "/api/v1/runs":
             rid = b.get("runner_id")
             run_id = b.get("id") or str(uuid.uuid4())
@@ -530,9 +601,9 @@ class Handler(BaseHTTPRequestHandler):
                      "VALUES(?,?,?,?,?,?,?,?)",
                      (run_id, seq, b.get("group"), b.get("label"), b.get("status", "running"),
                       b.get("t0") or now(), b.get("t1"), b.get("detail")))
-            ev = {"run_id": run_id, "seq": seq, "group": b.get("group"), "label": b.get("label"),
-                  "status": b.get("status", "running"), "detail": b.get("detail")}
-            self.bus.publish({"event": "phase", "data": ev})
+            self.bus.publish({"event": "phase", "data": {
+                "run_id": run_id, "seq": seq, "group": b.get("group"), "label": b.get("label"),
+                "status": b.get("status", "running"), "detail": b.get("detail")}})
             return self._send(200, {"ok": True})
         m = re.match(r"^/api/v1/runs/([^/]+)/telemetry$", path)
         if m:
@@ -551,8 +622,7 @@ class Handler(BaseHTTPRequestHandler):
             if samples:
                 last = (list(samples[-1]) + [None] * len(SAMPLE_FIELDS))[:len(SAMPLE_FIELDS)]
                 self.bus.publish({"event": "telemetry",
-                                  "data": {"run_id": run_id, "sample": last,
-                                           "n": len(samples)}})
+                                  "data": {"run_id": run_id, "sample": last, "n": len(samples)}})
             return self._send(200, {"ok": True, "accepted": len(rows)})
         m = re.match(r"^/api/v1/runs/([^/]+)/event$", path)
         if m:
@@ -569,15 +639,15 @@ class Handler(BaseHTTPRequestHandler):
             content = b.get("content")
             raw = base64.b64decode(content) if content else b""
             S.ex("INSERT INTO artifacts(run_id,name,kind,size,sha256,content) VALUES(?,?,?,?,?,?)",
-                 (run_id, name, b.get("kind", "json"), len(raw), b.get("sha256"), raw.decode("utf-8", "replace")))
+                 (run_id, name, b.get("kind", "json"), len(raw),
+                  b.get("sha256"), raw.decode("utf-8", "replace")))
             return self._send(200, {"ok": True})
         m = re.match(r"^/api/v1/runs/([^/]+)/finish$", path)
         if m:
             run_id = m.group(1)
-            status = b.get("status", "done")
             S.ex("UPDATE runs SET status=?, ended=?, exit_code=?, summary=?, platform=COALESCE(?,platform),"
                  " gpu=COALESCE(?,gpu), driver=COALESCE(?,driver), torch=COALESCE(?,torch) WHERE id=?",
-                 (status, now(), b.get("exit_code"), json.dumps(b.get("summary") or {}),
+                 (b.get("status", "done"), now(), b.get("exit_code"), json.dumps(b.get("summary") or {}),
                   b.get("platform"), b.get("gpu"), b.get("driver"), b.get("torch"), run_id))
             run = S.one("SELECT runner_id FROM runs WHERE id=?", (run_id,))
             if run and run["runner_id"]:
@@ -587,6 +657,65 @@ class Handler(BaseHTTPRequestHandler):
             self.bus.publish({"event": "run", "data": run})
             return self._send(200, {"ok": True})
         return self._err(404, "not found")
+
+    def _register(self, b):
+        S = self.store
+        rid = b.get("runner_id")
+        key = b.get("api_key")
+        existing = None
+        if rid:
+            existing = S.one("SELECT * FROM runners WHERE id=?", (rid,))
+            if existing and key and existing["api_key"] != key:
+                existing = None  # stale/wrong key -> treat as new
+        if not existing:
+            rid = rid or str(uuid.uuid4())
+            key = secrets.token_urlsafe(32)
+        else:
+            key = existing["api_key"]
+        S.ex("INSERT INTO runners(id,name,os,kind,version,capabilities,first_seen,last_seen,"
+             "status,current_run,addr,git,api_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) "
+             "ON CONFLICT(id) DO UPDATE SET name=excluded.name, os=excluded.os, kind=excluded.kind, "
+             "version=excluded.version, capabilities=excluded.capabilities, last_seen=excluded.last_seen, "
+             "status=excluded.status, addr=excluded.addr, git=excluded.git",
+             (rid, b.get("name"), b.get("os"), b.get("kind", "agent"), b.get("version"),
+              json.dumps(b.get("capabilities") or {}), now(), now(),
+              b.get("status", "idle"), b.get("current_run"), self.client_address[0],
+              b.get("git"), key))
+        r = runner_public(S.one("SELECT * FROM runners WHERE id=?", (rid,)))
+        self.bus.publish({"event": "runner", "data": r})
+        return self._send(200, {"runner_id": rid, "api_key": key, "poll_interval": 2.0,
+                                "telemetry_interval": 1.0, "server_time": now()})
+
+    def _issue_command(self, rid, b):
+        S = self.store
+        kind = b.get("kind")
+        if kind not in ("start", "stop", "update", "fan_curve", "power_limit", "restart"):
+            return self._err(400, "unknown command kind")
+        cid = str(uuid.uuid4())
+        S.ex("INSERT INTO commands(id,runner_id,kind,payload,status,created) VALUES(?,?,?,?,?,?)",
+             (cid, rid, kind, json.dumps(b.get("payload") or {}), "queued", now()))
+        self.bus.publish({"event": "command", "data": {"id": cid, "runner_id": rid,
+                                                       "kind": kind, "status": "queued"}})
+        return self._send(200, {"id": cid, "status": "queued"})
+
+    def _create_schedule(self, b):
+        S = self.store
+        rid = b.get("runner_id")
+        if not rid or not S.one("SELECT id FROM runners WHERE id=?", (rid,)):
+            return self._err(400, "runner_id required")
+        kind = b.get("kind", "every")
+        every_s = int(b.get("every_s") or 0)
+        at_time = b.get("at_time") or "03:00"
+        sid = str(uuid.uuid4())
+        nxt = (next_daily(at_time) if kind == "daily"
+               else now() + max(60, every_s))
+        S.ex("INSERT INTO schedules(id,runner_id,label,profile,kind,every_s,at_time,next_run,"
+             "enabled,last_run,created,last_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+             (sid, rid, b.get("label") or "scheduled run", json.dumps(b.get("profile") or {}),
+              kind, every_s, at_time, nxt, 1 if b.get("enabled", True) else 0, None, now(), None))
+        s = schedule_public(S.one("SELECT * FROM schedules WHERE id=?", (sid,)))
+        self.bus.publish({"event": "schedule", "data": s})
+        return self._send(200, {"id": sid, "next_run": nxt})
 
     # -- static ------------------------------------------------------------
     def _static(self, path):
@@ -600,24 +729,57 @@ class Handler(BaseHTTPRequestHandler):
                  ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml",
                  ".ico": "image/x-icon", ".png": "image/png"}.get(
             os.path.splitext(full)[1], "application/octet-stream")
-        with open(full, "rb") as fh:
-            return self._send(200, raw=fh.read(), ctype=ctype)
+        with open(full, "rb") as fb:
+            return self._send(200, raw=fb.read(), ctype=ctype)
+
+
+# ------------------------------------------------------------------ scheduler --
+def scheduler_tick(store, bus):
+    """One pass: queue a start command for every due schedule. Returns the count."""
+    fired = 0
+    due = store.q("SELECT * FROM schedules WHERE enabled=1 AND next_run<=?", (now(),))
+    for s in due:
+        cmd = str(uuid.uuid4())
+        store.ex("INSERT INTO commands(id,runner_id,kind,payload,status,created) "
+                 "VALUES(?,?,?,?,?,?)",
+                 (cmd, s["runner_id"], "start", s["profile"] or "{}", "queued", now()))
+        nxt = (next_daily(s["at_time"]) if s["kind"] == "daily"
+               else now() + max(60, s["every_s"] or 3600))
+        store.ex("UPDATE schedules SET next_run=?, last_run=?, last_status=? WHERE id=?",
+                 (nxt, now(), "queued", s["id"]))
+        bus.publish({"event": "command", "data": {"id": cmd, "runner_id": s["runner_id"],
+                                                  "kind": "start", "status": "queued"}})
+        bus.publish({"event": "schedule", "data": schedule_public(
+            store.one("SELECT * FROM schedules WHERE id=?", (s["id"],)))})
+        fired += 1
+    return fired
+
+
+def scheduler_loop(store, bus, stop):
+    """Fire due schedules by queueing a start command to the target runner."""
+    while not stop.is_set():
+        try:
+            scheduler_tick(store, bus)
+        except Exception as e:
+            print("[benchd] scheduler error: %s" % e, flush=True)
+        stop.wait(10.0)
 
 
 # -------------------------------------------------------------------- config --
-def find_token(cli_token):
-    if cli_token:
-        return cli_token
-    if os.environ.get("BENCHD_TOKEN"):
-        return os.environ["BENCHD_TOKEN"]
+def find_conf_value(key):
     for cand in (os.path.join(HERE, "benchd.conf"), os.path.expanduser("~/.config/benchd.conf"),
                  "/etc/benchd.conf"):
         if os.path.isfile(cand):
             for ln in open(cand):
                 ln = ln.strip()
-                if ln.startswith("BENCHD_TOKEN="):
+                if ln.startswith(key + "="):
                     return ln.split("=", 1)[1].strip().strip('"').strip("'")
     return None
+
+
+def find_token(cli_token):
+    return (cli_token or os.environ.get("BENCHD_TOKEN")
+            or find_conf_value("BENCHD_TOKEN"))
 
 
 def main():
@@ -625,29 +787,31 @@ def main():
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8722)
     ap.add_argument("--db", default=DEFAULT_DB)
-    ap.add_argument("--token", default=None, help="shared bearer token (else env/conf)")
+    ap.add_argument("--token", default=None, help="join/registration + operator API bearer")
     ap.add_argument("--web", default=WEB_DIR)
     ap.add_argument("--quiet", action="store_true")
     a = ap.parse_args()
 
     token = find_token(a.token)
-    Handler.store = Store(a.db)
-    Handler.bus = Bus()
-    Handler.token = token
-    Handler.web_dir = a.web
+    store = Store(a.db)
+    Handler.store, Handler.bus, Handler.token, Handler.web_dir = store, Bus(), token, a.web
     httpd = ThreadingHTTPServer((a.host, a.port), Handler)
     httpd.quiet = a.quiet
     httpd.daemon_threads = True
+
+    stop = threading.Event()
+    threading.Thread(target=scheduler_loop, args=(store, Handler.bus, stop), daemon=True).start()
+
     print("[benchd] listening on http://%s:%d  db=%s  auth=%s"
-          % (a.host, a.port, a.db, "token" if token else "NONE"), flush=True)
+          % (a.host, a.port, a.db, "token+login" if token else "OPEN (no token)"), flush=True)
     if not token:
-        print("[benchd] WARNING: no token set - anyone on the network can control runners",
-              flush=True)
+        print("[benchd] WARNING: no BENCHD_TOKEN set - anyone can register/control", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        stop.set()
         httpd.server_close()
 
 
