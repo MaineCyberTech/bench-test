@@ -359,6 +359,14 @@ class Handler(BaseHTTPRequestHandler):
             self.store.ex("DELETE FROM schedules WHERE id=?", (m.group(1),))
             self.bus.publish({"event": "schedule", "data": {"id": m.group(1), "deleted": True}})
             return self._send(200, {"ok": True})
+        m = re.match(r"^/api/v1/runs/([^/]+)$", path)
+        if m:
+            rid = m.group(1)
+            for t in ("phases", "telemetry", "events", "artifacts"):
+                self.store.ex("DELETE FROM %s WHERE run_id=?" % t, (rid,))
+            self.store.ex("DELETE FROM runs WHERE id=?", (rid,))
+            self.bus.publish({"event": "run", "data": {"id": rid, "deleted": True}})
+            return self._send(200, {"ok": True})
         return self._err(404, "not found")
 
     def do_POST(self):
