@@ -22,7 +22,7 @@ on:
         default: nvidia-legacy
       runner_labels:
         description: "JSON array of runner labels"
-        default: '["self-hosted","linux","x64"]'
+        default: '["self-hosted","linux","x64","lab"]'
       upload_release:
         description: "Attach the ISO to a GitHub release"
         type: boolean
@@ -83,7 +83,7 @@ jobs:
       - name: Build ISO (${{ inputs.gpu }})
         run: |
           set -euo pipefail
-          sudo -n env BENCH_WORK_DIR=/var/tmp ./live/Build-LiveUSB.sh --gpu ${{ inputs.gpu }}
+          bash live/ci-build.sh ${{ inputs.gpu }}
           mkdir -p dist
           cp "$(ls -t live/out-${{ inputs.gpu }}/*.iso | head -1)" "dist/bench-live-${{ inputs.gpu }}.iso"
           sha256sum dist/*.iso | tee dist/SHA256SUMS
