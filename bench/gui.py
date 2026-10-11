@@ -480,11 +480,15 @@ class Dashboard:
                     self.tree.item(item, tags=("warn",))
             elif head in dict(GROUPS):
                 label = rest if len(rest) <= 70 else rest[:67] + "..."
-                prev = self.last_row.get(head)
+                # phases run one at a time, so when a new one starts any row still
+                # marked "running" has finished (this also closes a group's last row
+                # when the run moves on to the next group)
+                for item in self.tree.get_children():
+                    if self.tree.set(item, "status") == "running":
+                        tags = [t for t in self.tree.item(item, "tags") if t != "run"] + ["ok"]
+                        self.tree.set(item, "status", "done")
+                        self.tree.item(item, tags=tags)
                 zebra = "odd" if len(self.tree.get_children()) % 2 else ""
-                if prev:
-                    self.tree.set(prev, "status", "done")
-                    self.tree.item(prev, tags=("ok", zebra))
                 item = self.tree.insert("", "end", values=(head, label, "running", "0:00"),
                                         tags=("run", zebra))
                 self.tree.see(item)

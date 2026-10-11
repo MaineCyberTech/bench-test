@@ -300,10 +300,12 @@ class BenchTUI:
                     ph["status"] = "warn"
                     ph["detail"] = rest
             elif head in GROUPS:
-                prev = self.last_phase.get(head)
-                if prev:
-                    prev["status"] = "ok"
-                    prev["t1"] = time.time()
+                # phases run one at a time: a new phase closes out any phase still
+                # marked running (including the previous group's last phase)
+                for p in self.phases:
+                    if p["status"] == "run":
+                        p["status"] = "ok"
+                        p["t1"] = time.time()
                 ph = {"group": head, "label": rest, "status": "run", "t0": time.time(),
                       "t1": None, "detail": ""}
                 self.phases.append(ph)

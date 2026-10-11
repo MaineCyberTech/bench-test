@@ -41,6 +41,25 @@ public struct RECT { public int Left,Top,Right,Bottom; }
 public struct POINT { public int X,Y; }
 '@
 Add-Type -AssemblyName System.Drawing, System.Windows.Forms
+Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @'
+using System;
+using System.Drawing;
+public static class ValleyPanel {
+  // True once the centred Unigine result dialog is on screen. Its interior is a
+  // flat slate-blue (#304B5C); scene content never fills a centred region with it.
+  public static bool Shown(Bitmap b, double wf, double hf, double minFrac) {
+    int pw = (int)(b.Width * wf), ph = (int)(b.Height * hf);
+    int l = b.Width / 2 - pw / 2, t = b.Height / 2 - ph / 2;
+    int step = Math.Max(2, b.Width / 480);
+    long n = 0, hit = 0;
+    for (int y = t; y < t + ph; y += step) for (int x = l; x < l + pw; x += step) {
+      var c = b.GetPixel(x, y); n++;
+      if (Math.Abs(c.R - 0x30) <= 12 && Math.Abs(c.G - 0x4B) <= 12 && Math.Abs(c.B - 0x5C) <= 12) hit++;
+    }
+    return n > 0 && (double)hit / n >= minFrac;
+  }
+}
+'@
 $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
 
 function Click([int]$x, [int]$y) {
@@ -108,7 +127,7 @@ if ($win -and $win.MainWindowHandle -ne 0) {
     Click2 47 13
 }
 
-$mon = Start-Job { param($s) $end=(Get-Date).AddSeconds($s); $a=@(); while((Get-Date) -lt $end){ $l=& nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,power.draw,clocks.sm,fan.speed --format=csv,noheader 2>$null; if($l -match ','){$p=$l -split ','|%{[double](($_ -replace '[^0-9\.]',''))}; $a+=[pscustomobject]@{u=$p[0];t=$p[1];pw=$p[2];sm=$p[3];f=$p[4]}}; Start-Sleep -Milliseconds 1000 }; return $a } -ArgumentList ($CaptureEverySeconds * $CaptureCount + 30)
+$mon = Start-Job { param($s) $end=(Get-Date).AddSeconds($s); while((Get-Date) -lt $end){ $l=& nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,power.draw,clocks.sm,fan.speed --format=csv,noheader 2>$null; if($l -match ','){$p=$l -split ','|%{[double](($_ -replace '[^0-9\.]',''))}; [pscustomobject]@{u=$p[0];t=$p[1];pw=$p[2];sm=$p[3];f=$p[4]}}; Start-Sleep -Milliseconds 1000 } } -ArgumentList ($CaptureEverySeconds * $CaptureCount + 30)
 
 Write-Host "[valley] benchmarking; capturing $CaptureCount frames every ${CaptureEverySeconds}s ..."
 $shots = @()
@@ -117,14 +136,22 @@ for ($i = 1; $i -le $CaptureCount; $i++) {
     if (-not (Get-EngineWin)) { Write-Host "[valley] engine closed at f$i"; break }
     $bmp = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
     $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($screen.Location, [System.Drawing.Point]::Empty, $screen.Size)
-    $fp = "$base-f$('{0:00}' -f $i).png"; $bmp.Save($fp); $g.Dispose(); $bmp.Dispose()
+    $fp = "$base-f$('{0:00}' -f $i).png"; $bmp.Save($fp); $g.Dispose()
+    # the engine sits on its result dialog forever after the run - stop as soon as
+    # the panel appears (the frame we just saved is the score screen)
+    $panel = [ValleyPanel]::Shown($bmp, 0.34, 0.52, 0.30)
+    $bmp.Dispose()
     $shots += $fp
+    if ($panel) { Write-Host "[valley] result panel detected at f$i - stopping capture" -ForegroundColor Green; break }
 }
 Write-Host "[valley] frames: $($shots.Count) -> $base-f*.png" -ForegroundColor Green
 
-$s = Receive-Job $mon -Wait -ErrorAction SilentlyContinue; Remove-Job $mon -Force -ErrorAction SilentlyContinue
+Stop-Job $mon -ErrorAction SilentlyContinue
+$s = Receive-Job $mon -ErrorAction SilentlyContinue
+Remove-Job $mon -Force -ErrorAction SilentlyContinue
 $m = $s | Measure-Object u, t, pw, sm, f -Average -Maximum
-"valley telemetry: util avg/max=$([math]::Round(($m|?{$_.Property -eq 'u'}).Average,0))/$([math]::Round(($m|?{$_.Property -eq 'u'}).Maximum,0))%  temp max=$([math]::Round(($m|?{$_.Property -eq 't'}).Maximum,0))C  power max=$([math]::Round(($m|?{$_.Property -eq 'pw'}).Maximum,0))W  fan max=$([math]::Round(($m|?{$_.Property -eq 'f'}).Maximum,0))%"
+function Rnd($v) { if ($null -eq $v) { 0 } else { [math]::Round($v, 0) } }
+"valley telemetry: util avg/max=$(Rnd ($m|?{$_.Property -eq 'u'}).Average)/$(Rnd ($m|?{$_.Property -eq 'u'}).Maximum)%  temp max=$(Rnd ($m|?{$_.Property -eq 't'}).Maximum)C  power max=$(Rnd ($m|?{$_.Property -eq 'pw'}).Maximum)W  fan max=$(Rnd ($m|?{$_.Property -eq 'f'}).Maximum)%"
 
 Get-Process browser_x86, Valley -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 [pscustomobject]@{ frames = $shots; util_max = ($m | Where-Object { $_.Property -eq 'u' }).Maximum; temp_max = ($m | Where-Object { $_.Property -eq 't' }).Maximum } | ConvertTo-Json
