@@ -14,18 +14,21 @@ cd "$REPO"
 echo "[ci] host: $(uname -srm)  user: $(id -un)  nproc: $(nproc)  mem: $(free -h | awk '/Mem:/{print $2}')"
 command -v docker >/dev/null 2>&1 && echo "[ci] docker: yes ($(docker --version 2>/dev/null))" || echo "[ci] docker: no"
 
-# biggest writable non-system mount wins (e.g. /mnt on GitHub-hosted runners)
-BIG=$(df -BG --output=avail,target 2>/dev/null | tail -n +2 \
-      | grep -vE "/(dev|proc|sys|run|boot|efi)(/|$)|/dev/shm|/run" \
-      | sort -rn | head -1 | awk '{print $2}')
-FREE_GB=$(df -BG --output=avail "$BIG" 2>/dev/null | tail -1 | tr -dc '0-9')
-echo "[ci] big volume: $BIG (${FREE_GB:-0}G free)"
-if [ "${FREE_GB:-0}" -lt 40 ]; then
-    echo "[ci] ERROR: the biggest volume has only ${FREE_GB:-0}G free; the build needs ~25-30G." >&2
+# pick the roomiest writable directory for heavy state
+BEST=""; BEST_GB=0
+for d in /var/tmp /mnt "$HOME" /tmp; do
+    [ -d "$d" ] && [ -w "$d" ] || continue
+    fg=$(df -BG --output=avail "$d" 2>/dev/null | tail -1 | tr -dc '0-9'); fg=${fg:-0}
+    echo "[ci] candidate $d: ${fg}G free"
+    [ "$fg" -gt "$BEST_GB" ] && { BEST="$d"; BEST_GB="$fg"; }
+done
+echo "[ci] big volume: $BEST (${BEST_GB}G free)"
+if [ "$BEST_GB" -lt 40 ]; then
+    echo "[ci] ERROR: the biggest writable volume has only ${BEST_GB}G free; the build needs ~25-30G." >&2
     echo "[ci] Resize the runner or free space (this is why small lab guests cannot build the ISO)." >&2
     exit 1
 fi
-WORKROOT="$BIG/bench-ci"
+WORKROOT="$BEST/bench-ci"
 mkdir -p "$WORKROOT/venv" "$WORKROOT/out-$GPU" "$WORKROOT/pip"
 
 # route heavy state to the big volume
