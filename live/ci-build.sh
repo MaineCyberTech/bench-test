@@ -38,6 +38,10 @@ ln -sfn "$WORKROOT/out-$GPU" live/out-"$GPU"
 
 build_native() {
     echo "[ci] native Arch runner - building directly"
+    if [ -f live/keys/omarchy.gpg ]; then
+        sudo -n pacman-key --add live/keys/omarchy.gpg >/dev/null 2>&1 || true
+        sudo -n pacman-key --lsign-key 40DFB630FF42BCFFB047046CF0134EE680CAC571 >/dev/null 2>&1 || true
+    fi
     [ -x "$WORKROOT/venv/bin/python" ] || python3 -m venv --clear "$WORKROOT/venv"
     if [ "$GPU" != "amd" ] && ! .venv/bin/python -c 'import torch' 2>/dev/null; then
         .venv/bin/pip install torch numpy psutil cryptography \
@@ -59,6 +63,10 @@ build_container() {
             set -euo pipefail
             pacman-key --init 2>/dev/null || true
             pacman-key --populate archlinux 2>/dev/null || true
+            if [ -f /work/live/keys/omarchy.gpg ]; then
+                pacman-key --add /work/live/keys/omarchy.gpg >/dev/null 2>&1 || true
+                pacman-key --lsign-key 40DFB630FF42BCFFB047046CF0134EE680CAC571 >/dev/null 2>&1 || true
+            fi
             pacman -Sy --noconfirm --needed archiso dosfstools python python-pip rsync
             [ -x /bigwork/venv/bin/python ] || python3 -m venv --clear /bigwork/venv
             # host-side absolute symlinks do not resolve in here; re-point them
