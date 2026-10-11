@@ -39,7 +39,7 @@ ln -sfn "$WORKROOT/out-$GPU" live/out-"$GPU"
 build_native() {
     echo "[ci] native Arch runner - building directly"
     if [ "$GPU" != "amd" ] && ! .venv/bin/python -c 'import torch' 2>/dev/null; then
-        python3 -m venv .venv
+        python3 -m venv --clear "$WORKROOT/venv"
         .venv/bin/pip install torch numpy psutil cryptography \
             --index-url https://download.pytorch.org/whl/cu126 \
             --extra-index-url https://pypi.org/simple
@@ -61,7 +61,7 @@ build_container() {
             pacman-key --populate archlinux 2>/dev/null || true
             pacman -Sy --noconfirm --needed archiso dosfstools python python-pip rsync
             if [ "$GPU" != "amd" ] && ! .venv/bin/python -c "import torch" 2>/dev/null; then
-                python3 -m venv .venv
+                python3 -m venv --clear /bigwork/venv
                 .venv/bin/pip install torch numpy psutil cryptography \
                     --index-url https://download.pytorch.org/whl/cu126 \
                     --extra-index-url https://pypi.org/simple
