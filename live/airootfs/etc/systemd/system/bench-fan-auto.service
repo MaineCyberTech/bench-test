@@ -1,0 +1,13 @@
+[Unit]
+Description=bench-test: enable the GPU fan curve when the hardware supports it
+After=bench-dkms.service multi-user.target
+Wants=bench-dkms.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/bench-fan-auto
+TimeoutSec=240
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Enable the GPU fan curve automatically when the hardware supports it.
+# Runs once per boot; the dashboard's 'f' key can still switch it off, and
+# the next boot re-arms it.
+set -u
+CURVE="35:26 45:34 55:44 60:52 68:64 75:76 82:90 88:100"
+LOG=/tmp/bench-fan-auto.log
+if /usr/local/bin/bench-fan-curve set --curve "$CURVE" >"$LOG" 2>&1; then
+    systemctl start bench-fan-curve.service >>"$LOG" 2>&1 || true
+    echo "[fan-auto] curve enabled: $CURVE"
+else
+    /usr/local/bin/bench-fan-curve off >/dev/null 2>&1 || true
+    echo "[fan-auto] no controllable GPU fans found - automatic control stays"
+fi
+exit 0

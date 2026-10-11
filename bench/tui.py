@@ -822,6 +822,10 @@ class BenchTUI:
             except Exception:
                 self.gpu = {}
             frame += 1
+            if frame % 8 == 0:
+                # pick up curve state changes made outside the TUI (the boot
+                # auto-enable service, or a manual bench-fan-curve run)
+                self.curve = self._curve_state()
             if frame % 40 == 0:
                 # self-heal: something wrote outside curses (kernel/VT) and the
                 # screen model desynced; force a full repaint occasionally

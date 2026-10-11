@@ -163,6 +163,8 @@ fi
 if [ -n "${FM_SRC:-}" ] && [ -x "$FM_SRC/furmark" ]; then
     mkdir -p "$PROFILE/airootfs/opt/bench-test/tools/furmark"
     cp -r "$FM_SRC" "$PROFILE/airootfs/opt/bench-test/tools/furmark/"
+    # some copy paths lose the exec bit (seen in CI); force it
+    chmod 755 "$PROFILE/airootfs/opt/bench-test/tools/furmark/FurMark_linux64/furmark" 2>/dev/null || true
 else
     echo "[build] WARNING: FurMark not available - gfx phase will skip" >&2
 fi
@@ -179,6 +181,10 @@ ln -sf ../bench-tui@.service \
 # default); the dashboard's 'f' key starts it explicitly
 ln -sf ../bench-fan-curve.service \
     "$PROFILE/airootfs/etc/systemd/system/multi-user.target.wants/bench-fan-curve.service"
+# fan curve auto-enable: applies the curve at boot when the hardware supports
+# it (the dashboard's 'f' still switches it off for the session)
+ln -sf ../bench-fan-auto.service \
+    "$PROFILE/airootfs/etc/systemd/system/multi-user.target.wants/bench-fan-auto.service"
 
 # exec permissions for our helpers
 cat >> "$PROFILE/profiledef.sh" <<'EOF'
@@ -187,10 +193,12 @@ file_permissions+=(
   ["/usr/local/bin/bench-tui"]="0:0:755"
   ["/usr/local/bin/bench-gui"]="0:0:755"
   ["/usr/local/bin/bench-fan-curve"]="0:0:755"
+  ["/usr/local/bin/bench-fan-auto"]="0:0:755"
   ["/usr/local/bin/bench-live-run"]="0:0:755"
   ["/usr/local/bin/bench-collect"]="0:0:755"
   ["/usr/local/bin/bench-upload"]="0:0:755"
   ["/opt/bench-test/bench/Run-LinuxBench.sh"]="0:0:755"
+  ["/opt/bench-test/tools/furmark/FurMark_linux64/furmark"]="0:0:755"
 )
 EOF
 
