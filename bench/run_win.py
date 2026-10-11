@@ -57,7 +57,8 @@ def sampler(csv_path, stop_evt):
                 out = subprocess.run(
                     ["nvidia-smi", "--query-gpu=temperature.gpu,fan.speed,power.draw,utilization.gpu",
                      "--format=csv,noheader,nounits"],
-                    capture_output=True, text=True, timeout=5).stdout.strip()
+                    capture_output=True, text=True, timeout=5,
+                    creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)).stdout.strip()
                 v = [x.strip() for x in out.split(",")]
                 row += [float(v[0]), float(v[1]), float(v[2]), float(v[3]), float(v[1])]
             except Exception:

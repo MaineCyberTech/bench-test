@@ -443,7 +443,7 @@ class Dashboard:
         self.running = True
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
-        self._set_status("running · %s" % PRESETS[self.preset][0].split(" (")[0], ACCENT)
+        self._set_status("running · %s" % (self.preset.get() or "run").split(" (")[0], ACCENT)
         self._log("[gui] %s %s" % (RUNNER, " ".join(RUNNER_PREFIX + args)))
         threading.Thread(target=self._reader, args=(self.proc,), daemon=True).start()
 
