@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Upload the newest bench-test results to GitHub (live USB wrapper).
+# Config: /mnt/benchdata/bench-upload.conf (see bench/upload.py for the format)
+set -u
+REPO=/opt/bench-test
+exec python3 "$REPO/bench/upload.py" "${1:-$REPO/results}"

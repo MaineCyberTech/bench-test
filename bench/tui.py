@@ -8,7 +8,7 @@ viewer, and one-key collect to the live USB.
 
     python bench/tui.py [--results-dir DIR] [--demo] [--exit-after SECS]
 
-Keys:  s start · x stop · c collect · f fan-curve · p cycle preset · 1-0 groups
+Keys:  s start · x stop · c collect · u upload · f fan-curve · p cycle preset · 1-0 groups
        r report · G graphical dashboard · t shell · PgUp/PgDn log · q quit
 """
 import argparse
@@ -167,6 +167,8 @@ class BenchTUI:
                     if r.returncode == 0:
                         self.collected_ok = True
                         self._set("saved to USB: %s" % last[:64], 1)
+                        if self._auto_upload_enabled():
+                            self.upload()
                     else:
                         self._set("USB save FAILED - %s" % last[:52], 3)
                 except Exception as exc:
@@ -174,6 +176,41 @@ class BenchTUI:
             threading.Thread(target=work, daemon=True).start()
         else:
             self._set("results kept in %s" % self.results_dir, 5)
+
+    def _auto_upload_enabled(self):
+        for c in ("/mnt/benchdata/bench-upload.conf", "/etc/bench-upload.conf"):
+            try:
+                with open(c) as fh:
+                    for ln in fh:
+                        if ln.strip().startswith("AUTO_UPLOAD=") and \
+                           ln.split("=", 1)[1].strip().strip('"') == "1":
+                            return True
+            except Exception:
+                pass
+        return False
+
+    def upload(self):
+        if not os.path.exists("/usr/local/bin/bench-upload"):
+            self._set("upload not available on this system", 3)
+            return
+        self._set("uploading to GitHub...", 2)
+
+        def work():
+            try:
+                r = subprocess.run(["/usr/local/bin/bench-upload", self.results_dir],
+                                   timeout=600, capture_output=True, text=True)
+                out = ((r.stdout or "") + (r.stderr or "")).strip()
+                try:
+                    with open(os.path.join(self.results_dir, "upload.log"), "a") as fh:
+                        fh.write(out + "\n")
+                except Exception:
+                    pass
+                lines = [ln for ln in out.splitlines() if ln.strip()]
+                last = lines[-1] if lines else "no output"
+                self._set(last.replace("[upload] ", "")[:70], 1 if r.returncode == 0 else 3)
+            except Exception as exc:
+                self._set("upload failed: %s" % exc, 3)
+        threading.Thread(target=work, daemon=True).start()
 
     def _set(self, text, attr=0):
         self.status = text
@@ -626,8 +663,8 @@ class BenchTUI:
         for i, line in enumerate(view):
             self._put(log_y + 1 + i, 2, line[:W - 4], curses.color_pair(8))
 
-        keys = (" s start · x stop · c collect · f fan-curve · p profile · 1-0 groups · "
-                "r report · G gui · t shell · PgUp/PgDn · q quit ")
+        keys = (" s start · x stop · c collect · u upload · f fan-curve · p profile · "
+                "1-0 groups · r report · G gui · t shell · PgUp/PgDn · q quit ")
         self._put(H - 1, 0, keys.ljust(W - 1)[:W - 1], curses.color_pair(2) | curses.A_REVERSE)
         self.scr.refresh()
 
@@ -695,6 +732,8 @@ class BenchTUI:
             self.stop()
         elif ch == ord("c"):
             self.collect()
+        elif ch == ord("u"):
+            self.upload()
         elif ch == ord("f"):
             self.toggle_curve()
         elif ch == ord("r"):

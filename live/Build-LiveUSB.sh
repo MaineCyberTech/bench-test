@@ -133,6 +133,7 @@ file_permissions+=(
   ["/usr/local/bin/bench-fan-curve"]="0:0:755"
   ["/usr/local/bin/bench-live-run"]="0:0:755"
   ["/usr/local/bin/bench-collect"]="0:0:755"
+  ["/usr/local/bin/bench-upload"]="0:0:755"
   ["/opt/bench-test/bench/Run-LinuxBench.sh"]="0:0:755"
 )
 EOF
@@ -168,6 +169,20 @@ if [ -n "$WRITE_DEV" ]; then
         sleep 1
     done
 
+    # preserve the GitHub upload config across reflashes when present
+    CONF_SAVE=""
+    for part in "$WRITE_DEV"*; do
+        [ -b "$part" ] || continue
+        if mount "$part" /mnt 2>/dev/null; then
+            if [ -f /mnt/bench-upload.conf ]; then
+                CONF_SAVE="$(mktemp)"
+                cp /mnt/bench-upload.conf "$CONF_SAVE"
+                echo "[write] preserved bench-upload.conf from $part"
+            fi
+            umount /mnt 2>/dev/null || true
+        fi
+    done
+
     dd if="$ISO" of="$WRITE_DEV" bs=4M status=progress conv=fsync
     sync
     udevadm settle || true
@@ -196,6 +211,13 @@ if [ -n "$WRITE_DEV" ]; then
         else
             mkfs.vfat -n BENCHDATA "/dev/$PART"
             echo "[write] BENCHDATA on /dev/$PART (${SIZE_MB}MB)"
+            if [ -n "$CONF_SAVE" ]; then
+                if mount "/dev/$PART" /mnt 2>/dev/null; then
+                    cp "$CONF_SAVE" /mnt/bench-upload.conf && echo "[write] restored bench-upload.conf"
+                    umount /mnt 2>/dev/null || true
+                fi
+                rm -f "$CONF_SAVE"
+            fi
         fi
     fi
     cleanup_rule
