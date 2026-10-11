@@ -141,14 +141,24 @@ rsync -a \
     --exclude '.git' --exclude '.venv' --exclude 'results' --exclude 'live/out*' \
     "$REPO/" "$PROFILE/airootfs/opt/bench-test/"
 
-# FurMark 2 linux64 into tools/ (repo copy if present, else download to work dir)
+# FurMark 2 linux64 into tools/: repo copy -> tools release asset -> geeks3d
 FM_SRC="$REPO/tools/furmark/FurMark_linux64"
 if [ ! -x "$FM_SRC/furmark" ]; then
-    echo "[build] downloading FurMark 2 (linux64)"
+    echo "[build] fetching FurMark from the tools release asset"
     mkdir -p "$WORK/furmark"
-    curl -fsSL -A "Mozilla/5.0" -o "$WORK/furmark.7z" "https://geeks3d.com/dl/get/833"
-    bsdtar -xf "$WORK/furmark.7z" -C "$WORK/furmark"
+    if curl -fsSL -o "$WORK/furmark.tar.xz" \
+        "https://github.com/MaineCyberTech/bench-test/releases/download/tools-v1/furmark-linux64.tar.xz"; then
+        tar -xJf "$WORK/furmark.tar.xz" -C "$WORK/furmark"
+    fi
     FM_SRC="$(find "$WORK/furmark" -maxdepth 2 -type f -name furmark -printf '%h\n' 2>/dev/null | head -1)"
+fi
+if [ -z "${FM_SRC:-}" ] || [ ! -x "$FM_SRC/furmark" ]; then
+    echo "[build] tools asset unavailable - trying geeks3d"
+    mkdir -p "$WORK/furmark"
+    if curl -fsSL -A "Mozilla/5.0" -o "$WORK/furmark.7z" "https://geeks3d.com/dl/get/833"; then
+        bsdtar -xf "$WORK/furmark.7z" -C "$WORK/furmark"
+        FM_SRC="$(find "$WORK/furmark" -maxdepth 2 -type f -name furmark -printf '%h\n' 2>/dev/null | head -1)"
+    fi
 fi
 if [ -n "${FM_SRC:-}" ] && [ -x "$FM_SRC/furmark" ]; then
     mkdir -p "$PROFILE/airootfs/opt/bench-test/tools/furmark"
