@@ -21,8 +21,8 @@ on:
         options: [nvidia-legacy, nvidia, amd]
         default: nvidia-legacy
       runner_labels:
-        description: "JSON array of runner labels"
-        default: '["self-hosted","linux","x64","lab"]'
+        description: "JSON array of runner labels (ubuntu-latest = free for public repos, 74G scratch)"
+        default: '["ubuntu-latest"]'
       upload_release:
         description: "Attach the ISO to a GitHub release"
         type: boolean
@@ -65,8 +65,12 @@ jobs:
         run: |
           set -euo pipefail
           bash live/ci-build.sh ${{ inputs.gpu }}
+
+      - name: Collect artifacts
+        run: |
+          set -euo pipefail
           mkdir -p dist
-          cp "$(ls -t live/out-${{ inputs.gpu }}/*.iso | head -1)" "dist/bench-live-${{ inputs.gpu }}.iso"
+          cp "$ISO_PATH" "dist/bench-live-${{ inputs.gpu }}.iso"
           sha256sum dist/*.iso | tee dist/SHA256SUMS
           du -h dist/*.iso
 
