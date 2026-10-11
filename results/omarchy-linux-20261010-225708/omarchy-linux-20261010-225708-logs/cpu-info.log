@@ -1,0 +1,2 @@
+numpy=2.5.3 logical_cpus=8
+RESULT_JSON:{"phase": "info", "numpy": "2.5.3", "logical_cpus": 8}
