@@ -117,16 +117,22 @@ fi
 # NVIDIA console: fbdev gives the VT a framebuffer once nvidia-drm loads.
 # Without it the text console goes dark on real hardware (a live system has no
 # compositor to take over the display) - the dashboard would run invisibly.
+#
+# copytoram=y: the initramfs copies the squashfs to RAM and unmounts/detaches
+# the whole USB disk. Modern kernels (6.5+ block-device claim rules) make a
+# disk's partitions unclaimable while the whole disk is mounted - without this,
+# BENCHDATA can be read (blkid) but never mounted or written (the "Can't open
+# blockdev" error). With the whole disk released, BENCHDATA mounts normally.
 mkdir -p "$PROFILE/airootfs/etc/modprobe.d"
 printf 'options nvidia_drm modeset=1 fbdev=1\n' > "$PROFILE/airootfs/etc/modprobe.d/zz-bench-nvidia.conf"
 for f in "$PROFILE"/efiboot/loader/entries/0[12]-archiso-*.conf; do
-    [ -f "$f" ] && sed -i -E 's/^(options .*)$/\1 nvidia_drm.modeset=1 nvidia_drm.fbdev=1/' "$f"
+    [ -f "$f" ] && sed -i -E 's/^(options .*)$/\1 nvidia_drm.modeset=1 nvidia_drm.fbdev=1 copytoram=y/' "$f"
 done
 [ -f "$PROFILE/syslinux/archiso_sys-linux.cfg" ] && \
-    sed -i -E 's/^(APPEND .*archisobasedir.*)$/\1 nvidia_drm.modeset=1 nvidia_drm.fbdev=1/' \
+    sed -i -E 's/^(APPEND .*archisobasedir.*)$/\1 nvidia_drm.modeset=1 nvidia_drm.fbdev=1 copytoram=y/' \
         "$PROFILE/syslinux/archiso_sys-linux.cfg"
 for f in "$PROFILE/grub/grub.cfg" "$PROFILE/grub/loopback.cfg"; do
-    [ -f "$f" ] && sed -i -E 's/^(linux .*)$/\1 nvidia_drm.modeset=1 nvidia_drm.fbdev=1/' "$f"
+    [ -f "$f" ] && sed -i -E 's/^(linux .*)$/\1 nvidia_drm.modeset=1 nvidia_drm.fbdev=1 copytoram=y/' "$f"
 done
 
 # toolkit into the image (no git/venv/results/ISOs)
