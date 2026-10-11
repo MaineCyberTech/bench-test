@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Copy bench-test results to the BENCHDATA partition of the USB stick.
-# Saves to /root/bench-results (RAM!) only when no writable vfat partition can
-# be found - and says so loudly. Exit 0 = saved to the stick, 4 = RAM fallback.
 #
-# Usage: bench-collect [SRC_DIR]
+# Save order:
+#   1. mount the first usable vfat partition (probe-based, udev-independent)
+#   2. raw log slot: if nothing mounts, write a BENCHLOG1 archive to the tail
+#      of a stick partition - needs no filesystem at all; recover on the host
+#      with  bench/rawlog.py <partition-device> <outdir>
+#   3. /root/bench-results (RAM) - always also written as a working copy
 #
-# Detection is deliberately udev-independent: partitions are re-read from the
-# actual table (partx) and filesystems are probed directly (blkid -p), so a
-# missing label or an empty udev database cannot hide the partition.
+# Exit: 0 = saved to a mounted stick partition, 4 = RAM only,
+#       5 = RAM + raw log slot on the stick.
 set -u
 
 SRC="${1:-/opt/bench-test/results}"
@@ -81,35 +83,65 @@ if [ -z "$DEST" ] && mountpoint -q /mnt/benchdata; then
     DEST=/mnt/benchdata
 fi
 
+HOST="$(hostname -s 2>/dev/null || echo unknown)"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+
+write_diag() {  # $1 = output file
+    {
+        echo "collector: bench-collect v4"
+        echo "timestamp: $(date -Iseconds)"
+        echo "host: $HOST   kernel: $(uname -r)"
+        echo "source: $SRC"
+        echo "chosen device: ${FOUND_DEV:-none}   dest: ${DEST:-none}"
+        echo "candidates:${CANDS:- none}"
+        echo
+        echo "--- lsblk ---"; lsblk -o NAME,SIZE,FSTYPE,LABEL,UUID,MOUNTPOINT 2>&1
+        echo; echo "--- blkid -p (candidates) ---"
+        for c in $CANDS; do echo "$c: $(blkid -p "$c" 2>&1)"; done
+        echo; echo "--- /proc/partitions ---"; cat /proc/partitions
+        echo; echo "--- mount ---"; mount
+        echo; echo "--- dmesg (tail) ---"; dmesg 2>/dev/null | tail -30
+    } > "$1" 2>&1
+}
+
+# --- raw log slot: persistence that needs no mount at all ---------------
+RAW_DEV=""
+if [ -z "$DEST" ]; then
+    for c in $CANDS; do
+        [ -b "$c" ] || continue
+        sz="$(blockdev --getsize64 "$c" 2>/dev/null || echo 0)"
+        [ "${sz:-0}" -gt 1000000000 ] || continue
+        tmp="$(mktemp -d)"
+        mkdir -p "$tmp/payload"
+        cp -a "$SRC/." "$tmp/payload/" 2>/dev/null || true
+        write_diag "$tmp/payload/collect-diag.txt"
+        if tar czf "$tmp/log.tgz" -C "$tmp/payload" . 2>/dev/null; then
+            { printf 'BENCHLOG1\n%s\n' "$(stat -c %s "$tmp/log.tgz")"; cat "$tmp/log.tgz"; } > "$tmp/log.bin"
+            if dd if="$tmp/log.bin" of="$c" bs=512 seek=$(( (sz - 67108864) / 512 )) conv=notrunc 2>/dev/null; then
+                sync
+                RAW_DEV="$c"
+            fi
+        fi
+        rm -rf "$tmp"
+        [ -n "$RAW_DEV" ] && break
+    done
+fi
+
 FALLBACK=0
 if [ -z "$DEST" ]; then
     FALLBACK=1
     DEST=/root/bench-results
     mkdir -p "$DEST"
-    echo "[collect] no writable BENCHDATA partition found - saving to $DEST (RAM - copy off before reboot!)"
+    if [ -n "$RAW_DEV" ]; then
+        echo "[collect] no mountable partition - wrote a raw log slot to $RAW_DEV (recover: bench/rawlog.py)"
+    else
+        echo "[collect] no writable BENCHDATA partition found - saving to $DEST (RAM - copy off before reboot!)"
+    fi
 fi
 
-HOST="$(hostname -s 2>/dev/null || echo unknown)"
-STAMP="$(date +%Y%m%d-%H%M%S)"
 TARGET="$DEST/$HOST-$STAMP"
 mkdir -p "$TARGET"
-
-# diagnostics first, so even a partial copy explains itself
-{
-    echo "collector: bench-collect v3"
-    echo "timestamp: $(date -Iseconds)"
-    echo "host: $HOST   kernel: $(uname -r)"
-    echo "source: $SRC"
-    echo "chosen device: ${FOUND_DEV:-none}   dest: $DEST"
-    echo "candidates:${CANDS:- none}"
-    echo
-    echo "--- lsblk ---"; lsblk -o NAME,SIZE,FSTYPE,LABEL,UUID,MOUNTPOINT 2>&1
-    echo; echo "--- blkid -p (candidates) ---"
-    for c in $CANDS; do echo "$c: $(blkid -p "$c" 2>&1)"; done
-    echo; echo "--- /proc/partitions ---"; cat /proc/partitions
-    echo; echo "--- mount ---"; mount
-} > "$TARGET/collect-diag.txt" 2>&1
-
+write_diag "$TARGET/collect-diag.txt"
 cp -a "$SRC/." "$TARGET/" 2>/dev/null || true
 # keep the diagnostics also in RAM for a post-reboot autopsy
 mkdir -p /root/bench-results
@@ -126,6 +158,10 @@ cp "$TARGET/collect-diag.txt" "/root/bench-results/collect-diag-${STAMP}.txt" 2>
 sync
 echo "[collect] results copied to $TARGET"
 if [ "$FALLBACK" = 1 ]; then
+    if [ -n "$RAW_DEV" ]; then
+        echo "[collect] WARNING: mount failed; the raw log slot on $RAW_DEV is the persistent copy"
+        exit 5
+    fi
     echo "[collect] WARNING: destination is RAM - back it up before rebooting"
     exit 4
 fi

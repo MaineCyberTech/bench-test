@@ -87,7 +87,8 @@ def _ensure_x(env):
         return False
     try:
         with open("/tmp/bench-fan-x.log", "ab") as log:
-            subprocess.Popen(["X", disp, "vt2", "-ac", "-nolisten", "tcp"],
+            subprocess.Popen(["X", disp, "vt2", "-ac", "-nolisten", "tcp",
+                              "-novtswitch", "-sharevts"],
                              stdout=log, stderr=subprocess.STDOUT,
                              start_new_session=True)
     except Exception:

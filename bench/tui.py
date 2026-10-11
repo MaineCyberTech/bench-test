@@ -171,6 +171,10 @@ class BenchTUI:
                             self.upload()
                     else:
                         self._set("USB save FAILED - %s" % last[:52], 3)
+                        # a failed save is exactly when the upload matters:
+                        # send from RAM if upload credentials are configured
+                        if self._auto_upload_enabled():
+                            self.upload()
                 except Exception as exc:
                     self._set("collect failed: %s" % exc, 3)
             threading.Thread(target=work, daemon=True).start()
@@ -676,12 +680,16 @@ class BenchTUI:
             self._set("no report yet", 3)
             return
         md = files[-1][:-5] + ".md"
-        if os.path.exists(md):
-            with open(md, errors="replace") as fh:
-                lines = fh.read().splitlines()
-        else:
-            with open(files[-1], errors="replace") as fh:
-                lines = json.dumps(json.load(fh), indent=2).splitlines()
+        try:
+            if os.path.exists(md):
+                with open(md, errors="replace") as fh:
+                    lines = fh.read().splitlines()
+            else:
+                with open(files[-1], errors="replace") as fh:
+                    lines = json.dumps(json.load(fh), indent=2).splitlines()
+        except Exception as exc:
+            self._set("could not load report: %s" % exc, 3)
+            return
         offset = 0
         while True:
             self.scr.erase()
@@ -765,6 +773,9 @@ class BenchTUI:
             subprocess.call(cmd)
         except Exception:
             pass
+        # full repaint after anything external (shell, GUI, VT switches) may
+        # have written to the console
+        self.scr.clearok(True)
         self.scr.refresh()
         self.scr.timeout(250)
 
@@ -787,14 +798,26 @@ class BenchTUI:
                 # self-heal: something wrote outside curses (kernel/VT) and the
                 # screen model desynced; force a full repaint occasionally
                 self.scr.clearok(True)
-            self.draw()
+            try:
+                self.draw()
+            except Exception as exc:
+                self.log.append("tui draw: %s" % exc)
+                self.scr.clearok(True)
             if deadline and time.time() > deadline:
                 return
-            ch = self.scr.getch()
-            if ch == -1:
-                continue
-            if not self.key(ch):
-                return
+            try:
+                ch = self.scr.getch()
+                if ch == -1:
+                    continue
+                if ch == curses.KEY_RESIZE:
+                    curses.resize_term(0, 0)
+                    self.scr.clearok(True)
+                    continue
+                if not self.key(ch):
+                    return
+            except Exception as exc:
+                self.log.append("tui: %s" % exc)
+                self.scr.clearok(True)
 
 
 def main():

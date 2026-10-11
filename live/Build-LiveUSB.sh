@@ -84,6 +84,14 @@ fi
 
 cp -r "$LIVE/airootfs/." "$PROFILE/airootfs/"
 
+# optional private upload credentials (gitignored, never in the repo):
+# live/private/bench-upload.conf is baked to /etc/bench-upload.conf so uploads
+# work even when the stick's own copy cannot be reached (mount trouble)
+if [ -f "$LIVE/private/bench-upload.conf" ]; then
+    install -m 600 "$LIVE/private/bench-upload.conf" "$PROFILE/airootfs/etc/bench-upload.conf"
+    echo "[build] baked private bench-upload.conf -> /etc/bench-upload.conf"
+fi
+
 # NVIDIA console: fbdev gives the VT a framebuffer once nvidia-drm loads.
 # Without it the text console goes dark on real hardware (a live system has no
 # compositor to take over the display) - the dashboard would run invisibly.

@@ -7,6 +7,9 @@ results/
 # live USB build output (multi-GB ISOs)
 live/out*/
 
+# private build inputs (upload token etc.) - never commit
+live/private/
+
 # python
 __pycache__/
 *.pyc
