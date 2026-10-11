@@ -18,6 +18,7 @@ LIVE="$REPO/live"
 OUT=""
 GPU=""
 COMP="xz"
+ISO_ONLY=""
 WRITE_DEV=""
 
 while [ $# -gt 0 ]; do
@@ -25,22 +26,32 @@ while [ $# -gt 0 ]; do
         --gpu) GPU="${2:-}"; shift 2 ;;
         --out) OUT="${2:-}"; shift 2 ;;
         --comp) COMP="${2:-}"; shift 2 ;;
+        --iso) ISO_ONLY="${2:-}"; shift 2 ;;
         --write) WRITE_DEV="${2:-}"; shift 2 ;;
         -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 1 ;;
     esac
 done
 
-case "$GPU" in
-    nvidia|nvidia-legacy|amd) ;;
-    *) echo "error: --gpu nvidia|nvidia-legacy|amd is required" >&2; exit 1 ;;
-esac
+if [ -z "$ISO_ONLY" ]; then
+    case "$GPU" in
+        nvidia|nvidia-legacy|amd) ;;
+        *) echo "error: --gpu nvidia|nvidia-legacy|amd is required" >&2; exit 1 ;;
+    esac
+fi
 [ -n "$OUT" ] || OUT="$REPO/live/out-$GPU"
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "error: run as root (mkarchiso requires root)" >&2
     exit 1
 fi
+
+if [ -n "$ISO_ONLY" ]; then
+    [ -f "$ISO_ONLY" ] || { echo "error: --iso not found: $ISO_ONLY" >&2; exit 1; }
+    [ -n "$WRITE_DEV" ] || { echo "error: --iso only makes sense together with --write /dev/sdX" >&2; exit 1; }
+    ISO="$ISO_ONLY"
+    echo "[build] skipping build; using prebuilt ISO $ISO ($(du -h "$ISO" | cut -f1))"
+else
 
 pacman -S --needed --noconfirm archiso dosfstools >/dev/null || true
 command -v mkarchiso >/dev/null 2>&1 || { echo "mkarchiso missing"; exit 1; }
@@ -168,6 +179,7 @@ mkarchiso -v -w "$WORK/work" -o "$OUT" "$PROFILE"
 
 ISO="$(ls -t "$OUT"/*.iso | head -1)"
 echo "[build] ISO ready: $ISO  ($(du -h "$ISO" | cut -f1))"
+fi
 
 if [ -n "$WRITE_DEV" ]; then
     echo "[write] DESTRUCTIVE: writing $ISO to $WRITE_DEV"
