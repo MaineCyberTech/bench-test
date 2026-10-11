@@ -25,6 +25,11 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BENCH = os.path.join(REPO, "bench")
 FAN_CURVE = os.path.join(BENCH, "fan_curve.py")
 sys.path.insert(0, BENCH)
+try:
+    from benchreport import (Reporter, PhaseTracker, ReporterPump,
+                             build_summary, newest_report)
+except Exception:  # reporting is optional
+    Reporter = None
 
 # --- runner: Linux shell script, or the Windows battery via run_win.py ---
 if os.name == "nt":
@@ -77,7 +82,8 @@ def pick_font(candidates, fallback, size, weight="normal"):
 
 
 class Dashboard:
-    def __init__(self, root, results_dir, demo=False, self_test=False, tab=0):
+    def __init__(self, root, results_dir, demo=False, self_test=False, tab=0,
+                 server="", token="", name=""):
         self.root = root
         self.results_dir = results_dir
         self.proc = None
@@ -93,6 +99,10 @@ class Dashboard:
         self._curve_on = False
         self.run_t0 = None
         self.collected_ok = False
+        self.rep = None
+        self.pump = None
+        self.tracker = None
+        self.server, self.token, self.name = server, token, name
 
         self._fonts()
         self._styles()
@@ -102,6 +112,7 @@ class Dashboard:
                 self.nb.select(tab)
             except Exception:
                 pass
+        self._setup_reporting()
         self._detect_hardware()
         if demo:
             self._demo_data()
@@ -401,6 +412,59 @@ class Dashboard:
             self.q.put(("hw", "  |  ".join(parts) if parts else "hardware detection unavailable"))
         threading.Thread(target=work, daemon=True).start()
 
+    # ------------------------------------------------------- reporting ------
+    def _setup_reporting(self):
+        if not (self.server and self.token and Reporter):
+            return
+        try:
+            import platform as _p
+            self.rep = Reporter(self.server, self.token, name=self.name or _p.node(),
+                                kind="gui", os_name=_p.system(), log=self._log)
+            if self.rep.register({"os": _p.system(), "platform": _p.platform(), "kind": "gui"}):
+                self.pump = ReporterPump(self.rep, on_command=self._remote_command, log=self._log)
+                self.pump.start()
+                self._log("[report] connected to %s" % self.server)
+            else:
+                self.rep = None
+        except Exception as exc:
+            self._log("[report] disabled: %s" % exc)
+            self.rep = None
+
+    def _remote_command(self, cmd):
+        # called from the pump thread - marshal onto the Tk thread
+        self.root.after(0, lambda: self._apply_remote(cmd))
+
+    def _apply_remote(self, cmd):
+        kind = cmd.get("kind")
+        payload = cmd.get("payload") or {}
+        if kind == "start":
+            if self.running:
+                self.rep.ack(cmd.get("id"), "failed", {"error": "already running"})
+                return
+            self._apply_profile(payload)
+            self.rep.ack(cmd.get("id"), "done", {"started": True})
+            self.start(profile=payload)
+        elif kind == "stop":
+            self.rep.ack(cmd.get("id"), "done", {"stopping": True})
+            self.stop()
+        elif kind == "fan_curve":
+            self.toggle_curve()
+            self.rep.ack(cmd.get("id"), "done", {"toggled": True})
+        else:
+            self.rep.ack(cmd.get("id"), "failed", {"error": "unsupported: %s" % kind})
+
+    def _apply_profile(self, profile):
+        for key, val in (profile.get("groups") or {}).items():
+            if key in self.gvars:
+                self.gvars[key].set(bool(val))
+        for g in (profile.get("skip") or []):
+            if g in self.gvars:
+                self.gvars[g].set(False)
+        for key, val in {"gpu": profile.get("gpu_soak"), "combined": profile.get("combined"),
+                         "fullsoak": profile.get("fullsoak"), "gfx": profile.get("gfx")}.items():
+            if val not in (None, "") and key in self.svars:
+                self.svars[key].set(str(val))
+
     # -------------------------------------------------------- run control ---
     def _apply_preset(self, _evt=None):
         preset = PRESETS.get(self.preset.get())
@@ -411,7 +475,7 @@ class Dashboard:
         for key, val in (preset.get("spin") or {}).items():
             self.svars[key].set(str(val))
 
-    def start(self):
+    def start(self, profile=None):
         if self.running:
             return
         args = []
@@ -441,6 +505,9 @@ class Dashboard:
             self._set_status("failed to start: %s" % exc, BAD)
             return
         self.running = True
+        if self.rep and self.rep.runner_id:
+            self.tracker = PhaseTracker(self.rep)
+            self.rep.start_run((profile or {}).get("label") or self.preset.get() or "run", profile or {})
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
         self._set_status("running · %s" % (self.preset.get() or "run").split(" (")[0], ACCENT)
@@ -469,6 +536,8 @@ class Dashboard:
 
     def _handle_line(self, line):
         self._log(line)
+        if self.tracker:
+            self.tracker.feed(line)
         if line.startswith("[") and "]" in line:
             head = line[1:line.index("]")]
             rest = line[line.index("]") + 1:].strip()
@@ -512,6 +581,16 @@ class Dashboard:
         self.progress.configure(value=100.0 * done / total)
         rc = self.proc.poll() if self.proc else None
         self._set_status("finished · exit %s" % rc, GOOD if rc == 0 else BAD)
+        if self.tracker:
+            self.tracker.close()
+            self.tracker = None
+        if self.rep and self.rep.run_id:
+            try:
+                report = newest_report(self.results_dir)
+                summary = build_summary(report) if report else {}
+            except Exception:
+                summary = {}
+            self.rep.finish("done" if rc == 0 else "failed", rc or 0, summary)
         self._load_results()
         self._auto_collect()
 
@@ -603,6 +682,8 @@ class Dashboard:
             for key, val in (("temp", temp), ("fan", fan), ("power", power), ("util", util)):
                 if val is not None:
                     self.tel[key].append(val)
+            if self.pump:
+                self.pump.push_sample([elapsed, temp, fan, power, util, rpm, cpu, ram, None, None])
             for key in self.tel:
                 if len(self.tel[key]) > 900:
                     self.tel[key] = self.tel[key][-900:]
@@ -741,6 +822,8 @@ class Dashboard:
             threading.Thread(target=work, daemon=True).start()
 
     def _on_close(self):
+        if self.pump:
+            self.pump.stop()
         # never close with uncollected results: final synchronous attempt
         if os.path.exists("/usr/local/bin/bench-collect") and not self.collected_ok:
             try:
@@ -840,9 +923,14 @@ def main():
     ap.add_argument("--demo", action="store_true", help="populate with sample data")
     ap.add_argument("--self-test", action="store_true", help="open and exit after a few seconds")
     ap.add_argument("--tab", type=int, default=0, help="select notebook tab (0=Run,1=Telemetry,2=Results,3=Log)")
+    ap.add_argument("--server", default=os.environ.get("BENCHD_SERVER", ""),
+                    help="benchd control-plane URL (report + remote control)")
+    ap.add_argument("--token", default=os.environ.get("BENCHD_TOKEN", ""), help="control-plane token")
+    ap.add_argument("--name", default="", help="runner name reported to the control plane")
     a = ap.parse_args()
     root = tk.Tk()
-    Dashboard(root, a.results_dir, demo=a.demo, self_test=a.self_test, tab=a.tab)
+    Dashboard(root, a.results_dir, demo=a.demo, self_test=a.self_test, tab=a.tab,
+              server=a.server, token=a.token, name=a.name)
     root.mainloop()
     return 0
 

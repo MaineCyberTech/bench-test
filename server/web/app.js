@@ -1,0 +1,451 @@
+"use strict";
+/* bench-test control plane — single pane of glass (vanilla JS, no build step) */
+
+const GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "sys", "gfx"];
+const PRESETS = {
+  "Quick check (short soaks)": { spin: { gpu: 60, combined: 60, fullsoak: 60, gfx: 30 } },
+  "Full run (defaults)": { spin: { gpu: 600, combined: 300, fullsoak: 300, gfx: 60 } },
+  "Graphics only": { groups: { gpu: 0, cpu: 0, ram: 0, disk: 0, combined: 0, fullsoak: 0, net: 0, nvenc: 0, sys: 0, gfx: 1 } },
+  "CPU + RAM + disk": { groups: { gpu: 0, cpu: 1, ram: 1, disk: 1, combined: 0, fullsoak: 0, net: 1, nvenc: 0, sys: 1, gfx: 0 } },
+};
+const C = { temp: "#ef6b73", power: "#4c9aff", util: "#46c98d", fan: "#e5b567" };
+
+let TOKEN = new URLSearchParams(location.search).get("token") || localStorage.getItem("benchd_token") || "";
+let STATE = { runners: [], active: [], recent: [], metrics: [] };
+let TEL = {};               // run_id -> [{elapsed,temp,power,util,fan}]
+let HOSTS = [];
+let es = null;
+
+/* ------------------------------------------------------------------ dom -- */
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fmt = (v, d = 1) => (v == null || isNaN(v)) ? "—" : (+v).toFixed(d);
+const dur = (s) => s == null ? "—" : (s < 60 ? s.toFixed(0) + "s"
+  : s < 3600 ? Math.floor(s / 60) + "m" + Math.round(s % 60) + "s"
+  : Math.floor(s / 3600) + "h" + Math.round((s % 3600) / 60) + "m");
+const ago = (t) => { if (!t) return "—"; const d = Date.now() / 1000 - t;
+  return d < 60 ? Math.round(d) + "s ago" : d < 3600 ? Math.round(d / 60) + "m ago" : Math.round(d / 3600) + "h ago"; };
+const ts = (t) => t ? new Date(t * 1000).toLocaleString() : "—";
+
+/* ------------------------------------------------------------------ api -- */
+async function api(path, method = "GET", body) {
+  const opt = { method, headers: { Authorization: "Bearer " + TOKEN } };
+  if (body) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
+  const r = await fetch("/api/v1" + path, opt);
+  if (r.status === 401) { askToken(); throw new Error("unauthorized"); }
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+
+/* -------------------------------------------------------------- token --- */
+function askToken() {
+  openModal(`<h3>Access token</h3>
+    <p class="muted">This control plane requires a bearer token.</p>
+    <div class="formrow"><input id="tokInput" style="flex:1" placeholder="paste token"
+      value="${esc(TOKEN)}"/></div>
+    <div class="formrow" style="justify-content:flex-end">
+      <button class="accent" id="tokSave">save</button></div>`);
+  $("#tokSave").onclick = () => {
+    TOKEN = $("#tokInput").value.trim();
+    localStorage.setItem("benchd_token", TOKEN);
+    closeModal(); connect(); refresh();
+  };
+}
+
+/* ----------------------------------------------------------------- sse -- */
+function connect() {
+  if (es) es.close();
+  es = new EventSource("/api/v1/stream?token=" + encodeURIComponent(TOKEN));
+  es.onopen = () => setConn(true);
+  es.onerror = () => setConn(false);
+  es.addEventListener("snapshot", () => { setConn(true); refresh(); });
+  es.addEventListener("runner", () => refresh());
+  es.addEventListener("run", () => refresh());
+  es.addEventListener("phase", (e) => onPhase(JSON.parse(e.data)));
+  es.addEventListener("telemetry", (e) => onTelemetry(JSON.parse(e.data)));
+  es.addEventListener("command", () => refresh());
+  es.addEventListener("event", () => {});
+}
+function setConn(on) {
+  $("#connDot").className = "dot " + (on ? "on" : "off");
+  $("#connText").textContent = on ? "live" : "disconnected";
+}
+
+/* --------------------------------------------------------------- state -- */
+async function refresh() {
+  try {
+    const s = await api("/state");
+    STATE = s;
+    HOSTS = [...new Set(STATE.recent.map((r) => r.host).filter(Boolean))].sort();
+    for (const a of STATE.active) ensureTel(a.id);
+    renderAll();
+  } catch (e) { /* offline */ }
+}
+
+function ensureTel(id) {
+  if (TEL[id]) return;
+  TEL[id] = [];
+  api("/runs/" + id + "/telemetry?max=600").then((d) => {
+    const f = d.fields, rows = d.rows;
+    const ix = (n) => f.indexOf(n);
+    TEL[id] = rows.map((r) => ({
+      elapsed: r[ix("elapsed")], temp: r[ix("temp_c")], power: r[ix("power_w")],
+      util: r[ix("gpu_util")], fan: r[ix("fan_pct")],
+    })).filter((x) => x.elapsed != null);
+    renderActive();
+  }).catch(() => {});
+}
+
+function onTelemetry(d) {
+  const [el, temp, fan, power, util] = d.sample || [];
+  const buf = TEL[d.run_id] || (TEL[d.run_id] = []);
+  buf.push({ elapsed: el, temp, power, util, fan });
+  if (buf.length > 900) buf.shift();
+  // update gauges + chart without a full refresh
+  const card = document.querySelector(`[data-active="${d.run_id}"]`);
+  if (card) { paintGauges(card, { temp, power, util, fan }); drawRunChart(card, d.run_id); }
+}
+
+function onPhase(p) {
+  const card = document.querySelector(`[data-active="${p.run_id}"]`);
+  if (card) refresh();
+}
+
+/* -------------------------------------------------------------- render -- */
+function renderAll() { renderTop(); renderRunners(); renderActive(); renderHistory(); renderTrends(); renderCompareOptions(); }
+
+function renderTop() {
+  const online = STATE.runners.filter((r) => r.online).length;
+  $("#topstats").innerHTML = [
+    ["runners", STATE.runners.length],
+    ["online", online],
+    ["active runs", STATE.active.length],
+    ["runs", STATE.recent.length],
+  ].map(([k, v]) => `<div class="tstat"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
+  $("#runnerCount").textContent = `${STATE.runners.length} registered · ${online} online`;
+  $("#activeCount").textContent = `${STATE.active.length} running`;
+}
+
+function renderRunners() {
+  const el = $("#runners");
+  if (!STATE.runners.length) { el.innerHTML = `<div class="card muted">No runners registered yet. Start an agent with <span class="mono">python bench/agent.py --server … --token …</span></div>`; return; }
+  el.innerHTML = STATE.runners.map((r) => {
+    const cls = r.status === "busy" ? "busy" : (r.online ? "online" : "offline");
+    const caps = r.capabilities || {};
+    const run = STATE.active.find((a) => a.id === r.current_run);
+    const phase = run && run.phases.length ? run.phases[run.phases.length - 1] : null;
+    const disabled = r.online ? "" : "disabled";
+    return `<div class="runner ${r.online ? "" : "off"}">
+      <div class="rhead">
+        <span class="statusp ${cls}"></span>
+        <div style="flex:1">
+          <div class="rname">${esc(r.name)}</div>
+          <div class="rmeta">${esc(caps.gpu || "no GPU")} · ${esc(caps.os || r.os || "")} ${caps.driver ? "· driver " + esc(caps.driver) : ""}</div>
+        </div>
+        <span class="rtag">${esc(r.kind)}</span>
+      </div>
+      ${phase ? `<div class="phasechip"><span class="d"></span>${esc(phase.grp)} · ${esc(phase.label || "")}</div>` : ""}
+      <div class="ract" style="margin-top:12px">
+        <button class="accent" data-start="${r.id}" ${disabled}>Start run</button>
+        <button data-stop="${r.id}" ${run ? "" : "disabled"}>Stop</button>
+        <button class="ghost" data-update="${r.id}" ${disabled}>Update</button>
+        <button class="ghost" data-fan="${r.id}" ${disabled}>Fan curve</button>
+      </div>
+      <div class="rmeta" style="margin-top:8px">last seen ${ago(r.last_seen)} · ${esc(r.git || "no git")}</div>
+    </div>`;
+  }).join("");
+}
+
+function renderActive() {
+  const el = $("#activeRuns");
+  if (!STATE.active.length) { el.innerHTML = `<div class="card muted">No runs in progress.</div>`; return; }
+  el.innerHTML = STATE.active.map((a) => {
+    const started = a.started;
+    const elapsed = started ? Date.now() / 1000 - started : 0;
+    const last = a.latest || {};
+    return `<div class="runbox" data-active="${a.id}">
+      <div class="rh">
+        <span class="statusp busy"></span>
+        <div class="h">${esc(a.host)} · ${esc(a.label || "run")}</div>
+        <span class="muted mono">${dur(elapsed)} elapsed</span>
+        <div style="margin-left:auto" class="ract">
+          <button class="danger" data-stop="${a.runner_id}">Stop</button>
+          <button class="ghost" data-detail="${a.id}">details</button>
+        </div>
+      </div>
+      <div class="gauges">
+        <div class="gauge"><div class="gv" data-g="temp">${fmt(last.temp_c, 0)}</div><div class="gk">temp °C</div></div>
+        <div class="gauge"><div class="gv" data-g="power">${fmt(last.power_w, 0)}</div><div class="gk">power W</div></div>
+        <div class="gauge"><div class="gv" data-g="util">${fmt(last.gpu_util, 0)}</div><div class="gk">GPU %</div></div>
+        <div class="gauge"><div class="gv" data-g="fan">${fmt(last.fan_pct, 0)}</div><div class="gk">fan %</div></div>
+      </div>
+      <canvas class="runchart" height="180"></canvas>
+      <div class="phases">${a.phases.map(phaseRow).join("")}</div>
+    </div>`;
+  }).join("");
+  STATE.active.forEach((a) => {
+    const card = document.querySelector(`[data-active="${a.id}"]`);
+    if (card) { drawRunChart(card, a.id); }
+  });
+}
+
+function phaseRow(p) {
+  const ic = p.status === "running" ? "▶" : p.status === "warn" ? "!" : p.status === "error" ? "✕" : "✓";
+  const t = (p.t0 && p.t1) ? dur(p.t1 - p.t0) : (p.t0 ? dur(Date.now() / 1000 - p.t0) : "");
+  return `<div class="phase ${p.status === "running" ? "run" : p.status === "warn" ? "warn" : "ok"}">
+    <span class="ic">${ic}</span><span class="g">${esc(p.grp)}</span>
+    <span>${esc(p.label || "")}</span><span class="muted">${t}</span></div>`;
+}
+
+function paintGauges(card, v) {
+  const set = (k, val) => { const e = card.querySelector(`[data-g="${k}"]`); if (e) e.textContent = fmt(val, 0); };
+  set("temp", v.temp); set("power", v.power); set("util", v.util); set("fan", v.fan);
+}
+
+/* ------------------------------------------------------------ history --- */
+async function renderHistory() {
+  try {
+    const host = $("#histHost").value;
+    const d = await api("/runs?limit=300" + (host ? "&host=" + encodeURIComponent(host) : ""));
+    const q = ($("#histSearch").value || "").toLowerCase();
+    const rows = d.runs.filter((r) => !q || JSON.stringify(r).toLowerCase().includes(q));
+    const tb = $("#histTable tbody");
+    tb.innerHTML = rows.map((r) => {
+      const s = r.summary || {};
+      const peak = s.gpu_soak_telemetry && s.gpu_soak_telemetry.temp_c ? s.gpu_soak_telemetry.temp_c[2] : (s.telemetry && s.telemetry.temp_c ? s.telemetry.temp_c[2] : null);
+      return `<tr data-detail="${r.id}">
+        <td>${esc(r.host)}</td><td>${esc(r.label || "")}</td><td class="muted">${ts(r.started)}</td>
+        <td class="mono">${r.ended ? dur(r.ended - r.started) : dur(Date.now() / 1000 - r.started)}</td>
+        <td><span class="pill ${esc(r.status)}">${esc(r.status)}</span></td>
+        <td class="mono">${fmt(s.gpu_soak_tflops)}</td>
+        <td class="mono">${fmt(s.cpu_soak_gflops, 0)}</td>
+        <td class="mono">${fmt(s.ram_soak_gbps)}</td>
+        <td class="mono">${fmt(peak, 0)}</td></tr>`;
+    }).join("");
+    fillSelect("#histHost", HOSTS, "all hosts");
+  } catch (e) { /* ignore */ }
+}
+
+/* ------------------------------------------------------------- trends --- */
+async function renderTrends() {
+  const msel = $("#trendMetric");
+  if (!msel.options.length && STATE.metrics.length) {
+    msel.innerHTML = STATE.metrics.map(([k, l]) => `<option value="${esc(k)}">${esc(l)}</option>`).join("");
+    $("#trendMetric2").innerHTML = `<option value="">+ compare metric…</option>` +
+      STATE.metrics.map(([k, l]) => `<option value="${esc(k)}">${esc(l)}</option>`).join("");
+    fillSelect("#trendHost", HOSTS, "all hosts");
+    fillSelect("#cmpA", [], ""); 
+  }
+  const host = $("#trendHost").value;
+  const m1 = msel.value, m2 = $("#trendMetric2").value;
+  if (!m1) return;
+  const metrics = [m1, m2].filter(Boolean);
+  try {
+    const d = await api("/trends?host=" + encodeURIComponent(host) + metrics.map((m) => "&metric=" + encodeURIComponent(m)).join(""));
+    const colors = ["#4c9aff", "#46c98d", "#e5b567"];
+    const series = metrics.map((m, i) => ({
+      name: labelFor(m), color: colors[i % colors.length],
+      points: d.series[m].map((p) => ({ x: p.t, y: p.v })),
+    }));
+    drawChart($("#trendChart"), series, { xTime: true, yLabel: metrics.map(labelFor).join(" / ") });
+    $("#trendLegend").innerHTML = series.map((s) =>
+      `<span><i class="sw" style="background:${s.color}"></i>${esc(s.name)} · ${s.points.length} pts</span>`).join("");
+  } catch (e) { /* ignore */ }
+}
+function labelFor(m) { const f = STATE.metrics.find((x) => x[0] === m); return f ? f[1] : m; }
+
+/* ------------------------------------------------------------ compare --- */
+function renderCompareOptions() {
+  const finished = STATE.recent.filter((r) => r.status !== "running");
+  const opts = finished.slice(0, 60).map((r) =>
+    `<option value="${r.id}">${esc(r.host)} · ${esc(r.label || "")} · ${ts(r.started)}</option>`).join("");
+  const a = $("#cmpA"), b = $("#cmpB");
+  if (a.dataset.filled === String(finished.length)) return;
+  a.innerHTML = opts; b.innerHTML = opts;
+  if (finished.length > 1) { a.selectedIndex = 1; b.selectedIndex = 0; }
+  a.dataset.filled = String(finished.length);
+}
+async function runCompare() {
+  const A = $("#cmpA").value, B = $("#cmpB").value;
+  if (!A || !B) return;
+  const [ra, rb] = await Promise.all([api("/runs/" + A), api("/runs/" + B)]);
+  const keys = [["gpu_soak_tflops", "GPU soak (TFLOPS)", 1], ["cpu_soak_gflops", "CPU soak (GFLOPS)", 0],
+    ["ram_soak_gbps", "RAM soak (GB/s)", 1], ["disk_seqwrite_mbps", "Disk seq write (MB/s)", 0],
+    ["net.download_mbps", "Network download (Mbps)", 0]];
+  const get = (s, p) => p.split(".").reduce((o, k) => (o == null ? null : o[k]), s);
+  const row = (label, a, b, dec) => {
+    const d = (a != null && b != null && a !== 0) ? ((b - a) / Math.abs(a)) * 100 : null;
+    const cls = d == null ? "flat" : d > 1 ? "up" : d < -1 ? "down" : "flat";
+    return `<tr><td>${esc(label)}</td><td class="mono">${fmt(a, dec)}</td><td class="mono">${fmt(b, dec)}</td>
+      <td class="mono delta ${cls}">${d == null ? "—" : (d > 0 ? "+" : "") + d.toFixed(1) + "%"}</td></tr>`;
+  };
+  $("#cmpResult").innerHTML = `
+    <div class="card"><h3>${esc(ra.host)} · ${esc(ra.label || "")}</h3>
+      <div class="muted">${ts(ra.started)} · ${esc(ra.gpu || "")}</div></div>
+    <div class="card"><h3>${esc(rb.host)} · ${esc(rb.label || "")}</h3>
+      <div class="muted">${ts(rb.started)} · ${esc(rb.gpu || "")}</div></div>
+    <div class="card" style="grid-column:1/-1"><table>
+      <thead><tr><th>metric</th><th>A</th><th>B</th><th>Δ</th></tr></thead>
+      <tbody>${keys.map(([k, l, d]) => row(l, get(ra.summary, k), get(rb.summary, k), d)).join("")}</tbody>
+    </table></div>`;
+}
+
+/* ------------------------------------------------------------ charts ---- */
+function drawChart(cv, series, opt = {}) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.height;
+  cv.width = w * dpr; cv.height = h * dpr;
+  const g = cv.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
+  const pl = 52, pr = 18, pt = 18, pb = 28;
+  const x0 = pl, y0 = h - pb, x1 = w - pr, y1 = pt;
+  g.strokeStyle = "#232b37"; g.fillStyle = "#8592a6"; g.font = "11px monospace";
+  let maxY = 1, minY = 0, n = 0;
+  series.forEach((s) => s.points.forEach((p) => { maxY = Math.max(maxY, p.y); minY = Math.min(minY, p.y); n = Math.max(n, s.points.length); }));
+  maxY = niceMax(maxY);
+  for (let i = 0; i <= 4; i++) {
+    const y = y0 - (y0 - y1) * i / 4;
+    g.beginPath(); g.moveTo(x0, y); g.lineTo(x1, y); g.stroke();
+    g.fillText(String(Math.round(minY + (maxY - minY) * i / 4)), 8, y + 4);
+  }
+  if (!n) { g.fillText("no data", x0 + 8, pt + 12); return; }
+  const allX = [].concat(...series.map((s) => s.points.map((p) => p.x)));
+  const xmin = Math.min(...allX), xmax = Math.max(...allX);
+  const sx = (x) => x0 + (x1 - x0) * (xmax === xmin ? 0.5 : (x - xmin) / (xmax - xmin));
+  const sy = (y) => y0 - (y0 - y1) * ((y - minY) / (maxY - minY));
+  series.forEach((s) => {
+    if (s.points.length < 2) return;
+    g.strokeStyle = s.color; g.lineWidth = 2; g.beginPath();
+    s.points.forEach((p, i) => { const X = sx(p.x), Y = sy(p.y); i ? g.lineTo(X, Y) : g.moveTo(X, Y); });
+    g.stroke();
+  });
+  if (opt.xTime && xmax > xmin) {
+    g.fillStyle = "#8592a6";
+    [xmin, (xmin + xmax) / 2, xmax].forEach((t) => g.fillText(new Date(t * 1000).toLocaleDateString(), sx(t) - 26, h - 8));
+  }
+}
+function niceMax(v) { const p = Math.pow(10, Math.floor(Math.log10(v || 1))); return Math.ceil((v || 1) / p) * p; }
+
+function drawRunChart(card, runId) {
+  const cv = card.querySelector(".runchart");
+  if (!cv) return;
+  const buf = (TEL[runId] || []).slice(-240);
+  drawChart(cv, [
+    { name: "temp", color: C.temp, points: buf.filter((b) => b.temp != null).map((b) => ({ x: b.elapsed, y: b.temp })) },
+    { name: "power", color: C.power, points: buf.filter((b) => b.power != null).map((b) => ({ x: b.elapsed, y: b.power })) },
+    { name: "util", color: C.util, points: buf.filter((b) => b.util != null).map((b) => ({ x: b.elapsed, y: b.util })) },
+  ]);
+}
+
+/* ------------------------------------------------------------ actions --- */
+async function startRun(runnerId) {
+  const presetKeys = Object.keys(PRESETS);
+  openModal(`<h3>Start run</h3>
+    <div class="formrow"><label>Preset</label>
+      <select id="mPreset">${presetKeys.map((k) => `<option>${esc(k)}</option>`).join("")}</select></div>
+    <div class="formrow"><label>Groups</label><div class="chk" id="mGroups">
+      ${GROUPS.map((g) => `<label><input type="checkbox" value="${g}" checked>${g}</label>`).join("")}</div></div>
+    <div class="formrow"><label>Durations (s)</label>
+      GPU soak <input id="mGpu" type="number" value="600" style="width:80px">
+      combined <input id="mComb" type="number" value="300" style="width:80px">
+      full soak <input id="mFull" type="number" value="300" style="width:80px">
+      graphics <input id="mGfx" type="number" value="60" style="width:80px"></div>
+    <div class="formrow" style="justify-content:flex-end">
+      <button class="ghost" id="mCancel">cancel</button>
+      <button class="accent" id="mGo">start</button></div>`);
+  const applyPreset = () => {
+    const p = PRESETS[$("#mPreset").value] || {};
+    if (p.groups) $$("#mGroups input").forEach((i) => { i.checked = !!p.groups[i.value]; });
+    if (p.spin) { $("#mGpu").value = p.spin.gpu; $("#mComb").value = p.spin.combined; $("#mFull").value = p.spin.fullsoak; $("#mGfx").value = p.spin.gfx; }
+  };
+  $("#mPreset").onchange = applyPreset;
+  $("#mCancel").onclick = closeModal;
+  $("#mGo").onclick = async () => {
+    const skip = $$("#mGroups input").filter((i) => !i.checked).map((i) => i.value);
+    const payload = {
+      label: $("#mPreset").value, skip,
+      gpu_soak: +$("#mGpu").value, combined: +$("#mComb").value,
+      fullsoak: +$("#mFull").value, gfx: +$("#mGfx").value,
+    };
+    closeModal();
+    await api("/runners/" + runnerId + "/commands", "POST", { kind: "start", payload });
+    refresh();
+  };
+}
+async function cmd(runnerId, kind, payload) {
+  await api("/runners/" + runnerId + "/commands", "POST", { kind, payload: payload || {} });
+  refresh();
+}
+
+async function showDetail(runId) {
+  const r = await api("/runs/" + runId);
+  const s = r.summary || {};
+  const tel = await api("/runs/" + runId + "/telemetry?max=900");
+  const ix = (n) => tel.fields.indexOf(n);
+  const pts = (n) => tel.rows.map((row) => ({ x: row[ix("elapsed")], y: row[ix(n)] })).filter((p) => p.y != null);
+  openModal(`<h3>${esc(r.host)} · ${esc(r.label || "run")} <span class="pill ${esc(r.status)}">${esc(r.status)}</span></h3>
+    <div class="muted">${ts(r.started)} · ${r.ended ? dur(r.ended - r.started) : "running"} · ${esc(r.gpu || "")} ${r.driver ? "· driver " + esc(r.driver) : ""}</div>
+    <div class="kv" style="margin:14px 0">
+      ${[["GPU soak", fmt(s.gpu_soak_tflops) + " TF"], ["CPU soak", fmt(s.cpu_soak_gflops, 0) + " GF"],
+        ["RAM soak", fmt(s.ram_soak_gbps) + " GB/s"], ["Disk", fmt(s.disk_seqwrite_mbps, 0) + " MB/s"],
+        ["Net", fmt(s.net && s.net.download_mbps, 0) + " Mb/s"],
+        ["peak temp", fmt(s.gpu_soak_telemetry && s.gpu_soak_telemetry.temp_c ? s.gpu_soak_telemetry.temp_c[2] : null, 0) + " °C"]]
+        .map(([k, v]) => `<div class="kvitem"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("")}
+    </div>
+    <canvas id="dChart" height="220"></canvas>
+    <div class="phases" style="max-height:320px">${r.phases.map(phaseRow).join("")}</div>
+    ${r.events && r.events.length ? `<details><summary class="muted">${r.events.length} log events</summary>
+      <pre class="mono muted" style="max-height:200px;overflow:auto;font-size:11px">${esc(r.events.map((e) => e.message).join("\n"))}</pre></details>` : ""}
+    <div class="formrow" style="justify-content:flex-end"><button class="ghost" onclick="closeModal()">close</button></div>`);
+  drawChart($("#dChart"), [
+    { name: "temp", color: C.temp, points: pts("temp_c") },
+    { name: "power", color: C.power, points: pts("power_w") },
+    { name: "util", color: C.util, points: pts("gpu_util") },
+  ], { yLabel: "telemetry" });
+}
+
+/* -------------------------------------------------------------- modal --- */
+function openModal(html) { $("#modalbox").innerHTML = html; $("#modal").classList.add("show"); }
+function closeModal() { $("#modal").classList.remove("show"); }
+window.closeModal = closeModal;
+
+/* -------------------------------------------------------------- wiring -- */
+function fillSelect(sel, values, placeholder) {
+  const el = $(sel);
+  const cur = el.value;
+  el.innerHTML = `<option value="">${esc(placeholder)}</option>` + values.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
+  if (values.includes(cur)) el.value = cur;
+}
+
+document.addEventListener("click", (e) => {
+  const t = e.target.closest("[data-tab],[data-start],[data-stop],[data-update],[data-fan],[data-detail]");
+  if (!t) return;
+  if (t.dataset.tab) {
+    $$("#tabs button").forEach((b) => b.classList.toggle("active", b === t));
+    $$(".tabpane").forEach((p) => p.classList.toggle("active", p.id === "tab-" + t.dataset.tab));
+    if (t.dataset.tab === "history") renderHistory();
+    if (t.dataset.tab === "trends") renderTrends();
+    return;
+  }
+  if (t.dataset.start) return startRun(t.dataset.start);
+  if (t.dataset.stop) return cmd(t.dataset.stop, "stop");
+  if (t.dataset.update) return cmd(t.dataset.update, "update");
+  if (t.dataset.fan) return cmd(t.dataset.fan, "fan_curve", { on: true });
+  if (t.dataset.detail) return showDetail(t.dataset.detail);
+});
+
+$("#tokenBtn").onclick = askToken;
+$("#histRefresh").onclick = renderHistory;
+$("#histHost").onchange = renderHistory;
+$("#histSearch").oninput = () => { clearTimeout(window._hs); window._hs = setTimeout(renderHistory, 200); };
+$("#trendHost").onchange = renderTrends;
+$("#trendMetric").onchange = renderTrends;
+$("#trendMetric2").onchange = renderTrends;
+$("#cmpRun").onclick = runCompare;
+$("#modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
+window.addEventListener("resize", () => { renderActive(); });
+
+/* ---------------------------------------------------------------- boot -- */
+if (!TOKEN) askToken(); else { connect(); refresh(); }
+setInterval(() => { if (STATE.active.length) renderActive(); }, 5000);

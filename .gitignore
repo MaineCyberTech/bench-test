@@ -18,6 +18,10 @@ __pycache__/
 tools/
 .venv/
 
+# control-plane runtime data (sqlite db, blobs) and private config
+server/data/
+server/benchd.conf
+
 # editor
 .vscode/
 .idea/

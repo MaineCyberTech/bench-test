@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bench-test control plane</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">▚</span>
+    <div>
+      <div class="title">bench-test</div>
+      <div class="sub">control plane · single pane of glass</div>
+    </div>
+  </div>
+  <div class="topstats" id="topstats"></div>
+  <div class="conn">
+    <span class="dot" id="connDot"></span>
+    <span id="connText">connecting…</span>
+    <button class="ghost" id="tokenBtn" title="Set access token">token</button>
+  </div>
+</header>
+
+<nav class="tabs" id="tabs">
+  <button data-tab="live" class="active">Live</button>
+  <button data-tab="history">History</button>
+  <button data-tab="trends">Trends</button>
+  <button data-tab="compare">Compare</button>
+</nav>
+
+<main>
+  <section id="tab-live" class="tabpane active">
+    <div class="section-head">
+      <h2>Runners</h2>
+      <span class="muted" id="runnerCount"></span>
+    </div>
+    <div class="grid" id="runners"></div>
+    <div class="section-head">
+      <h2>Active runs</h2>
+      <span class="muted" id="activeCount"></span>
+    </div>
+    <div id="activeRuns"></div>
+  </section>
+
+  <section id="tab-history" class="tabpane">
+    <div class="section-head">
+      <h2>Run history</h2>
+      <div class="filters">
+        <select id="histHost"><option value="">all hosts</option></select>
+        <input id="histSearch" placeholder="filter…" />
+        <button class="ghost" id="histRefresh">refresh</button>
+      </div>
+    </div>
+    <div class="card tablecard">
+      <table id="histTable">
+        <thead><tr>
+          <th>host</th><th>label</th><th>started</th><th>duration</th><th>status</th>
+          <th>GPU soak TF</th><th>CPU soak GF</th><th>RAM GB/s</th><th>peak °C</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="tab-trends" class="tabpane">
+    <div class="section-head">
+      <h2>Trends</h2>
+      <div class="filters">
+        <select id="trendHost"><option value="">all hosts</option></select>
+        <select id="trendMetric"></select>
+        <select id="trendMetric2"><option value="">+ compare metric…</option></select>
+      </div>
+    </div>
+    <div class="card"><canvas id="trendChart" height="360"></canvas></div>
+    <div class="legend" id="trendLegend"></div>
+  </section>
+
+  <section id="tab-compare" class="tabpane">
+    <div class="section-head"><h2>Compare runs</h2></div>
+    <div class="filters">
+      <select id="cmpA"></select>
+      <select id="cmpB"></select>
+      <button class="accent" id="cmpRun">compare</button>
+    </div>
+    <div class="grid2" id="cmpResult"></div>
+  </section>
+</main>
+
+<div class="modal" id="modal"><div class="modalbox" id="modalbox"></div></div>
+<script src="app.js"></script>
+</body>
+</html>

@@ -97,6 +97,23 @@ raw per-phase stdout/stderr under `*-logs/` (with `nvidia-smi -q`, `sensors`, an
 kernel/error journal snapshots), and appends a row to `results/runs-index.jsonl` — the
 flat run index for trend analysis / datalake queries.
 
+## Control plane — one pane of glass for a fleet
+
+`benchd` (`server/benchd.py`) is a dependency-free control plane: runners
+register, stream live phases + 1 Hz telemetry, and can be started/stopped/updated
+from a web dashboard with live charts, run history, trends and side-by-side
+comparisons.
+
+```bash
+python3 server/benchd.py --host 0.0.0.0 --port 8722      # server (Proxmox lab box)
+BENCHD_SERVER=http://lab:8722 BENCHD_TOKEN=… python3 bench/agent.py   # a runner
+python3 bench/gui.py --server http://lab:8722 --token …  # GUI reports + is controllable
+python3 bench/tui.py --server http://lab:8722 --token …  # TUI (live USB) likewise
+```
+
+Full guide: [`docs/CONTROL_PLANE.md`](docs/CONTROL_PLANE.md) (architecture, API,
+systemd units, security).
+
 ## Driver check / update
 
 `bench/Get-GpuInfo.ps1` reports the installed NVIDIA driver version and the GPU's PCI device id.
@@ -131,7 +148,8 @@ Custom GPU fan curve (more aggressive than the quiet stock curve; persistent at 
 
 ```
 bench/     PowerShell runners + Python phases + telemetry sampler (+ Linux runner and collectors)
-docs/      METHODOLOGY.md (how it works, reference numbers, gotchas) · FUTURE_WORK.md (not-yet-collected data)
+server/    benchd control plane (stdlib server + web dashboard) + systemd units
+docs/      METHODOLOGY.md (how it works, reference numbers, gotchas) · FUTURE_WORK.md (not-yet-collected data) · CONTROL_PLANE.md
 examples/  real results (Windows + Linux runs) for templates
 results/   output (git-ignored) — reports, telemetry CSVs, per-phase logs, runs-index.jsonl
 ```
@@ -170,6 +188,9 @@ results/   output (git-ignored) — reports, telemetry CSVs, per-phase logs, run
 | `net_bench.py` | Linux network latency + Cloudflare download/upload Mbps |
 | `nvenc_bench.py` | Linux NVENC encode fps via ffmpeg |
 | `linux_info.py` | Linux inventory: OS/CPU/mem/GPU/PCIe/storage/NICs/boot/errors |
+| `server/benchd.py` | control plane: REST + SSE + SQLite + web dashboard (single pane of glass) |
+| `agent.py` | headless control-plane agent: registers, runs the battery on command, streams live |
+| `benchreport.py` | shared reporting client (agent + GUI/TUI): phases, telemetry, commands |
 
 ## License
 

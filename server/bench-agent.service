@@ -1,0 +1,17 @@
+[Unit]
+Description=bench-test agent (connects this machine to the control plane)
+Documentation=https://github.com/MaineCyberTech/bench-test/blob/main/docs/CONTROL_PLANE.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# /etc/bench-agent.conf:  BENCHD_SERVER=http://lab:8722  BENCHD_TOKEN=...
+EnvironmentFile=-/etc/bench-agent.conf
+WorkingDirectory=/opt/bench-test
+ExecStart=/usr/bin/python3 /opt/bench-test/bench/agent.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

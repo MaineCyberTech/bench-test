@@ -32,6 +32,11 @@ FAN_CONF = "/etc/bench-fan-curve.conf"
 RESULT_COLLECTOR = "/usr/local/bin/bench-collect"
 GUI_LAUNCHER = "/usr/local/bin/bench-gui"
 sys.path.insert(0, BENCH)
+try:
+    from benchreport import (Reporter, PhaseTracker, ReporterPump,
+                             build_summary, newest_report)
+except Exception:  # reporting is optional
+    Reporter = None
 
 GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "sys", "gfx"]
 
@@ -78,6 +83,13 @@ class BenchTUI:
         self.gpu = {}
         self.status = "idle - press s to start"
         self.status_attr = 0
+        self.rep = None
+        self.pump = None
+        self.tracker = None
+        self._pending = queue.Queue()
+        self.server = opts.get("server", "")
+        self.token = opts.get("token", "")
+        self.name = opts.get("name", "")
 
         # live system sampling (htop-style)
         self.sys_cpu = 0.0
@@ -90,6 +102,57 @@ class BenchTUI:
 
         self._apply_preset(1)
         self._demo_seed()
+        self._setup_reporting()
+
+    # ---------------------------------------------------------- reporting ---
+    def _setup_reporting(self):
+        if not (self.server and self.token and Reporter):
+            return
+        try:
+            import platform as _p
+            self.rep = Reporter(self.server, self.token, name=self.name or _p.node(),
+                                kind="tui", os_name=_p.system(),
+                                log=lambda m: self.log.append(m))
+            if self.rep.register({"os": _p.system(), "platform": _p.platform(), "kind": "tui"}):
+                self.pump = ReporterPump(self.rep, on_command=self._pending.put,
+                                         log=lambda m: self.log.append(m))
+                self.pump.start()
+                self.log.append("[report] connected to %s" % self.server)
+            else:
+                self.rep = None
+        except Exception as exc:
+            self.log.append("[report] disabled: %s" % exc)
+            self.rep = None
+
+    def _apply_remote(self, cmd):
+        kind = cmd.get("kind")
+        payload = cmd.get("payload") or {}
+        if kind == "start":
+            if self.running:
+                self.rep.ack(cmd.get("id"), "failed", {"error": "already running"})
+                return
+            self.start(profile=payload)
+            self.rep.ack(cmd.get("id"), "done", {"started": True})
+        elif kind == "stop":
+            self.stop()
+            self.rep.ack(cmd.get("id"), "done", {"stopping": True})
+        elif kind == "fan_curve":
+            self.toggle_curve()
+            self.rep.ack(cmd.get("id"), "done", {"toggled": True})
+        else:
+            self.rep.ack(cmd.get("id"), "failed", {"error": "unsupported: %s" % kind})
+
+    def _apply_profile(self, profile):
+        for key, val in (profile.get("groups") or {}).items():
+            if key in self.groups:
+                self.groups[key] = bool(val)
+        for g in (profile.get("skip") or []):
+            if g in self.groups:
+                self.groups[g] = False
+        for key, val in {"gpu": profile.get("gpu_soak"), "combined": profile.get("combined"),
+                         "fullsoak": profile.get("fullsoak"), "gfx": profile.get("gfx")}.items():
+            if val not in (None, "") and key in self.dur:
+                self.dur[key] = str(val)
 
     # ------------------------------------------------------------- presets --
     def _apply_preset(self, idx):
@@ -121,9 +184,11 @@ class BenchTUI:
         return args
 
     # ---------------------------------------------------------------- run ---
-    def start(self):
+    def start(self, profile=None):
         if self.running:
             return
+        if profile:
+            self._apply_profile(profile)
         self.phases, self.last_phase, self.scroll, self.follow = [], {}, 0, True
         self.tel = {k: deque(maxlen=1000) for k in ("t", "temp", "fan", "power", "util")}
         self.tel_path, self.tel_cols, self.csv_last = None, {}, None
@@ -140,6 +205,9 @@ class BenchTUI:
             return
         self.running = True
         self._set("running: %s" % PRESETS[self.preset][0], 2)
+        if self.rep and self.rep.runner_id:
+            self.tracker = PhaseTracker(self.rep)
+            self.rep.start_run((profile or {}).get("label") or PRESETS[self.preset][0], profile or {})
         threading.Thread(target=self._reader, args=(self.proc,), daemon=True).start()
 
     def _reader(self, proc):
@@ -290,6 +358,8 @@ class BenchTUI:
 
     def _handle(self, line):
         self.log.append(line)
+        if self.tracker:
+            self.tracker.feed(line)
         if line.startswith("[") and "]" in line:
             head = line[1:line.index("]")]
             rest = line[line.index("]") + 1:].strip()
@@ -324,6 +394,16 @@ class BenchTUI:
             if ph["status"] == "run":
                 ph["status"] = "ok"
                 ph["t1"] = time.time()
+        if self.tracker:
+            self.tracker.close()
+            self.tracker = None
+        if self.rep and self.rep.run_id:
+            try:
+                report = newest_report(self.results_dir)
+                summary = build_summary(report) if report else {}
+            except Exception:
+                summary = {}
+            self.rep.finish("done" if rc == 0 else "failed", rc or 0, summary)
         self._set("finished (exit %s) - c collect · r report" % rc, 1 if rc == 0 else 4)
         if os.path.exists(RESULT_COLLECTOR):
             self.collect()
@@ -377,6 +457,11 @@ class BenchTUI:
                 v = self.csv_now.get(col)
                 if v is not None:
                     self.tel[key].append(v)
+            if self.pump:
+                self.pump.push_sample([elapsed, self.csv_now.get("temp_c"),
+                                       self.csv_now.get("fan_pct"), self.csv_now.get("power_w"),
+                                       self.csv_now.get("gpu_util_pct"), self.csv_now.get("gpu_fan_rpm"),
+                                       None, None, self.csv_now.get("sm_mhz"), None])
 
     def _sample_system(self):
         try:
@@ -762,6 +847,8 @@ class BenchTUI:
                                   1 if self.collected_ok else 3)
                 except Exception:
                     pass
+            if self.pump:
+                self.pump.stop()
             return False
         if ch == ord("s"):
             self.start()
@@ -816,6 +903,11 @@ class BenchTUI:
         frame = 0
         while True:
             self._drain()
+            try:
+                while True:
+                    self._apply_remote(self._pending.get_nowait())
+            except queue.Empty:
+                pass
             self._read_telemetry()
             self._sample_system()
             try:
@@ -859,6 +951,10 @@ def main():
     ap.add_argument("--results-dir", default=os.path.join(REPO, "results"))
     ap.add_argument("--demo", action="store_true")
     ap.add_argument("--exit-after", type=float, default=0)
+    ap.add_argument("--server", default=os.environ.get("BENCHD_SERVER", ""),
+                    help="benchd control-plane URL (report + remote control)")
+    ap.add_argument("--token", default=os.environ.get("BENCHD_TOKEN", ""), help="control-plane token")
+    ap.add_argument("--name", default="", help="runner name reported to the control plane")
     a = ap.parse_args()
 
     def wrapped(scr):
@@ -872,7 +968,8 @@ def main():
         curses.init_pair(6, curses.COLOR_MAGENTA, -1)
         curses.init_pair(7, curses.COLOR_BLUE, -1)
         curses.init_pair(8, curses.COLOR_WHITE, -1)
-        app = BenchTUI(scr, {"results_dir": a.results_dir, "demo": a.demo, "exit_after": a.exit_after})
+        app = BenchTUI(scr, {"results_dir": a.results_dir, "demo": a.demo, "exit_after": a.exit_after,
+                             "server": a.server, "token": a.token, "name": a.name})
         try:
             app.run()
         except KeyboardInterrupt:

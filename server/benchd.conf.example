@@ -1,0 +1,9 @@
+# benchd control-plane config (key=value). Copy to server/benchd.conf,
+# ~/.config/benchd.conf or /etc/benchd.conf. Keep it out of version control.
+
+# Shared bearer token for runners + the web UI. Generate one with:
+#   python -c "import secrets; print(secrets.token_urlsafe(32))"
+BENCHD_TOKEN=change-me
+
+# Optional: where the SQLite database lives (default server/data/benchd.sqlite)
+# BENCHD_DB=/var/lib/benchd/benchd.sqlite

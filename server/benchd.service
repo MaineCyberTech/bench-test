@@ -1,0 +1,21 @@
+[Unit]
+Description=bench-test control plane (benchd)
+Documentation=https://github.com/MaineCyberTech/bench-test/blob/main/docs/CONTROL_PLANE.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# token is read from /etc/benchd.conf (BENCHD_TOKEN=...)
+WorkingDirectory=/opt/bench-test
+ExecStart=/usr/bin/python3 /opt/bench-test/server/benchd.py --host 0.0.0.0 --port 8722
+Restart=on-failure
+RestartSec=3
+# harden a little; benchd only needs its db + web dir
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
