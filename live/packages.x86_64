@@ -39,4 +39,4 @@ openbox
 xterm
 p7zip
 rsync
-openblas
+blas-openblas
