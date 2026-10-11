@@ -1,0 +1,3 @@
+[collect] no writable BENCHDATA partition found - saving to /root/bench-results (RAM - copy off before reboot!)
+[collect] results copied to /root/bench-results/unknown-20261011-060007
+[collect] WARNING: destination is RAM - back it up before rebooting
