@@ -70,40 +70,41 @@ def _nvidia_settings():
 
 
 def _ensure_x(env):
-    """NV-CONTROL needs an X server; live consoles have none. Start a bare X
-    on :0/vt2 (the same display the GUI dashboard uses) when needed."""
+    """NV-CONTROL needs an X server; live consoles have none. Start a bare
+    *headless* X on :9 (nvidia UseDisplayDevice=none) when needed - a normal X
+    would modeset the GPU and blank the console (and :9 leaves the GUI's :0
+    display untouched)."""
     disp = env.get("DISPLAY", ":0")
 
-    def alive():
+    def alive(d):
         try:
-            return subprocess.run(["xdpyinfo", "-display", disp],
+            return subprocess.run(["xdpyinfo", "-display", d],
                                   capture_output=True, timeout=10).returncode == 0
         except Exception:
             return False
 
-    if alive():
+    if alive(disp):
         return True
     if not shutil.which("X") or not shutil.which("xdpyinfo"):
         return False
-    try:
-        with open("/tmp/bench-fan-x.log", "ab") as log:
-            subprocess.Popen(["X", disp, "vt2", "-ac", "-nolisten", "tcp",
-                              "-novtswitch", "-sharevts"],
-                             stdout=log, stderr=subprocess.STDOUT,
-                             start_new_session=True)
-    except Exception:
-        return False
-    for _ in range(24):
-        time.sleep(0.5)
-        if alive():
-            if shutil.which("openbox"):
-                try:
-                    with open("/tmp/bench-fan-x.log", "ab") as log:
-                        subprocess.Popen(["openbox"], stdout=log, stderr=subprocess.STDOUT,
-                                         start_new_session=True)
-                except Exception:
-                    pass
-            return True
+    hd = ":9"
+    if not alive(hd):
+        args = ["X", hd, "vt2", "-ac", "-novtswitch", "-sharevts", "-nolisten", "tcp"]
+        if os.path.isdir("/etc/X11/bench-headless.d"):
+            args += ["-configdir", "/etc/X11/bench-headless.d"]
+        try:
+            with open("/tmp/bench-fan-x.log", "ab") as log:
+                subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT,
+                                 start_new_session=True)
+        except Exception:
+            return False
+        for _ in range(24):
+            time.sleep(0.5)
+            if alive(hd):
+                break
+    if alive(hd):
+        env["DISPLAY"] = hd
+        return True
     return False
 
 

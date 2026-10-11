@@ -227,15 +227,21 @@ if [ "$DO_GFX" = 1 ]; then
         echo "    furmark not found at $FM -- download FurMark 2 (linux64) from geeks3d.com into tools/, or set \$FURMARK"
         printf '{"group":"gfx","phase":"furmark","result":{"skipped":true,"reason":"furmark not installed"}}\n' >> "$JSONL"
     else
-        # live consoles have no X, and FurMark's DPI probe crashes on Xwayland:
-        # start a real X (same display the fan tooling uses) when needed
+        # live consoles have no X; start a headless one on :9 (nvidia
+        # UseDisplayDevice=none) so GL works without blanking the console and
+        # without stealing the GUI's :0 display
         if ! xdpyinfo -display "${DISPLAY:-:0}" >/dev/null 2>&1; then
-            echo "    starting X for the gfx phase"
-            X "${DISPLAY:-:0}" vt2 -ac -novtswitch -sharevts -nolisten tcp > /tmp/bench-gfx-x.log 2>&1 &
-            for i in $(seq 1 20); do
-                sleep 0.5
-                xdpyinfo -display "${DISPLAY:-:0}" >/dev/null 2>&1 && break
-            done
+            if ! xdpyinfo -display :9 >/dev/null 2>&1; then
+                echo "    starting headless X (:9) for the gfx phase"
+                XARGS=""
+                [ -d /etc/X11/bench-headless.d ] && XARGS="-configdir /etc/X11/bench-headless.d"
+                X :9 vt2 $XARGS -ac -novtswitch -sharevts -nolisten tcp > /tmp/bench-gfx-x.log 2>&1 &
+                for i in $(seq 1 20); do
+                    sleep 0.5
+                    xdpyinfo -display :9 >/dev/null 2>&1 && break
+                done
+            fi
+            export DISPLAY=:9
         fi
         # FurMark's X11 DPI probe segfaults when RESOURCE_MANAGER is missing (Xwayland here).
         xprop -root RESOURCE_MANAGER 2>/dev/null | grep -q RESOURCE_MANAGER || \

@@ -798,6 +798,7 @@ class BenchTUI:
 
     def run(self):
         curses.curs_set(0)
+        self.scr.keypad(True)  # arrows/PgUp/PgDn as KEY_* in all views
         self.scr.timeout(250)
         deadline = time.time() + self.exit_after if self.exit_after else None
         frame = 0
