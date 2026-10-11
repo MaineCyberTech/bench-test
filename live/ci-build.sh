@@ -11,6 +11,12 @@ cd "$REPO"
 
 build_native() {
     echo "[ci] native Arch runner - building directly"
+    if [ "$GPU" != "amd" ] && ! .venv/bin/python -c 'import torch' 2>/dev/null; then
+        python3 -m venv .venv
+        .venv/bin/pip install torch numpy psutil cryptography \
+            --index-url https://download.pytorch.org/whl/cu126 \
+            --extra-index-url https://pypi.org/simple
+    fi
     sudo -n env BENCH_WORK_DIR=/var/tmp ./live/Build-LiveUSB.sh --gpu "$GPU"
 }
 
@@ -36,6 +42,9 @@ build_container() {
             ./live/Build-LiveUSB.sh --gpu "$GPU"
         '
 }
+
+echo "[ci] host: $(uname -srm)  user: $(id -un)  home free: $(df -h "$HOME" | tail -1 | awk '{print $4}')"
+command -v docker >/dev/null 2>&1 && echo "[ci] docker: yes ($(docker --version 2>/dev/null))" || echo "[ci] docker: no"
 
 if [ -f /etc/arch-release ] && command -v pacman >/dev/null 2>&1; then
     build_native
