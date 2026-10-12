@@ -302,6 +302,24 @@ def run():
         c.check("a runner at the latest commit is NOT stale",
                 row4.get("update_available") is False, row4)
 
+    # ---- a docs-only difference is not an update ----
+    c.check("update_matters ignores docs", B.update_matters(["docs/DATA.md"]) is False, "")
+    c.check("update_matters ignores CI and notes",
+            B.update_matters([".github/workflows/build-iso.yml", "CHANGELOG.md"]) is False, "")
+    c.check("update_matters ignores example/result data",
+            B.update_matters(["examples/run.json", "results/x/telemetry.csv"]) is False, "")
+    c.check("update_matters flags toolkit code", B.update_matters(["bench/gui.py"]) is True, "")
+    c.check("update_matters flags a mixed range",
+            B.update_matters(["docs/DATA.md", "live/Build-LiveUSB.sh"]) is True, "")
+    c.check("update_matters is conservative when the file list is unknown",
+            B.update_matters([]) is True, "")
+    c.check("compare_detail short-circuits identical commits",
+            B.compare_detail("abc1234", "abc1234") == ("identical", []), "")
+    c.check("compare_detail reports unknown without commits",
+            B.compare_detail("", "abc1234") == ("", []), "")
+    c.check("compare_commits still returns just the status",
+            B.compare_commits("abc1234", "abc1234") == "identical", "")
+
     srv.stop()
     return c.fails
 
