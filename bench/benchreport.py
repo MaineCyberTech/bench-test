@@ -1053,6 +1053,23 @@ def _device_of_path(path):
     return os.path.realpath(dev) if dev else ""
 
 
+def _unmount_all(device):
+    """Unmount every partition of the device (needed before write/re-read)."""
+    base = os.path.basename(os.path.realpath(device))
+    try:
+        with open("/proc/mounts") as fh:
+            for ln in fh:
+                p = ln.split()
+                if len(p) < 2:
+                    continue
+                src = os.path.basename(p[0])
+                if src == base or (src.startswith(base) and src[len(base):].isdigit()):
+                    subprocess.run(["umount", p[1].replace("\\040", " ")],
+                                   capture_output=True, timeout=30)
+    except OSError:
+        pass
+
+
 def _is_usb_device(device):
     """True when the device sits on a USB transport (or reports removable)."""
     try:
@@ -1136,6 +1153,7 @@ def _finish_stick(device, iso_bytes, confs, log=None):
     log = log or (lambda _m: None)
     if not _is_usb_device(device):
         return {"partition": "skipped (not a USB device)"}
+    _unmount_all(device)
     start_mib = iso_bytes // 1048576 + 16
     subprocess.run(["sync"], timeout=60)
     subprocess.run(["blockdev", "--rereadpt", device], capture_output=True, timeout=30)
@@ -1194,6 +1212,7 @@ def iso_write(iso_path, device, confirm=False, log=None):
         if _device_of_path(guard) and _device_of_path(guard) == os.path.realpath(device):
             return {"error": "refusing to overwrite the device backing %s" % guard}
     confs = _stash_confs(device)
+    _unmount_all(device)
     iso_bytes = os.path.getsize(iso_path)
     log("[iso] writing %s -> %s" % (iso_path, device))
     try:
