@@ -210,6 +210,21 @@ def run():
     c.check("failed update does not restart",
             br.update_needs_restart({"error": "x"}) is False, "")
 
+    # ---- a plain update restarts too, unless a run is in progress ----
+    switched = {"ok": True, "switched": True}
+    c.check("dashboards restart after a plain update",
+            br.should_restart_after_update(switched) is True, "")
+    c.check("a run in progress defers the restart",
+            br.should_restart_after_update(switched, running=True) is False, "")
+    c.check("an explicit request overrides a run in progress",
+            br.should_restart_after_update(switched, running=True, requested=True) is True, "")
+    c.check("a no-op update never restarts",
+            br.should_restart_after_update({"ok": True, "switched": False}) is False, "")
+    for f in ("gui.py", "tui.py"):
+        src = open(os.path.join(BENCH, f), encoding="utf-8").read()
+        c.check("%s uses the shared restart decision" % f,
+                "should_restart_after_update(" in src, f)
+
     # ---- auto_update: the startup check (no network needed) ----
     saved_offline = os.environ.pop("BENCH_OFFLINE", None)
     try:

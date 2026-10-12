@@ -53,7 +53,7 @@ try:
                              update_toolkit, iso_fetch, iso_write, iso_write_slot,
                              self_update, restart_self,
                              toolkit_version, is_live, update_needs_restart, hardware_line,
-                             DASH_FIELDS, auto_update)
+                             DASH_FIELDS, auto_update, should_restart_after_update)
 except Exception:  # reporting is optional
     Reporter = None
 
@@ -242,8 +242,9 @@ class BenchTUI:
             except Exception as e:
                 res = {"error": "%s: %s" % (type(e).__name__, e)}
             self.rep.ack(cid, "done" if res.get("ok") else "failed", res)
-            if payload.get("restart") and update_needs_restart(res):
-                restart_self(1.5, log)
+            if should_restart_after_update(res, running=self.running,
+                                           requested=bool(payload.get("restart"))):
+                threading.Thread(target=restart_self, args=(1.5, log), daemon=True).start()
         threading.Thread(target=work, daemon=True).start()
 
     def _exec_remote(self, cid, payload):

@@ -1059,6 +1059,17 @@ def update_needs_restart(res):
     return bool(res.get("switched"))
 
 
+def should_restart_after_update(res, running=False, requested=False):
+    """Whether a dashboard should restart itself after applying an update.
+
+    A plain update has to be followed by a restart or the runner keeps reporting
+    the commit it started with and the fleet badge keeps saying "update
+    available". A run in progress wins: defer it (the caller can pass
+    requested=True to force the restart).
+    """
+    return update_needs_restart(res) and (bool(requested) or not running)
+
+
 def auto_update(repo=None, log=None, enabled=None):
     """Pull the checkout if it is behind upstream — intended to run at startup.
 
