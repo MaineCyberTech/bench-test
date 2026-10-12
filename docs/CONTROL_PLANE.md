@@ -155,6 +155,10 @@ gpu_fan_rpm, cpu_util, ram_used, sm_mhz, mem_used`.
 { "kind": "restart" }                       // re-exec the agent (fresh checkout)
 { "kind": "reboot" }                        // power-cycle the machine
 { "kind": "shutdown" }                      // power off the machine
+{ "kind": "update_toolkit", "payload": { "ref": "main", "sha256": null } }   // live self-update
+{ "kind": "iso_fetch", "payload": { "tag": "iso-nvidia-legacy-38", "gpu": "nvidia-legacy" } }
+{ "kind": "iso_write", "payload": { "iso": "/mnt/benchdata/iso/bench-live-*.iso",
+                                    "device": "/dev/sdX", "confirm": true } }  // destructive
 { "kind": "exec", "payload": { "cmd": "nvidia-smi -q | head", "timeout": 30 } }  // remote terminal
 ```
 

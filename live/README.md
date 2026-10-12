@@ -84,6 +84,22 @@ RAM, and copies `results/` (report, 1 Hz telemetry CSV, per-phase logs, run inde
 to `BENCHDATA/<host>-<timestamp>/` when it finishes. Offline machines work fine —
 the collection is local; upload/sync the `BENCHDATA` contents later.
 
+## Self-update (no reflash)
+
+Tick the toolkit's **update** action from the control plane (fleet card → *update…*,
+or the `update_toolkit` command) and the stick fetches the toolkit at a ref onto
+BENCHDATA, verifies it, and re-points `/opt/bench-test` — at runtime and again at
+boot (via `bench-agent-env`). Kernel/driver changes still need a new image:
+`iso_fetch` downloads + verifies a release ISO, and `iso_write` can flash it to a
+*different* device attached to the same machine. Locally:
+
+```bash
+python bench/live_update.py toolkit --ref main
+python bench/live_update.py iso-fetch iso-nvidia-legacy-38 && \
+python bench/live_update.py iso-write /mnt/benchdata/iso/bench-live-nvidia-legacy.iso \
+       --device /dev/sdX --yes
+```
+
 ## Variants / vendor notes
 
 | Variant | GPU support | Compute | Notes |

@@ -183,6 +183,32 @@ sudo ./live/Build-LiveUSB.sh --gpu nvidia-legacy --write /dev/sdX
 # The workflow rebuilds automatically on push to main touching bench/** or live/**.
 ```
 
+### Updating a live runner without reflashing
+
+A booted stick is read-only, so "updating" means pointing the toolkit at a fresher
+copy on the stick's writable partition. The control plane can do that remotely —
+from the fleet card's **update…** dialog, or as commands:
+
+| Command | Payload | Effect |
+|---|---|---|
+| `update_toolkit` | `{ref, sha256?}` | fetch the toolkit at `ref` (branch/tag/sha), verify, extract onto BENCHDATA and re-point `/opt/bench-test`; re-pointed again at boot |
+| `iso_fetch` | `{tag, gpu?}` | download a release's ISO parts, reassemble and check `SHA256SUMS` |
+| `iso_write` | `{iso, device, confirm:true}` | write a staged ISO to **another** block device (refuses anything backing `/`, `/opt` or BENCHDATA) |
+
+`update` on a live runner now runs the toolkit update automatically (a git
+checkout still does `git pull`). The same operations are available locally:
+
+```bash
+python bench/live_update.py toolkit --ref main      # self-update + switch
+python bench/live_update.py iso-list iso-nvidia-legacy-38
+python bench/live_update.py iso-fetch iso-nvidia-legacy-38
+python bench/live_update.py iso-write <iso> --device /dev/sdX --yes
+```
+
+Kernel/driver/package changes still need a new image: fetch it remotely, then
+write it to a *different* stick (or reflash in person) — a stick cannot safely
+overwrite the partition it is booted from.
+
 To auto-connect, put this on the BENCHDATA partition (or bake it via the
 `BENCH_AGENT_CONF` secret / `live/private/bench-agent.conf`):
 ```
