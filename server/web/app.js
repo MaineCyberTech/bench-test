@@ -9,10 +9,28 @@ const PRESETS = {
   "CPU + RAM + disk": { groups: { gpu: 0, cpu: 1, ram: 1, disk: 1, combined: 0, fullsoak: 0, net: 1, nvenc: 0, sys: 1, gfx: 0 } },
 };
 const C = { temp: "#ef6b73", power: "#4c9aff", util: "#46c98d", fan: "#e5b567" };
+const SERIES = {
+  temp_c: ["temp °C", "#ef6b73"], power_w: ["power W", "#4c9aff"], gpu_util: ["GPU %", "#46c98d"],
+  fan_pct: ["fan %", "#e5b567"], mem_util: ["VRAM %", "#b48ead"], sm_mhz: ["SM MHz", "#8fa1b3"],
+  mem_mhz: ["MEM MHz", "#7f9cf5"], vram_used_mib: ["VRAM MiB", "#e5b567"],
+  cpu_util: ["CPU %", "#63b3ed"], cpu_temp_c: ["CPU °C", "#f6ad55"], ram_used: ["RAM GiB", "#68d391"],
+  load1: ["load1", "#d6bcfa"], nvme_c: ["NVMe °C", "#fc8181"], cpu_max_core_c: ["CPU core max", "#f6ad55"],
+};
+const CHART_PRESETS = {
+  "temp · power · util": ["temp_c", "power_w", "gpu_util"],
+  "temp · fan · power": ["temp_c", "fan_pct", "power_w"],
+  "VRAM · SM clock": ["vram_used_mib", "sm_mhz", "mem_util"],
+  "CPU · RAM": ["cpu_util", "ram_used", "load1"],
+  "CPU temp · NVMe": ["cpu_temp_c", "cpu_max_core_c", "nvme_c"],
+};
+const GAUGES = [["temp_c", "temp °C"], ["power_w", "power W"], ["gpu_util", "GPU %"],
+                ["fan_pct", "fan %"], ["mem_util", "VRAM %"], ["cpu_temp_c", "CPU °C"]];
 
 let TOKEN = new URLSearchParams(location.search).get("token") || localStorage.getItem("benchd_token") || "";
 let STATE = { runners: [], active: [], recent: [], metrics: [] };
-let TEL = {};               // run_id -> [{elapsed,temp,power,util,fan}]
+let TEL = {};               // run_id -> [sample dicts]
+let LOGS = {};              // run_id -> [line strings]
+let CHART = {};             // run_id -> selected chart preset
 let HOSTS = [];
 let SCHEDULES = [];
 let es = null;
@@ -29,6 +47,25 @@ const dur = (s) => s == null ? "—" : (s < 60 ? s.toFixed(0) + "s"
 const ago = (t) => { if (!t) return "—"; const d = Date.now() / 1000 - t;
   return d < 60 ? Math.round(d) + "s ago" : d < 3600 ? Math.round(d / 60) + "m ago" : Math.round(d / 3600) + "h ago"; };
 const ts = (t) => t ? new Date(t * 1000).toLocaleString() : "—";
+const runDur = (r) => {
+  if (!r.ended) return dur(Date.now() / 1000 - r.started);
+  const d = r.ended - r.started;
+  return d > 0 ? dur(d) : "—";
+};
+const sysLine = (r) => {
+  const sy = r.system || {};
+  const cpu = (sy.cpu || "").replace(/\((R|TM)\)/g, "").replace(/\s*CPU\s*@.*/i, "").trim();
+  const gpu = (sy.gpu || r.gpu || "").replace(/NVIDIA GeForce\s*/i, "");
+  const parts = [cpu, sy.ram_gib ? sy.ram_gib + " GiB" : null, gpu].filter(Boolean);
+  return parts.join(" · ");
+};
+function toast(msg, kind) {
+  let t = $("#toast");
+  if (!t) { t = document.createElement("div"); t.id = "toast"; document.body.appendChild(t); }
+  t.className = "toast show " + (kind || "");
+  t.textContent = msg;
+  clearTimeout(window._toast); window._toast = setTimeout(() => { t.className = "toast"; }, 4000);
+}
 
 /* ------------------------------------------------------------------ api -- */
 async function api(path, method = "GET", body) {
@@ -67,8 +104,16 @@ function connect() {
   es.addEventListener("phase", (e) => onPhase(JSON.parse(e.data)));
   es.addEventListener("telemetry", (e) => onTelemetry(JSON.parse(e.data)));
   es.addEventListener("command", () => refresh());
+  es.addEventListener("log", (e) => onLog(JSON.parse(e.data)));
   es.addEventListener("schedule", () => renderSchedules());
   es.addEventListener("event", () => {});
+}
+function onLog(d) {
+  const buf = LOGS[d.run_id] || (LOGS[d.run_id] = []);
+  for (const l of (d.lines || [])) buf.push(l);
+  if (buf.length > 2000) buf.splice(0, buf.length - 2000);
+  const pre = document.querySelector(`[data-active="${d.run_id}"] .console`);
+  if (pre) { pre.textContent = buf.slice(-300).join("\n"); pre.scrollTop = pre.scrollHeight; }
 }
 function setConn(on) {
   $("#connDot").className = "dot " + (on ? "on" : "off");
@@ -81,7 +126,10 @@ async function refresh() {
     const s = await api("/state");
     STATE = s;
     HOSTS = [...new Set(STATE.recent.map((r) => r.host).filter(Boolean))].sort();
-    for (const a of STATE.active) ensureTel(a.id);
+    for (const a of STATE.active) {
+      ensureTel(a.id);
+      if (!LOGS[a.id] && a.logs_tail) LOGS[a.id] = a.logs_tail.map((l) => l.line);
+    }
     renderAll();
   } catch (e) { /* offline */ }
 }
@@ -90,24 +138,19 @@ function ensureTel(id) {
   if (TEL[id]) return;
   TEL[id] = [];
   api("/runs/" + id + "/telemetry?max=600").then((d) => {
-    const f = d.fields, rows = d.rows;
-    const ix = (n) => f.indexOf(n);
-    TEL[id] = rows.map((r) => ({
-      elapsed: r[ix("elapsed")], temp: r[ix("temp_c")], power: r[ix("power_w")],
-      util: r[ix("gpu_util")], fan: r[ix("fan_pct")],
-    })).filter((x) => x.elapsed != null);
+    TEL[id] = (d.rows || []).filter((x) => x.elapsed != null);
     renderActive();
   }).catch(() => {});
 }
 
 function onTelemetry(d) {
-  const [el, temp, fan, power, util] = d.sample || [];
+  const s = d.sample;
+  if (!s || typeof s !== "object") return;
   const buf = TEL[d.run_id] || (TEL[d.run_id] = []);
-  buf.push({ elapsed: el, temp, power, util, fan });
+  buf.push(s);
   if (buf.length > 900) buf.shift();
-  // update gauges + chart without a full refresh
   const card = document.querySelector(`[data-active="${d.run_id}"]`);
-  if (card) { paintGauges(card, { temp, power, util, fan }); drawRunChart(card, d.run_id); }
+  if (card) { paintGauges(card, s); drawRunChart(card, d.run_id); }
 }
 
 function onPhase(p) {
@@ -164,32 +207,42 @@ function renderActive() {
   const el = $("#activeRuns");
   if (!STATE.active.length) { el.innerHTML = `<div class="card muted">No runs in progress.</div>`; return; }
   el.innerHTML = STATE.active.map((a) => {
-    const started = a.started;
-    const elapsed = started ? Date.now() / 1000 - started : 0;
+    const elapsed = a.started ? Date.now() / 1000 - a.started : 0;
     const last = a.latest || {};
+    const preset = CHART[a.id] || Object.keys(CHART_PRESETS)[0];
+    const logLines = (LOGS[a.id] || []).slice(-300).join("\n");
     return `<div class="runbox" data-active="${a.id}">
       <div class="rh">
         <span class="statusp busy"></span>
         <div class="h">${esc(a.host)} · ${esc(a.label || "run")}</div>
-        <span class="muted mono">${dur(elapsed)} elapsed</span>
+        <span class="muted mono">${dur(elapsed)} elapsed · ${esc(sysLine(a))}</span>
         <div style="margin-left:auto" class="ract">
           <button class="danger" data-stop="${a.runner_id}">Stop</button>
           <button class="ghost" data-detail="${a.id}">details</button>
         </div>
       </div>
       <div class="gauges">
-        <div class="gauge"><div class="gv" data-g="temp">${fmt(last.temp_c, 0)}</div><div class="gk">temp °C</div></div>
-        <div class="gauge"><div class="gv" data-g="power">${fmt(last.power_w, 0)}</div><div class="gk">power W</div></div>
-        <div class="gauge"><div class="gv" data-g="util">${fmt(last.gpu_util, 0)}</div><div class="gk">GPU %</div></div>
-        <div class="gauge"><div class="gv" data-g="fan">${fmt(last.fan_pct, 0)}</div><div class="gk">fan %</div></div>
+        ${GAUGES.map(([k, label]) => `<div class="gauge"><div class="gv" data-g="${k}">${fmt(last[k], 0)}</div><div class="gk">${esc(label)}</div></div>`).join("")}
       </div>
-      <canvas class="runchart" height="180"></canvas>
+      <div class="chartrow">
+        <canvas class="runchart" height="180"></canvas>
+        <select class="csel" data-chart="${a.id}">${Object.keys(CHART_PRESETS).map((k) => `<option${k === preset ? " selected" : ""}>${esc(k)}</option>`).join("")}</select>
+      </div>
       <div class="phases">${a.phases.map(phaseRow).join("")}</div>
+      <div class="consolewrap">
+        <div class="chead"><span class="muted">live console</span>
+          <form class="term" data-exec="${a.runner_id}">
+            <input placeholder="run a command on this runner…" autocomplete="off">
+            <button class="accent" type="submit">run</button>
+          </form>
+        </div>
+        <pre class="console mono">${esc(logLines)}</pre>
+      </div>
     </div>`;
   }).join("");
   STATE.active.forEach((a) => {
     const card = document.querySelector(`[data-active="${a.id}"]`);
-    if (card) { drawRunChart(card, a.id); }
+    if (card) drawRunChart(card, a.id);
   });
 }
 
@@ -202,8 +255,10 @@ function phaseRow(p) {
 }
 
 function paintGauges(card, v) {
-  const set = (k, val) => { const e = card.querySelector(`[data-g="${k}"]`); if (e) e.textContent = fmt(val, 0); };
-  set("temp", v.temp); set("power", v.power); set("util", v.util); set("fan", v.fan);
+  GAUGES.forEach(([k]) => {
+    const e = card.querySelector(`[data-g="${k}"]`);
+    if (e) e.textContent = fmt(v[k], 0);
+  });
 }
 
 /* ------------------------------------------------------------ history --- */
@@ -218,8 +273,11 @@ async function renderHistory() {
       const s = r.summary || {};
       const peak = s.gpu_soak_telemetry && s.gpu_soak_telemetry.temp_c ? s.gpu_soak_telemetry.temp_c[2] : (s.telemetry && s.telemetry.temp_c ? s.telemetry.temp_c[2] : null);
       return `<tr data-detail="${r.id}">
-        <td>${esc(r.host)}</td><td>${esc(r.label || "")}</td><td class="muted">${ts(r.started)}</td>
-        <td class="mono">${r.ended ? dur(r.ended - r.started) : dur(Date.now() / 1000 - r.started)}</td>
+        <td>${esc(r.host)}</td>
+        <td class="syscol">${esc(sysLine(r))}</td>
+        <td>${esc(r.label || "")}</td>
+        <td class="muted">${ts(r.started)}</td>
+        <td class="mono">${runDur(r)}</td>
         <td><span class="pill ${esc(r.status)}">${esc(r.status)}</span></td>
         <td class="mono">${fmt(s.gpu_soak_tflops)}</td>
         <td class="mono">${fmt(s.cpu_soak_gflops, 0)}</td>
@@ -333,11 +391,14 @@ function drawRunChart(card, runId) {
   const cv = card.querySelector(".runchart");
   if (!cv) return;
   const buf = (TEL[runId] || []).slice(-240);
-  drawChart(cv, [
-    { name: "temp", color: C.temp, points: buf.filter((b) => b.temp != null).map((b) => ({ x: b.elapsed, y: b.temp })) },
-    { name: "power", color: C.power, points: buf.filter((b) => b.power != null).map((b) => ({ x: b.elapsed, y: b.power })) },
-    { name: "util", color: C.util, points: buf.filter((b) => b.util != null).map((b) => ({ x: b.elapsed, y: b.util })) },
-  ]);
+  const preset = CHART[runId] || Object.keys(CHART_PRESETS)[0];
+  const keys = CHART_PRESETS[preset] || [];
+  const series = keys.map((k) => {
+    const meta = SERIES[k] || [k, "#4c9aff"];
+    return { name: meta[0], color: meta[1],
+             points: buf.filter((b) => b[k] != null).map((b) => ({ x: b.elapsed, y: b[k] })) };
+  });
+  drawChart(cv, series);
 }
 
 /* ------------------------------------------------------------ actions --- */
@@ -383,20 +444,61 @@ async function cmd(runnerId, kind, payload) {
 async function showDetail(runId) {
   const r = await api("/runs/" + runId);
   const s = r.summary || {};
+  const sy = r.system || {};
   const tel = await api("/runs/" + runId + "/telemetry?max=900");
-  const ix = (n) => tel.fields.indexOf(n);
-  const pts = (n) => tel.rows.map((row) => ({ x: row[ix("elapsed")], y: row[ix(n)] })).filter((p) => p.y != null);
+  const pts = (n) => (tel.rows || []).filter((x) => x[n] != null).map((x) => ({ x: x.elapsed, y: x[n] }));
+  const st = (r.telemetry_stats && r.telemetry_stats.stats) || {};
+  const tiles = [
+    ["GPU soak", fmt(s.gpu_soak_tflops) + " TF"],
+    ["fp16", fmt(s.gpu_matmul_tflops && s.gpu_matmul_tflops.fp16) + " TF"],
+    ["fp32", fmt(s.gpu_matmul_tflops && s.gpu_matmul_tflops.fp32) + " TF"],
+    ["CPU soak", fmt(s.cpu_soak_gflops, 0) + " GF"],
+    ["RAM soak", fmt(s.ram_soak_gbps) + " GB/s"],
+    ["Disk write", fmt(s.disk_seqwrite_mbps, 0) + " MB/s"],
+    ["Network", fmt(s.net && s.net.download_mbps, 0) + " Mb/s"],
+    ["peak temp", fmt(s.gpu_soak_telemetry && s.gpu_soak_telemetry.temp_c ? s.gpu_soak_telemetry.temp_c[2] : null, 0) + " °C"],
+  ];
+  const remarks = [];
+  const v = s.fullsoak && s.fullsoak.result && s.fullsoak.result.verdict;
+  if (v) remarks.push(v.clean ? "full-system soak: clean"
+    : "full-system soak: NOT clean" + (v.exits ? " (exits " + JSON.stringify(v.exits) + ")" : "")
+      + (v.throttle_active ? " · throttling" : ""));
+  const warns = (r.events || []).filter((e) => e.level === "warn");
+  warns.slice(0, 6).forEach((w) => remarks.push("warn: " + w.message));
+  const sysrows = [
+    ["host", r.host], ["os", sy.platform || r.platform], ["kernel", sy.kernel],
+    ["cpu", sy.cpu], ["cores / threads", [sy.cores, sy.threads].filter(Boolean).join(" / ")],
+    ["ram", sy.ram_gib ? sy.ram_gib + " GiB" : null], ["gpu", sy.gpu || r.gpu],
+    ["driver", sy.driver || r.driver], ["vram", sy.vram],
+    ["board", sy.board], ["bios", sy.bios && (sy.bios.version + " " + (sy.bios.date || ""))],
+    ["torch", r.torch], ["git", r.git],
+  ].filter((x) => x[1] != null && x[1] !== "");
+  const statKeys = Object.keys(st).filter((k) => k !== "elapsed" && k !== "ts");
+  const statRows = statKeys.map((k) => {
+    const meta = SERIES[k] || [k, "#8592a6"];
+    const a = st[k];
+    return `<tr><td>${esc(meta[0])}</td><td class="mono">${fmt(a.min, 1)}</td>
+      <td class="mono">${fmt(a.avg, 1)}</td><td class="mono">${fmt(a.max, 1)}</td>
+      <td class="muted mono">${a.n}</td></tr>`;
+  }).join("");
   openModal(`<h3>${esc(r.host)} · ${esc(r.label || "run")} <span class="pill ${esc(r.status)}">${esc(r.status)}</span></h3>
-    <div class="muted">${ts(r.started)} · ${r.ended ? dur(r.ended - r.started) : "running"} · ${esc(r.gpu || "")} ${r.driver ? "· driver " + esc(r.driver) : ""}</div>
+    <div class="muted">${ts(r.started)} · ${runDur(r)} · ${esc(sy.gpu || r.gpu || "")} ${sy.driver || r.driver ? "· driver " + esc(sy.driver || r.driver) : ""}</div>
+    ${remarks.length ? `<div class="remarks">${remarks.map((x) => `<div>${esc(x)}</div>`).join("")}</div>` : ""}
     <div class="kv" style="margin:14px 0">
-      ${[["GPU soak", fmt(s.gpu_soak_tflops) + " TF"], ["CPU soak", fmt(s.cpu_soak_gflops, 0) + " GF"],
-        ["RAM soak", fmt(s.ram_soak_gbps) + " GB/s"], ["Disk", fmt(s.disk_seqwrite_mbps, 0) + " MB/s"],
-        ["Net", fmt(s.net && s.net.download_mbps, 0) + " Mb/s"],
-        ["peak temp", fmt(s.gpu_soak_telemetry && s.gpu_soak_telemetry.temp_c ? s.gpu_soak_telemetry.temp_c[2] : null, 0) + " °C"]]
-        .map(([k, v]) => `<div class="kvitem"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("")}
+      ${tiles.map(([k, val]) => `<div class="kvitem"><div class="k">${esc(k)}</div><div class="v">${esc(val)}</div></div>`).join("")}
     </div>
     <canvas id="dChart" height="220"></canvas>
-    <div class="phases" style="max-height:320px">${r.phases.map(phaseRow).join("")}</div>
+    <h4 class="sechead">System</h4>
+    <table class="kvtable">${sysrows.map(([k, val]) => `<tr><th>${esc(k)}</th><td>${esc(String(val))}</td></tr>`).join("")}</table>
+    ${Object.keys(sy.inventory || {}).length ? `<details><summary class="muted">full inventory</summary>
+      <pre class="mono muted invjson">${esc(JSON.stringify(sy.inventory, null, 1))}</pre></details>` : ""}
+    <h4 class="sechead">Telemetry (min / avg / max)</h4>
+    <table class="statstable"><thead><tr><th>metric</th><th>min</th><th>avg</th><th>max</th><th>n</th></tr></thead>
+      <tbody>${statRows || `<tr><td colspan="5" class="muted">no telemetry</td></tr>`}</tbody></table>
+    <h4 class="sechead">Phases</h4>
+    <div class="phases" style="max-height:300px">${r.phases.map(phaseRow).join("")}</div>
+    ${r.logs && r.logs.length ? `<h4 class="sechead">Console</h4>
+      <pre class="console mono">${esc(r.logs.map((l) => l.line).join("\n"))}</pre>` : ""}
     ${r.events && r.events.length ? `<details><summary class="muted">${r.events.length} log events</summary>
       <pre class="mono muted" style="max-height:200px;overflow:auto;font-size:11px">${esc(r.events.map((e) => e.message).join("\n"))}</pre></details>` : ""}
     <div class="formrow" style="gap:8px;flex-wrap:wrap;margin-top:12px">
@@ -503,6 +605,27 @@ $("#trendHost").onchange = renderTrends;
 $("#trendMetric").onchange = renderTrends;
 $("#trendMetric2").onchange = renderTrends;
 $("#cmpRun").onclick = runCompare;
+document.addEventListener("change", (e) => {
+  const id = e.target && e.target.dataset && e.target.dataset.chart;
+  if (!id) return;
+  CHART[id] = e.target.value;
+  const card = document.querySelector(`[data-active="${id}"]`);
+  if (card) drawRunChart(card, id);
+});
+document.addEventListener("submit", async (e) => {
+  const form = e.target.closest && e.target.closest(".term");
+  if (!form) return;
+  e.preventDefault();
+  const input = form.querySelector("input");
+  const cmd = (input.value || "").trim();
+  if (!cmd) return;
+  input.value = "";
+  try {
+    await api("/runners/" + form.dataset.exec + "/commands", "POST",
+              { kind: "exec", payload: { cmd } });
+    toast("sent to runner: " + cmd);
+  } catch (err) { toast("exec failed: " + err, "err"); }
+});
 $("#modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
 window.addEventListener("resize", () => { renderActive(); });
 

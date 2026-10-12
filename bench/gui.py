@@ -26,8 +26,9 @@ BENCH = os.path.join(REPO, "bench")
 FAN_CURVE = os.path.join(BENCH, "fan_curve.py")
 sys.path.insert(0, BENCH)
 try:
-    from benchreport import (Reporter, PhaseTracker, ReporterPump,
-                             build_summary, newest_report, load_identity)
+    from benchreport import (Reporter, PhaseTracker, ReporterPump, build_summary, build_summary_dir,
+                             telemetry_summary, newest_report, load_identity, run_exec, system_info,
+                             read_inventory, load_conf)
 except Exception:  # reporting is optional
     Reporter = None
 
@@ -302,7 +303,8 @@ class Dashboard:
         tiles.pack(fill="x")
         self.tiles = {}
         for key, label in [("temp", "GPU TEMP"), ("fan", "FAN %/RPM"), ("power", "POWER W"),
-                           ("util", "GPU %"), ("cpu", "CPU %"), ("ram", "RAM GIB")]:
+                           ("util", "GPU %"), ("vram", "VRAM %"), ("ctemp", "CPU °C"),
+                           ("cpu", "CPU %"), ("ram", "RAM GIB")]:
             card = self._card(tiles, padding=10)
             card.pack(side="left", expand=True, fill="x", padx=(0, 8))
             ttk.Label(card, text=label, style="Sect.TLabel").pack(anchor="w")
@@ -425,6 +427,7 @@ class Dashboard:
                                 runner_id=ident.get("runner_id"), api_key=ident.get("api_key"),
                                 persist=True)
             if self.rep.register({"os": _p.system(), "platform": _p.platform(), "kind": "gui"}):
+                self.sysinfo = system_info()
                 self.pump = ReporterPump(self.rep, on_command=self._remote_command, log=self._log)
                 self.pump.start()
                 self._log("[report] connected to %s" % self.server)
@@ -454,8 +457,17 @@ class Dashboard:
         elif kind == "fan_curve":
             self.toggle_curve()
             self.rep.ack(cmd.get("id"), "done", {"toggled": True})
+        elif kind in ("exec", "shell"):
+            self._exec_remote(cmd.get("id"), payload)
         else:
             self.rep.ack(cmd.get("id"), "failed", {"error": "unsupported: %s" % kind})
+
+    def _exec_remote(self, cid, payload):
+        def work():
+            res = run_exec(self.rep, payload.get("cmd", ""),
+                           timeout=int(payload.get("timeout") or 120), cwd=REPO)
+            self.rep.ack(cid, "done" if res.get("rc") == 0 else "failed", res)
+        threading.Thread(target=work, daemon=True).start()
 
     def _apply_profile(self, profile):
         for key, val in (profile.get("groups") or {}).items():
@@ -512,7 +524,8 @@ class Dashboard:
         self.running = True
         if self.rep and self.rep.runner_id:
             self.tracker = PhaseTracker(self.rep)
-            self.rep.start_run((profile or {}).get("label") or self.preset.get() or "run", profile or {})
+            self.rep.start_run((profile or {}).get("label") or self.preset.get() or "run", profile or {},
+                               system=getattr(self, "sysinfo", None))
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
         self._set_status("running · %s" % (self.preset.get() or "run").split(" (")[0], ACCENT)
@@ -544,6 +557,8 @@ class Dashboard:
         self._log(line)
         if self.tracker:
             self.tracker.feed(line)
+        if self.pump:
+            self.pump.push_log(line)
         if line.startswith("[") and "]" in line:
             head = line[1:line.index("]")]
             rest = line[line.index("]") + 1:].strip()
@@ -592,12 +607,17 @@ class Dashboard:
             self.tracker = None
         if self.rep and self.rep.run_id:
             try:
-                report = newest_report(self.results_dir)
-                summary = build_summary(report) if report else {}
+                summary = build_summary_dir(self.results_dir)
+                csvs = glob.glob(os.path.join(self.results_dir, "*.telemetry.csv"))
+                if csvs:
+                    ts = telemetry_summary(max(csvs, key=os.path.getmtime))
+                    if ts:
+                        summary["telemetry"] = ts
             except Exception:
                 summary = {}
             self.rep.finish("done" if rc == 0 else ("stopped" if self._stopped else "failed"),
-                            rc or 0, summary)
+                            rc or 0, summary,
+                            system=read_inventory(self.results_dir) or getattr(self, "sysinfo", None))
         self._load_results()
         self._auto_collect()
 
@@ -672,8 +692,9 @@ class Dashboard:
         temp, fan = get("temp_c"), get("fan_pct")
         power, util = get("power_w"), get("gpu_util_pct")
         rpm, cpu, ram = get("gpu_fan_rpm"), get("cpu_util_pct"), get("ram_used_gib")
+        vram, ctemp = get("mem_util_pct"), get("cpu_package_c")
         for key, val in (("temp", temp), ("fan", fan), ("power", power), ("util", util),
-                         ("cpu", cpu), ("ram", ram)):
+                         ("vram", vram), ("ctemp", ctemp), ("cpu", cpu), ("ram", ram)):
             if val is None:
                 continue
             text = "%.0f" % val
@@ -725,13 +746,15 @@ class Dashboard:
         c.create_polygon(*area, fill="#3b2430", outline="")
         self._series(c, self.tel["temp"], x_at, y_temp, "#ef6b73", 2)
         self._series(c, self.tel["power"], x_at, y_powr, ACCENT, 2)
-        self._series(c, self.tel["fan"], x_at, y_temp, GOOD, 1)
+        self._series(c, self.tel["util"], x_at, y_temp, GOOD, 1)
+        self._series(c, self.tel["fan"], x_at, y_temp, WARN, 1)
         # right axis (power)
         for i in range(5):
             y = y0 - (y0 - y1) * i / 4
             c.create_text(x1 + 8, y, anchor="w", text="%d" % (i * 63), fill="#3f6ea8", font=self.f_small)
         # legend
-        for i, (label, color) in enumerate([("temp °C", "#ef6b73"), ("power W", ACCENT), ("fan %", GOOD)]):
+        for i, (label, color) in enumerate([("temp °C", "#ef6b73"), ("power W", ACCENT),
+                                            ("gpu %", GOOD), ("fan %", WARN)]):
             lx = x0 + 6 + i * 110
             c.create_rectangle(lx, pad_t - 14, lx + 8, pad_t - 6, fill=color, outline="")
             c.create_text(lx + 14, pad_t - 10, anchor="w", text=label, fill=MUTED, font=self.f_small)
@@ -930,9 +953,9 @@ def main():
     ap.add_argument("--demo", action="store_true", help="populate with sample data")
     ap.add_argument("--self-test", action="store_true", help="open and exit after a few seconds")
     ap.add_argument("--tab", type=int, default=0, help="select notebook tab (0=Run,1=Telemetry,2=Results,3=Log)")
-    ap.add_argument("--server", default=os.environ.get("BENCHD_SERVER", ""),
+    ap.add_argument("--server", default=load_conf()[0],
                     help="benchd control-plane URL (report + remote control)")
-    ap.add_argument("--token", default=os.environ.get("BENCHD_TOKEN", ""), help="control-plane token")
+    ap.add_argument("--token", default=load_conf()[1], help="control-plane token")
     ap.add_argument("--name", default="", help="runner name reported to the control plane")
     a = ap.parse_args()
     root = tk.Tk()

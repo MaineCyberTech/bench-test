@@ -26,6 +26,7 @@ GPU_SOAK=600; CPU_SOAK=120; RAM_SOAK=120
 COMBINED_SECONDS=300; FULLSOAK_SECONDS=300; GFX_SECONDS=60; FAN_SECONDS=90
 GPU_SIZE=12288; CPU_SIZE=4096; RAM_SIZE_MB=1024; FILL_PCT=70; PASSES=2
 DISK_PATH="${TMPDIR:-/tmp}"; DISK_SIZE_MB=2048; DISK_SECONDS=15; STEADY_GB=10
+DISK_PATH_SET=0
 DO_GPU=1; DO_CPU=1; DO_RAM=1; DO_DISK=1
 DO_COMBINED=1; DO_FULLSOAK=1; DO_NET=1; DO_NVENC=1; DO_SYS=1; DO_GFX=1; DO_FAN=1
 
@@ -44,7 +45,7 @@ while [ $# -gt 0 ]; do
         --ram-size-mb)     RAM_SIZE_MB="$2"; shift 2 ;;
         --fill-pct)        FILL_PCT="$2"; shift 2 ;;
         --passes)          PASSES="$2"; shift 2 ;;
-        --disk-path)       DISK_PATH="$2"; shift 2 ;;
+        --disk-path)       DISK_PATH="$2"; DISK_PATH_SET=1; shift 2 ;;
         --disk-size-mb)    DISK_SIZE_MB="$2"; shift 2 ;;
         --disk-seconds)    DISK_SECONDS="$2"; shift 2 ;;
         --steady-gb)       STEADY_GB="$2"; shift 2 ;;
@@ -132,70 +133,24 @@ if [ "$DO_RAM" = 1 ]; then
     run_phase ram ram_bench.py soak "${RAM_ARGS[@]}" --seconds "$RAM_SOAK"
 fi
 
+# Disk testing needs a real internal volume: never benchmark the live USB or
+# tmpfs (RAM). Skip unless an internal disk is mounted at /mnt/internal, or the
+# operator passes an explicit --disk-path.
+if [ "$DO_DISK" = 1 ] && [ "$DISK_PATH_SET" = 0 ]; then
+    if mountpoint -q /mnt/internal; then
+        DISK_PATH=/mnt/internal/bench-scratch
+        mkdir -p "$DISK_PATH" 2>/dev/null || true
+        echo "    [info] disk target: internal volume /mnt/internal"
+    else
+        echo "    [info] disk: skipped - no internal disk available (live USB / RAM only)"
+        echo "           mount an internal volume at /mnt/internal, or pass --disk-path DIR"
+        DO_DISK=0
+    fi
+fi
 if [ "$DO_DISK" = 1 ]; then
     FSTYPE="$(df -T "$DISK_PATH" 2>/dev/null | awk 'NR==2 {print $2}')"
     if [ "$FSTYPE" = "tmpfs" ]; then
-        # Live systems keep everything in RAM; a real-volume target keeps disk
-        # tests (and the 10 GiB steady write) from filling memory. Prefer the
-        # BENCHDATA partition of the live USB when one is present. Probe
-        # directly (partx + blkid -p) so a missing udev label cannot hide it.
-        BDEV=""
-        for d in /dev/sd? /dev/nvme?n? /dev/mmcblk?; do
-            [ -b "$d" ] && partx -a "$d" >/dev/null 2>&1 || true
-        done
-        udevadm settle --timeout=10 2>/dev/null || true
-        [ -e "/dev/disk/by-label/${BENCHDATA_LABEL:-BENCHDATA}" ] && \
-            BDEV="$(readlink -f "/dev/disk/by-label/${BENCHDATA_LABEL:-BENCHDATA}")"
-        if [ -z "$BDEV" ]; then
-            for p in /dev/sd*[0-9]; do
-                [ -b "$p" ] || continue
-                if [ "$(blkid -p -o value -s LABEL "$p" 2>/dev/null)" = "${BENCHDATA_LABEL:-BENCHDATA}" ]; then
-                    BDEV="$p"; break
-                fi
-            done
-        fi
-        if [ -z "$BDEV" ]; then
-            ROOTDEV="$(findmnt -no SOURCE /run/archiso/bootmnt 2>/dev/null || true)"
-            for p in /dev/sd*[0-9]; do
-                [ -b "$p" ] || continue
-                sz="$(lsblk -bdno SIZE "$p" 2>/dev/null || echo 0)"
-                [ "$(blkid -p -o value -s TYPE "$p" 2>/dev/null)" = "vfat" ] || continue
-                [ "${sz:-0}" -gt 1000000000 ] || continue
-                if udevadm info -q path -n "$p" 2>/dev/null | grep -q usb; then BDEV="$p"; break; fi
-                PD="$(lsblk -no PKNAME "$p" 2>/dev/null | head -1)"
-                if [ -n "$ROOTDEV" ] && [ -n "$PD" ]; then
-                    RD="$(lsblk -no PKNAME "$ROOTDEV" 2>/dev/null | head -1)"; [ -z "$RD" ] && RD="${ROOTDEV#/dev/}"
-                    [ "$PD" = "$RD" ] && { BDEV="$p"; break; }
-                fi
-            done
-        fi
-        {
-            echo "disk path detection diag $(date -Iseconds)"
-            echo "BDEV=${BDEV:-none}"
-            lsblk -o NAME,SIZE,FSTYPE,LABEL,UUID,MOUNTPOINT 2>&1
-            echo
-            for dd in /dev/sd?; do [ -b "$dd" ] && echo "$dd ro=$(blockdev --getro "$dd" 2>/dev/null)"; done
-            echo
-            ls -l /dev/sd* 2>&1
-            echo
-            for p in /dev/sd*[0-9]; do [ -b "$p" ] || continue; echo "--- $p"; blkid -p "$p" 2>&1; done
-            echo
-            cat /proc/partitions
-        } > "$LOGDIR/boot-diag.txt" 2>&1
-        if [ -n "$BDEV" ]; then
-            modprobe vfat 2>/dev/null || true
-            mkdir -p /mnt/benchdata
-            blockdev --setrw "$BDEV" 2>>"$LOGDIR/boot-diag.txt" || true
-            mountpoint -q /mnt/benchdata || mount -t vfat -o rw,umask=0022 "$BDEV" /mnt/benchdata 2>>"$LOGDIR/boot-diag.txt" || true
-            if mountpoint -q /mnt/benchdata; then
-                DISK_PATH=/mnt/benchdata
-                echo "    [info] disk path -> BENCHDATA ($BDEV) - not RAM-backed"
-            else
-                echo "    [warn] disk path $DISK_PATH is tmpfs and BENCHDATA could not be mounted"
-            fi
-        else
-            echo "    [warn] disk path $DISK_PATH is tmpfs (RAM) -- pass --disk-path for a real volume"
-        fi
+        echo "    [warn] disk path $DISK_PATH is tmpfs (RAM) - numbers reflect RAM, not a disk"
     fi
     DISK_ARGS=(--path "$DISK_PATH" --size-mb "$DISK_SIZE_MB" --seconds "$DISK_SECONDS" --force)
     run_phase disk disk_bench.py info "${DISK_ARGS[@]}"
@@ -354,12 +309,18 @@ if [ "$DO_FULLSOAK" = 1 ]; then
     CPID=$!
     "$PY" "$BENCH/ram_bench.py" soak --size-mb "$RAM_SIZE_MB" --fill-pct "$FILL_PCT" --passes "$PASSES" --force --seconds "$FULLSOAK_SECONDS" >"$D/ram.out" 2>&1 &
     RPID=$!
-    "$PY" "$BENCH/disk_bench.py" seqwrite --path "$DISK_PATH" --size-mb "$DISK_SIZE_MB" --seconds "$FULLSOAK_SECONDS" --force >"$D/disk.out" 2>&1 &
-    DPID=$!
+    if [ "$DO_DISK" = 1 ]; then
+        "$PY" "$BENCH/disk_bench.py" seqwrite --path "$DISK_PATH" --size-mb "$DISK_SIZE_MB" --seconds "$FULLSOAK_SECONDS" --force >"$D/disk.out" 2>&1 &
+        DPID=$!
+    else
+        echo "    [info] fullsoak: disk skipped (no internal disk)"
+        : > "$D/disk.out"
+        DPID=""
+    fi
     wait "$GPID"; GRC=$?
     wait "$CPID"; CRC=$?
     wait "$RPID"; RRC=$?
-    wait "$DPID"; DRC=$?
+    if [ -n "$DPID" ]; then wait "$DPID"; DRC=$?; else DRC=0; fi
     for f in gpu cpu ram disk; do
         sed 's/^/    /' "$D/$f.out" | grep -v 'RESULT_JSON' | grep -v '^    $' || true
     done

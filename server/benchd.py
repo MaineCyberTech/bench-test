@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS runners (
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY, runner_id TEXT, host TEXT, label TEXT, profile TEXT,
   started REAL, ended REAL, status TEXT, exit_code INTEGER,
-  platform TEXT, gpu TEXT, driver TEXT, torch TEXT, summary TEXT
+  platform TEXT, gpu TEXT, driver TEXT, torch TEXT, summary TEXT, system TEXT
 );
 CREATE TABLE IF NOT EXISTS phases (
   id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, seq INTEGER, grp TEXT,
@@ -81,7 +81,10 @@ CREATE TABLE IF NOT EXISTS phases (
 CREATE TABLE IF NOT EXISTS telemetry (
   run_id TEXT, ts REAL, elapsed REAL, temp_c REAL, fan_pct REAL, power_w REAL,
   gpu_util REAL, gpu_fan_rpm REAL, cpu_util REAL, ram_used REAL,
-  sm_mhz REAL, mem_used REAL
+  sm_mhz REAL, mem_used REAL, extra TEXT
+);
+CREATE TABLE IF NOT EXISTS logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, ts REAL, stream TEXT, line TEXT
 );
 CREATE TABLE IF NOT EXISTS commands (
   id TEXT PRIMARY KEY, runner_id TEXT, run_id TEXT, kind TEXT, payload TEXT,
@@ -105,6 +108,7 @@ CREATE INDEX IF NOT EXISTS idx_phases_run ON phases(run_id, seq);
 CREATE INDEX IF NOT EXISTS idx_tele_run ON telemetry(run_id, ts);
 CREATE INDEX IF NOT EXISTS idx_cmd_runner ON commands(runner_id, status);
 CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, ts);
+CREATE INDEX IF NOT EXISTS idx_logs_run ON logs(run_id, id);
 CREATE INDEX IF NOT EXISTS idx_sched_next ON schedules(enabled, next_run);
 """
 
@@ -126,6 +130,12 @@ class Store:
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(runners)")}
         if "api_key" not in cols:
             self.conn.execute("ALTER TABLE runners ADD COLUMN api_key TEXT")
+        tcols = {r[1] for r in self.conn.execute("PRAGMA table_info(telemetry)")}
+        if "extra" not in tcols:
+            self.conn.execute("ALTER TABLE telemetry ADD COLUMN extra TEXT")
+        rcols = {r[1] for r in self.conn.execute("PRAGMA table_info(runs)")}
+        if "system" not in rcols:
+            self.conn.execute("ALTER TABLE runs ADD COLUMN system TEXT")
 
     def ex(self, sql, args=()):
         with self.lock:
@@ -206,13 +216,27 @@ def runner_public(r):
 
 def run_public(r):
     r = dict(r)
-    for k in ("summary", "profile"):
+    for k in ("summary", "profile", "system"):
         if r.get(k):
             try:
                 r[k] = json.loads(r[k])
             except Exception:
                 pass
     return r
+
+
+def tele_public(r):
+    """A telemetry row as a named dict, with any extra metrics merged in."""
+    if not r:
+        return r
+    d = {k: r.get(k) for k in SAMPLE_FIELDS}
+    d["ts"] = r.get("ts")
+    if r.get("extra"):
+        try:
+            d.update(json.loads(r["extra"]))
+        except Exception:
+            pass
+    return d
 
 
 def schedule_public(s):
@@ -389,10 +413,12 @@ class Handler(BaseHTTPRequestHandler):
             active = [run_public(r) for r in
                       S.q("SELECT * FROM runs WHERE status='running' ORDER BY started DESC")]
             for a in active:
-                a["latest"] = S.one("SELECT * FROM telemetry WHERE run_id=? ORDER BY ts DESC LIMIT 1",
-                                    (a["id"],))
+                a["latest"] = tele_public(S.one("SELECT * FROM telemetry WHERE run_id=? "
+                                                "ORDER BY ts DESC LIMIT 1", (a["id"],)))
                 a["phases"] = S.q("SELECT seq,grp,label,status,t0,t1,detail FROM phases "
                                   "WHERE run_id=? ORDER BY seq", (a["id"],))
+                a["logs_tail"] = S.q("SELECT id,ts,stream,line FROM logs WHERE run_id=? "
+                                     "ORDER BY id DESC LIMIT 200", (a["id"],))[::-1]
             recent = [run_public(r) for r in
                       S.q("SELECT * FROM runs ORDER BY started DESC LIMIT 25")]
             return self._send(200, {"runners": runners, "active": active, "recent": recent,
@@ -423,6 +449,12 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/v1/runs/([^/]+)/telemetry$", path)
         if m:
             return self._run_telemetry(m.group(1), q)
+        m = re.match(r"^/api/v1/runs/([^/]+)/logs$", path)
+        if m:
+            return self._run_logs(m.group(1), q)
+        m = re.match(r"^/api/v1/runs/([^/]+)/stats$", path)
+        if m:
+            return self._run_stats(m.group(1))
         m = re.match(r"^/api/v1/runs/([^/]+)/artifact/([^/]+)$", path)
         if m:
             return self._artifact_download(m.group(1), m.group(2))
@@ -438,6 +470,9 @@ class Handler(BaseHTTPRequestHandler):
                                 "ORDER BY ts LIMIT 500", (m.group(1),))
             run["artifacts"] = S.q("SELECT name,kind,size,sha256 FROM artifacts "
                                    "WHERE run_id=?", (m.group(1),))
+            run["logs"] = S.q("SELECT id,ts,stream,line FROM logs WHERE run_id=? "
+                              "ORDER BY id LIMIT 4000", (m.group(1),))
+            run["telemetry_stats"] = self._compute_stats(m.group(1))
             return self._send(200, run)
         if path == "/api/v1/trends":
             return self._trends(q)
@@ -467,12 +502,40 @@ class Handler(BaseHTTPRequestHandler):
             while int(i) < len(rows):
                 picked.append(rows[int(i)])
                 i += step
-            if picked[-1] is not rows[-1]:
+            if picked and picked[-1] is not rows[-1]:
                 picked.append(rows[-1])
             rows = picked
-        fields = SAMPLE_FIELDS + ["ts"]
-        return self._send(200, {"run_id": run_id, "fields": fields,
-                                "rows": [[r.get(f) for f in fields] for r in rows]})
+        return self._send(200, {"run_id": run_id, "rows": [tele_public(r) for r in rows]})
+
+    def _run_logs(self, run_id, q):
+        after = int(q.get("after", ["0"])[0])
+        limit = min(int(q.get("limit", ["2000"])[0]), 5000)
+        rows = self.store.q("SELECT id,ts,stream,line FROM logs WHERE run_id=? AND id>? "
+                            "ORDER BY id LIMIT ?", (run_id, after, limit))
+        return self._send(200, {"run_id": run_id, "lines": rows})
+
+    def _compute_stats(self, run_id):
+        rows = self.store.q("SELECT * FROM telemetry WHERE run_id=? ORDER BY ts", (run_id,))
+        agg = {}
+        for r in rows:
+            for k, v in tele_public(r).items():
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    a = agg.get(k)
+                    if a is None:
+                        agg[k] = [1, float(v), float(v), float(v)]
+                    else:
+                        a[0] += 1
+                        a[1] += v
+                        if v < a[2]:
+                            a[2] = v
+                        if v > a[3]:
+                            a[3] = v
+        stats = {k: {"n": a[0], "avg": round(a[1] / a[0], 2), "min": a[2], "max": a[3]}
+                 for k, a in agg.items() if a[0]}
+        return {"samples": len(rows), "stats": stats}
+
+    def _run_stats(self, run_id):
+        return self._send(200, dict({"run_id": run_id}, **self._compute_stats(run_id)))
 
     def _telemetry_csv(self, run_id):
         rows = self.store.q("SELECT ts,elapsed,temp_c,fan_pct,power_w,gpu_util,gpu_fan_rpm,"
@@ -587,10 +650,10 @@ class Handler(BaseHTTPRequestHandler):
             rid = b.get("runner_id")
             run_id = b.get("id") or str(uuid.uuid4())
             S.ex("INSERT INTO runs(id,runner_id,host,label,profile,started,status,platform,gpu,"
-                 "driver,torch) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                 "driver,torch,system) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                  (run_id, rid, b.get("host"), b.get("label"), json.dumps(b.get("profile") or {}),
                   b.get("started") or now(), "running", b.get("platform"), b.get("gpu"),
-                  b.get("driver"), b.get("torch")))
+                  b.get("driver"), b.get("torch"), json.dumps(b.get("system") or {})))
             if rid:
                 S.ex("UPDATE runners SET status='busy', current_run=? WHERE id=?", (run_id, rid))
             run = run_public(S.one("SELECT * FROM runs WHERE id=?", (run_id,)))
@@ -618,19 +681,27 @@ class Handler(BaseHTTPRequestHandler):
             run_id = m.group(1)
             samples = b.get("samples") or []
             rows = []
+            last_named = None
             for s in samples:
-                vals = (list(s) + [None] * len(SAMPLE_FIELDS))[:len(SAMPLE_FIELDS)]
-                rows.append([run_id, now()] + vals)
+                if isinstance(s, dict):
+                    core = [s.get(f) for f in SAMPLE_FIELDS]
+                    extra = {k: v for k, v in s.items()
+                             if k not in SAMPLE_FIELDS and isinstance(v, (int, float))}
+                    last_named = dict(s)
+                else:
+                    core = (list(s) + [None] * len(SAMPLE_FIELDS))[:len(SAMPLE_FIELDS)]
+                    extra = {}
+                    last_named = dict(zip(SAMPLE_FIELDS, core))
+                rows.append([run_id, now()] + core + [json.dumps(extra) if extra else None])
             with S.lock:
                 S.conn.executemany(
                     "INSERT INTO telemetry(run_id,ts,elapsed,temp_c,fan_pct,power_w,gpu_util,"
-                    "gpu_fan_rpm,cpu_util,ram_used,sm_mhz,mem_used) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+                    "gpu_fan_rpm,cpu_util,ram_used,sm_mhz,mem_used,extra) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
                 S.conn.commit()
-            if samples:
-                last = (list(samples[-1]) + [None] * len(SAMPLE_FIELDS))[:len(SAMPLE_FIELDS)]
+            if last_named is not None:
                 self.bus.publish({"event": "telemetry",
-                                  "data": {"run_id": run_id, "sample": last, "n": len(samples)}})
+                                  "data": {"run_id": run_id, "sample": last_named, "n": len(rows)}})
             return self._send(200, {"ok": True, "accepted": len(rows)})
         m = re.match(r"^/api/v1/runs/([^/]+)/event$", path)
         if m:
@@ -640,6 +711,20 @@ class Handler(BaseHTTPRequestHandler):
                                                          "level": b.get("level", "info"),
                                                          "message": b.get("message", "")}})
             return self._send(200, {"ok": True})
+        m = re.match(r"^/api/v1/runs/([^/]+)/log$", path)
+        if m:
+            run_id = m.group(1)
+            lines = b.get("lines") or ([b["line"]] if b.get("line") else [])
+            lines = [str(x)[:4000] for x in lines]
+            stream = b.get("stream", "out")
+            if lines:
+                with S.lock:
+                    S.conn.executemany("INSERT INTO logs(run_id,ts,stream,line) VALUES(?,?,?,?)",
+                                       [(run_id, now(), stream, x) for x in lines])
+                    S.conn.commit()
+                self.bus.publish({"event": "log", "data": {"run_id": run_id, "stream": stream,
+                                                           "lines": lines}})
+            return self._send(200, {"ok": True, "n": len(lines)})
         m = re.match(r"^/api/v1/runs/([^/]+)/artifact$", path)
         if m:
             run_id = m.group(1)
@@ -654,9 +739,12 @@ class Handler(BaseHTTPRequestHandler):
         if m:
             run_id = m.group(1)
             S.ex("UPDATE runs SET status=?, ended=?, exit_code=?, summary=?, platform=COALESCE(?,platform),"
-                 " gpu=COALESCE(?,gpu), driver=COALESCE(?,driver), torch=COALESCE(?,torch) WHERE id=?",
-                 (b.get("status", "done"), now(), b.get("exit_code"), json.dumps(b.get("summary") or {}),
-                  b.get("platform"), b.get("gpu"), b.get("driver"), b.get("torch"), run_id))
+                 " gpu=COALESCE(?,gpu), driver=COALESCE(?,driver), torch=COALESCE(?,torch),"
+                 " system=CASE WHEN ?='{}' THEN system ELSE ? END WHERE id=?",
+                 (b.get("status", "done"), b.get("ended") or now(), b.get("exit_code"),
+                  json.dumps(b.get("summary") or {}), b.get("platform"), b.get("gpu"),
+                  b.get("driver"), b.get("torch"), json.dumps(b.get("system") or {}),
+                  json.dumps(b.get("system") or {}), run_id))
             run = S.one("SELECT runner_id FROM runs WHERE id=?", (run_id,))
             if run and run["runner_id"]:
                 S.ex("UPDATE runners SET status='idle', current_run=NULL WHERE id=?",
@@ -697,7 +785,8 @@ class Handler(BaseHTTPRequestHandler):
     def _issue_command(self, rid, b):
         S = self.store
         kind = b.get("kind")
-        if kind not in ("start", "stop", "update", "fan_curve", "power_limit", "restart"):
+        if kind not in ("start", "stop", "update", "fan_curve", "power_limit", "restart",
+                        "exec", "shell"):
             return self._err(400, "unknown command kind")
         cid = str(uuid.uuid4())
         S.ex("INSERT INTO commands(id,runner_id,kind,payload,status,created) VALUES(?,?,?,?,?,?)",

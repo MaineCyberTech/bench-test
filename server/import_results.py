@@ -66,11 +66,35 @@ def load(p):
 def epoch(iso):
     if not iso:
         return None
+    import re as _re
     from datetime import datetime
+    # PowerShell emits 7-digit fractional seconds; fromisoformat wants <=6
+    s = _re.sub(r"(\.\d{6})\d+", r"\1", str(iso))
     try:
-        return datetime.fromisoformat(iso).timestamp()
+        return datetime.fromisoformat(s).timestamp()
     except Exception:
         return None
+
+
+def _dur(s):
+    s = int(s or 0)
+    return ("%dh%02dm" % (s // 3600, (s % 3600) // 60) if s >= 3600
+            else "%dm%02ds" % (s // 60, s % 60))
+
+
+def _throttle_active(thr):
+    if not thr:
+        return False
+    if isinstance(thr, str):
+        thr = [thr]
+    try:
+        for s in thr:
+            v = str(s).split(":", 1)[-1].strip().lower()
+            if v and v not in ("not active", "0 us", "0", "n/a", "not supported"):
+                return True
+    except Exception:
+        return False
+    return False
 
 
 def read_telemetry(path, cap=1500):
@@ -103,7 +127,49 @@ def read_telemetry(path, cap=1500):
     return rows
 
 
-def upload_run(server, token, run_id, phases, telemetry, artifacts, summary, dry=False):
+def _win_system(main, base):
+    si = base.get("sysinfo") or {}
+    os_ = si.get("OS") or {}
+    cpu = si.get("CPU") or {}
+    ram = si.get("RAM") or {}
+    inf = (main or {}).get("info") or {}
+    gpu = inf.get("device")
+    driver = None
+    nv = si.get("nvidia") or {}
+    if isinstance(nv, dict):
+        driver = nv.get("driver") or nv.get("DriverVersion") or nv.get("version")
+    if not gpu:
+        gpus = si.get("GPUs")
+        if isinstance(gpus, list) and gpus and isinstance(gpus[0], dict):
+            gpu = gpus[0].get("name") or gpus[0].get("Name")
+    inv = si if si else {"source": "report", "gpu": gpu, "cuda": inf.get("cuda"),
+                         "torch": inf.get("torch"), "arch": inf.get("arch")}
+    return {"os": "Windows", "platform": os_.get("caption") or "Windows",
+            "manufacturer": si.get("Manufacturer"), "model": si.get("Model"),
+            "board": si.get("Board"), "cpu": cpu.get("name"),
+            "cores": cpu.get("cores"), "threads": cpu.get("threads"),
+            "ram_gib": ram.get("total_gib"), "gpu": gpu, "driver": driver,
+            "inventory": inv}
+
+
+def _linux_system(j):
+    res = {}
+    for ph in (j.get("phases") if isinstance(j.get("phases"), list) else []):
+        if ph.get("group") == "sys" and isinstance(ph.get("result"), dict):
+            res = ph["result"]
+            break
+    g = res.get("gpu") or {}
+    c = res.get("cpu") or {}
+    return {"os": "Linux", "platform": res.get("distro"), "kernel": res.get("kernel"),
+            "cpu": c.get("model"), "threads": c.get("logical_cpus"),
+            "ram_gib": res.get("memory_gib"), "gpu": g.get("name"),
+            "driver": g.get("driver"), "vram": g.get("vram"),
+            "storage": res.get("storage"), "network": res.get("network_ifaces"),
+            "inventory": res}
+
+
+def upload_run(server, token, run_id, phases, telemetry, artifacts, summary,
+               ended=None, system=None, dry=False):
     for i, ph in enumerate(phases):
         post(server, token, "/api/v1/runs/%s/phase" % run_id,
              {"seq": i + 1, "group": ph[0], "label": ph[1], "status": "done",
@@ -114,7 +180,8 @@ def upload_run(server, token, run_id, phases, telemetry, artifacts, summary, dry
         post(server, token, "/api/v1/runs/%s/artifact" % run_id,
              {"name": name, "kind": kind, "content": base64.b64encode(text.encode()).decode()})
     post(server, token, "/api/v1/runs/%s/finish" % run_id,
-         {"status": "done", "exit_code": 0, "summary": summary})
+         {"status": "done", "exit_code": 0, "summary": summary,
+          "ended": ended, "system": system or {}})
 
 
 # --------------------------------------------------------------- windows -----
@@ -131,20 +198,31 @@ def windows_units(root):
 def build_windows(root, man, host, started, m, window_end):
     arts = {k: v for k, v in (m.get("artifacts") or {}).items() if isinstance(v, str)}
     base = {}
+    mtimes = []
     for k, p in arts.items():
-        j = load(os.path.join(root, os.path.basename(p)))
+        fp = os.path.join(root, os.path.basename(p))
+        j = load(fp)
         if isinstance(j, dict):
             base[k] = j
-    # the aggregate report is a top-level <host>-<stamp>.json not in the manifest
+            try:
+                mtimes.append(os.path.getmtime(fp))
+            except OSError:
+                pass
+    # the aggregate report is exactly <host>-<YYYYMMDD-HHMMSS>.json
     main = None
+    main_mt = None
+    main_re = re.compile(r"^%s-\d{8}-\d{6}\.json$" % re.escape(host))
     for p in glob.glob(os.path.join(root, host + "-*.json")):
-        if INFRA.search(p) or p.endswith(".manifest.json"):
+        if not main_re.match(os.path.basename(p)):
             continue
         mt = os.path.getmtime(p)
         if started - 120 <= mt <= window_end:
             j = load(p)
             if isinstance(j, dict) and isinstance(j.get("phases"), list):
-                main = j
+                if main is None or mt > (main_mt or 0):
+                    main, main_mt = j, mt
+    if main_mt:
+        mtimes.append(main_mt)
     summary = {"host": host, "timestamp": m.get("timestamp"), "imported": True}
     reports = ([main] if main else []) + list(base.values())
     _merge_summary(summary, reports)
@@ -169,14 +247,30 @@ def build_windows(root, man, host, started, m, window_end):
         phases.append(("gfx", "graphics (Unigine Valley)", t, t + 60))
     tele = []
     for p in glob.glob(os.path.join(root, host + "-win-*.telemetry.csv")):
-        if started - 120 <= os.path.getmtime(p) <= window_end:
+        mt = os.path.getmtime(p)
+        if started - 120 <= mt <= window_end:
             tele = read_telemetry(p)
+            mtimes.append(mt)
             break
+    ended = max(mtimes) if mtimes else started + 60
+    if ended <= started:
+        ended = started + 60
+    system = _win_system(main, base)
+    summary["gpu"] = system.get("gpu")
+    summary["driver"] = system.get("driver")
+    if tele:
+        def col(name):
+            i = SAMPLE_FIELDS.index(name)
+            vals = [r[i] for r in tele if i < len(r) and r[i] is not None]
+            return [min(vals), round(sum(vals) / len(vals), 1), max(vals)] if vals else None
+        summary["telemetry"] = {"samples": len(tele), "duration_s": round(ended - started, 1),
+                                "temp_c": col("temp_c"), "fan_pct": col("fan_pct"),
+                                "power_w": col("power_w"), "gpu_util": col("gpu_util")}
     arts_out = []
     if main:
         arts_out.append(("report.json", "json", json.dumps(main)))
     arts_out.append(("manifest.json", "json", json.dumps(m)))
-    return phases, tele, arts_out, summary
+    return phases, tele, arts_out, summary, ended, system
 
 
 def _merge_summary(s, reports):
@@ -223,6 +317,12 @@ def _merge_summary(s, reports):
             s["fullsoak"] = {"result": {"verdict": j["verdict"]}}
         elif isinstance(j.get("gpu"), dict) and isinstance(j.get("cpu"), dict) and "combined" not in s:
             s["combined"] = {"gpu": j.get("gpu"), "cpu": j.get("cpu")}
+        if ("throttle" in j or "errors" in j) and isinstance(j.get("results"), dict) \
+                and "fullsoak" not in s:
+            active = _throttle_active(j.get("throttle"))
+            clean = (not j.get("errors")) and (not active)
+            s["fullsoak"] = {"result": {"verdict": {"clean": bool(clean),
+                                                    "throttle_active": active}}}
 
 
 # ----------------------------------------------------------------- linux -----
@@ -268,7 +368,10 @@ def build_linux(d, rep, j):
     arts = [("report.json", "json", json.dumps(j))]
     if os.path.isfile(idx):
         arts.append(("runs-index.jsonl", "text", open(idx, encoding="utf-8").read()))
-    return host, started, phases, tele, arts, summary
+    dur = (j.get("telemetry") or {}).get("duration_s") or 0
+    ended = started + dur if dur else started + 60
+    system = _linux_system(j)
+    return host, started, phases, tele, arts, summary, ended, system
 
 
 def main():
@@ -294,39 +397,45 @@ def main():
     win_starts = [w[3] for w in wins] + [float("inf")]
     made = 0
     for i, (kind, man, host, started, m) in enumerate(wins):
-        window_end = win_starts[i + 1] - 1
-        phases, tele, arts, summary = build_windows(root, man, host, started, m, window_end)
+        window_end = min(win_starts[i + 1] - 1, started + 8 * 3600)
+        phases, tele, arts, summary, ended, system = build_windows(root, man, host, started, m, window_end)
         label = "Windows battery"
-        print("win  %-32s phases=%-3d tele=%-5d metrics=%d" %
-              (os.path.basename(man), len(phases), len(tele), len(summary) - 3))
+        print("win  %-32s phases=%-3d tele=%-5d dur=%-6s %s" %
+              (os.path.basename(man), len(phases), len(tele), _dur(ended - started),
+               system.get("cpu") or ""))
         if a.dry_run:
             continue
         st, r = post(a.server, a.token, "/api/v1/runs",
                      {"host": host, "label": label, "profile": {"imported": True},
-                      "started": started, "platform": "Windows"})
+                      "started": started, "platform": system.get("platform"),
+                      "gpu": system.get("gpu"), "driver": system.get("driver"),
+                      "system": system})
         run_id = r.get("run_id")
         if not run_id:
             print("  FAIL create:", r); continue
-        upload_run(a.server, a.token, run_id, phases, tele, arts, summary)
+        upload_run(a.server, a.token, run_id, phases, tele, arts, summary, ended=ended, system=system)
         made += 1
 
     for d, rep, j in linux_units(root):
-        host, started, phases, tele, arts, summary = build_linux(d, rep, j)
+        host, started, phases, tele, arts, summary, ended, system = build_linux(d, rep, j)
         if not host:
             print("linux %-32s skipped (no host in report)" % os.path.basename(d))
             continue
-        print("linux %-32s phases=%-3d tele=%-5d" % (os.path.basename(d), len(phases), len(tele)))
+        print("linux %-32s phases=%-3d tele=%-5d dur=%-6s %s" %
+              (os.path.basename(d), len(phases), len(tele), _dur(ended - started),
+               system.get("cpu") or ""))
         if a.dry_run:
             continue
         st, r = post(a.server, a.token, "/api/v1/runs",
                      {"host": host, "label": "Linux battery", "profile": {"imported": True},
-                      "started": started, "platform": "Linux",
-                      "gpu": summary.get("gpu"), "driver": summary.get("driver"),
-                      "torch": summary.get("torch")})
+                      "started": started, "platform": system.get("platform"),
+                      "gpu": summary.get("gpu") or system.get("gpu"),
+                      "driver": summary.get("driver") or system.get("driver"),
+                      "torch": summary.get("torch"), "system": system})
         run_id = r.get("run_id")
         if not run_id:
             print("  FAIL create:", r); continue
-        upload_run(a.server, a.token, run_id, phases, tele, arts, summary)
+        upload_run(a.server, a.token, run_id, phases, tele, arts, summary, ended=ended, system=system)
         made += 1
 
     print("imported %d runs%s" % (made, " (dry run)" if a.dry_run else ""))

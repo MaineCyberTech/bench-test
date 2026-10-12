@@ -33,8 +33,9 @@ RESULT_COLLECTOR = "/usr/local/bin/bench-collect"
 GUI_LAUNCHER = "/usr/local/bin/bench-gui"
 sys.path.insert(0, BENCH)
 try:
-    from benchreport import (Reporter, PhaseTracker, ReporterPump,
-                             build_summary, newest_report, load_identity)
+    from benchreport import (Reporter, PhaseTracker, ReporterPump, build_summary, build_summary_dir,
+                             telemetry_summary, newest_report, load_identity, run_exec, system_info,
+                             read_inventory, load_conf)
 except Exception:  # reporting is optional
     Reporter = None
 
@@ -117,6 +118,7 @@ class BenchTUI:
                                 runner_id=ident.get("runner_id"), api_key=ident.get("api_key"),
                                 persist=True, log=lambda m: self.log.append(m))
             if self.rep.register({"os": _p.system(), "platform": _p.platform(), "kind": "tui"}):
+                self.sysinfo = system_info()
                 self.pump = ReporterPump(self.rep, on_command=self._pending.put,
                                          log=lambda m: self.log.append(m))
                 self.pump.start()
@@ -142,8 +144,17 @@ class BenchTUI:
         elif kind == "fan_curve":
             self.toggle_curve()
             self.rep.ack(cmd.get("id"), "done", {"toggled": True})
+        elif kind in ("exec", "shell"):
+            self._exec_remote(cmd.get("id"), payload)
         else:
             self.rep.ack(cmd.get("id"), "failed", {"error": "unsupported: %s" % kind})
+
+    def _exec_remote(self, cid, payload):
+        def work():
+            res = run_exec(self.rep, payload.get("cmd", ""),
+                           timeout=int(payload.get("timeout") or 120), cwd=REPO)
+            self.rep.ack(cid, "done" if res.get("rc") == 0 else "failed", res)
+        threading.Thread(target=work, daemon=True).start()
 
     def _apply_profile(self, profile):
         for key, val in (profile.get("groups") or {}).items():
@@ -211,7 +222,8 @@ class BenchTUI:
         self._set("running: %s" % PRESETS[self.preset][0], 2)
         if self.rep and self.rep.runner_id:
             self.tracker = PhaseTracker(self.rep)
-            self.rep.start_run((profile or {}).get("label") or PRESETS[self.preset][0], profile or {})
+            self.rep.start_run((profile or {}).get("label") or PRESETS[self.preset][0], profile or {},
+                               system=getattr(self, "sysinfo", None))
         threading.Thread(target=self._reader, args=(self.proc,), daemon=True).start()
 
     def _reader(self, proc):
@@ -365,6 +377,8 @@ class BenchTUI:
         self.log.append(line)
         if self.tracker:
             self.tracker.feed(line)
+        if self.pump:
+            self.pump.push_log(line)
         if line.startswith("[") and "]" in line:
             head = line[1:line.index("]")]
             rest = line[line.index("]") + 1:].strip()
@@ -404,12 +418,17 @@ class BenchTUI:
             self.tracker = None
         if self.rep and self.rep.run_id:
             try:
-                report = newest_report(self.results_dir)
-                summary = build_summary(report) if report else {}
+                summary = build_summary_dir(self.results_dir)
+                csvs = glob.glob(os.path.join(self.results_dir, "*.telemetry.csv"))
+                if csvs:
+                    ts = telemetry_summary(max(csvs, key=os.path.getmtime))
+                    if ts:
+                        summary["telemetry"] = ts
             except Exception:
                 summary = {}
             self.rep.finish("done" if rc == 0 else ("stopped" if self._stopped else "failed"),
-                            rc or 0, summary)
+                            rc or 0, summary,
+                            system=read_inventory(self.results_dir) or getattr(self, "sysinfo", None))
         self._set("finished (exit %s) - c collect · r report" % rc, 1 if rc == 0 else 4)
         if os.path.exists(RESULT_COLLECTOR):
             self.collect()
@@ -957,9 +976,9 @@ def main():
     ap.add_argument("--results-dir", default=os.path.join(REPO, "results"))
     ap.add_argument("--demo", action="store_true")
     ap.add_argument("--exit-after", type=float, default=0)
-    ap.add_argument("--server", default=os.environ.get("BENCHD_SERVER", ""),
+    ap.add_argument("--server", default=load_conf()[0],
                     help="benchd control-plane URL (report + remote control)")
-    ap.add_argument("--token", default=os.environ.get("BENCHD_TOKEN", ""), help="control-plane token")
+    ap.add_argument("--token", default=load_conf()[1], help="control-plane token")
     ap.add_argument("--name", default="", help="runner name reported to the control plane")
     a = ap.parse_args()
 

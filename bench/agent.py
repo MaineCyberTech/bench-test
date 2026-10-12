@@ -12,6 +12,7 @@ Windows uses bench/run_win.py (wrapping Run-WorkstationBench.ps1); Linux uses
 bench/Run-LinuxBench.sh.  Stdlib only.
 """
 import argparse
+import glob
 import json
 import os
 import platform
@@ -28,7 +29,8 @@ REPO = os.path.dirname(BENCH)
 sys.path.insert(0, BENCH)
 
 from benchreport import (Reporter, PhaseTracker, TelemetryTail,  # noqa: E402
-                         build_summary, read_runs_index, load_identity)
+                         build_summary, build_summary_dir, telemetry_summary, read_runs_index,
+                         load_identity, run_exec, system_info, read_inventory, load_conf)
 
 DEFAULT_GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "sys", "gfx"]
 
@@ -92,6 +94,7 @@ class Agent:
                             runner_id=ident.get("runner_id"), api_key=ident.get("api_key"),
                             persist=True)
         self.caps = probe_capabilities()
+        self.sysinfo = system_info()
         self.proc = None
         self.run_label = None
         self.stop_flag = False
@@ -116,7 +119,7 @@ class Agent:
         os.makedirs(self.out_dir, exist_ok=True)
         self.rep.start_run(label, profile, host=self.a.name or platform.node(),
                            platform=self.caps.get("platform"), gpu=self.caps.get("gpu"),
-                           driver=self.caps.get("driver"))
+                           driver=self.caps.get("driver"), system=self.sysinfo)
         self.rep.event("run started: %s" % label)
         self.proc = subprocess.Popen(cmd, cwd=REPO, env=env, stdout=subprocess.PIPE,
                                      stderr=subprocess.STDOUT, text=True, bufsize=1,
@@ -138,6 +141,7 @@ class Agent:
 
         last_hb = 0.0
         pending = []
+        logbuf = []
         while True:
             try:
                 ln = line_q.get(timeout=0.5)
@@ -148,18 +152,25 @@ class Agent:
             if ln:
                 tracker.feed(ln)
                 pending.append(ln)
+                logbuf.append(ln)
                 if len(pending) >= 40:
                     self.rep.event("\n".join(pending)); pending = []
+                if len(logbuf) >= 40:
+                    self.rep.log(logbuf); logbuf = []
             for row in tail.read():
                 self.rep.telemetry([row])
             now = time.time()
             if now - last_hb >= 5:
                 last_hb = now
+                if logbuf:
+                    self.rep.log(logbuf); logbuf = []
                 self.rep.heartbeat(status="busy")
         rc = self.proc.wait()
         self.running = False
         tracker.close()
         tail.close()
+        if logbuf:
+            self.rep.log(logbuf)
         if pending:
             self.rep.event("\n".join(pending))
         self._finish(rc)
@@ -167,12 +178,18 @@ class Agent:
     def _finish(self, rc):
         summary = read_runs_index(self.out_dir)
         if not summary:
-            from benchreport import newest_report
-            rep_path = newest_report(self.out_dir)
-            summary = build_summary(rep_path) if rep_path else {}
+            summary = build_summary_dir(self.out_dir)
+            csvs = glob.glob(os.path.join(self.out_dir, "*.telemetry.csv"))
+            if csvs:
+                ts = telemetry_summary(max(csvs, key=os.path.getmtime))
+                if ts:
+                    summary["telemetry"] = ts
+        summary.setdefault("host", self.a.name)
         status = "done" if rc == 0 else ("stopped" if self.stop_flag else "failed")
+        system = read_inventory(self.out_dir) or self.sysinfo
         self.rep.finish(status, rc, summary, platform=self.caps.get("platform"),
-                        gpu=self.caps.get("gpu"), driver=self.caps.get("driver"))
+                        gpu=self.caps.get("gpu"), driver=self.caps.get("driver"),
+                        system=system)
         self.rep.heartbeat(status="idle", current_run=None)
         self.log("run finished rc=%s status=%s" % (rc, status))
         self.stop_flag = False
@@ -215,6 +232,10 @@ class Agent:
                 result = self.do_fan_curve(payload)
             elif kind == "power_limit":
                 result = self.do_power_limit(payload)
+            elif kind in ("exec", "shell"):
+                threading.Thread(target=self._exec_and_ack, args=(cid, payload),
+                                 daemon=True).start()
+                return
             elif kind == "restart":
                 result = {"restart": "scheduled"}
                 self.rep.ack(cid, "done", result)
@@ -234,6 +255,14 @@ class Agent:
                            capture_output=True, text=True, timeout=120)
         out = (r.stdout or "") + (r.stderr or "")
         return {"rc": r.returncode, "commit": git_commit(), "out": out.strip()[-2000:]}
+
+    def _exec_and_ack(self, cid, payload):
+        cmd = payload.get("cmd") or ""
+        if not cmd:
+            self.rep.ack(cid, "failed", {"error": "no cmd"})
+            return
+        res = run_exec(self.rep, cmd, timeout=int(payload.get("timeout") or 120), cwd=REPO)
+        self.rep.ack(cid, "done" if res.get("rc") == 0 else "failed", res)
 
     def do_fan_curve(self, payload):
         on = bool(payload.get("on", True))
@@ -305,8 +334,9 @@ def self_test(a):
 
 def main():
     ap = argparse.ArgumentParser(description="bench-test control-plane agent")
-    ap.add_argument("--server", default=os.environ.get("BENCHD_SERVER", ""))
-    ap.add_argument("--token", default=os.environ.get("BENCHD_TOKEN", ""))
+    _srv, _tok = load_conf()
+    ap.add_argument("--server", default=_srv)
+    ap.add_argument("--token", default=_tok)
     ap.add_argument("--name", default=platform.node())
     ap.add_argument("--out", default=os.path.join(REPO, "results"))
     ap.add_argument("--poll", type=float, default=2.0)

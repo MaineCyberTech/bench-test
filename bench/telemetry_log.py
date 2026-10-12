@@ -22,11 +22,13 @@ import time
 from datetime import datetime
 
 GPU_FIELDS = ("utilization.gpu,utilization.memory,temperature.gpu,fan.speed,power.draw,"
-              "clocks.sm,clocks.mem,memory.used,pstate,utilization.encoder,utilization.decoder")
+              "clocks.sm,clocks.mem,memory.used,pstate,utilization.encoder,utilization.decoder,"
+              "power.limit")
 HEADER = ("elapsed_s,time,gpu_util_pct,mem_util_pct,temp_c,fan_pct,power_w,"
           "sm_mhz,mem_mhz,vram_used_mib,pstate,cpu_package_c,ram_used_gib,load1,"
           "cpu_max_core_c,swap_used_gib,cpu_util_pct,nvme_c,gpu_enc_pct,gpu_dec_pct,"
-          "cpu_fan_rpm,gpu_fan_rpm")
+          "cpu_fan_rpm,gpu_fan_rpm,power_limit_w,disk_read_mbs,disk_write_mbs,"
+          "net_rx_mbs,net_tx_mbs")
 
 
 def gpu_sample():
@@ -37,7 +39,7 @@ def gpu_sample():
             capture_output=True, text=True, timeout=5).stdout.strip()
         if out:
             vals = [v.strip() for v in out.splitlines()[0].split(",")]
-            if len(vals) == 11:
+            if len(vals) == 12:
                 return vals
     except Exception:
         pass
@@ -49,10 +51,42 @@ def gpu_sample():
                 return "" if x is None else x
             return [v(s.get("util")), v(s.get("mem_util")), v(s.get("temp_c")), v(s.get("fan_pct")),
                     v(s.get("power_w")), v(s.get("sm_mhz")), v(s.get("mem_mhz")),
-                    v(s.get("vram_used_mib")), s.get("pstate") or "", "", ""]
+                    v(s.get("vram_used_mib")), s.get("pstate") or "", "", "", ""]
     except Exception:
         pass
     return None
+
+
+def disk_net_counters():
+    """(read_bytes, write_bytes, rx_bytes, tx_bytes) totals from /proc."""
+    rd = wr = rx = tx = 0
+    try:
+        with open("/proc/diskstats") as fh:
+            for ln in fh:
+                p = ln.split()
+                if len(p) < 14:
+                    continue
+                name = p[2]
+                if name.startswith(("loop", "ram", "dm-", "sr")):
+                    continue
+                rd += int(p[5]) * 512
+                wr += int(p[9]) * 512
+    except Exception:
+        pass
+    try:
+        with open("/proc/net/dev") as fh:
+            for ln in fh:
+                if ":" not in ln:
+                    continue
+                iface, rest = ln.split(":", 1)
+                if iface.strip() == "lo":
+                    continue
+                v = rest.split()
+                rx += int(v[0])
+                tx += int(v[8])
+    except Exception:
+        pass
+    return rd, wr, rx, tx
 
 
 def sensors_temps():
@@ -171,6 +205,8 @@ def main():
 
     t0 = time.time()
     prev_cpu = cpu_snapshot()
+    prev_io = disk_net_counters()
+    prev_t = time.time()
     with open(a.out, "w") as fh:
         fh.write(HEADER + "\n")
         fh.flush()
@@ -183,6 +219,14 @@ def main():
                 dt = cur_cpu[1] - prev_cpu[1]
                 cpu_pct = round(100.0 * (1.0 - di / dt), 1) if dt > 0 else ""
             prev_cpu = cur_cpu
+            now = time.time()
+            io = disk_net_counters()
+            dt_io = max(0.001, now - prev_t)
+            drd = round((io[0] - prev_io[0]) / 1e6 / dt_io, 1)
+            dwr = round((io[1] - prev_io[1]) / 1e6 / dt_io, 1)
+            nrx = round((io[2] - prev_io[2]) * 8 / 1e6 / dt_io, 1)
+            ntx = round((io[3] - prev_io[3]) * 8 / 1e6 / dt_io, 1)
+            prev_io, prev_t = io, now
             pkg, maxcore, maxfan = sensors_temps()
             ram, swap = meminfo()
             try:
@@ -195,12 +239,13 @@ def main():
                 gpu = g[:9]
                 enc = g[9] if g[9] not in ("[N/A]", "N/A") else ""
                 dec = g[10] if g[10] not in ("[N/A]", "N/A") else ""
+                plimit = g[11] if g[11] not in ("[N/A]", "N/A") else ""
             else:
                 gpu = [""] * 9
-                enc = dec = ""
+                enc = dec = plimit = ""
             row = ([round(time.time() - t0, 1), datetime.now().strftime("%H:%M:%S")] + gpu
                    + [pkg, ram, load1, maxcore, swap, cpu_pct, nvme_temp(), enc, dec,
-                      maxfan, gpu_fan_rpm()])
+                      maxfan, gpu_fan_rpm(), plimit, drd, dwr, nrx, ntx])
             fh.write(",".join(str(x) for x in row) + "\n")
             fh.flush()
             if a.duration and time.time() - t0 >= a.duration:

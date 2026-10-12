@@ -129,3 +129,30 @@ tbody tr:hover{background:#1a2029}
 .dl{text-decoration:none;color:var(--text);border:1px solid var(--border);border-radius:8px;
   padding:6px 10px;font-size:12px;font-family:var(--mono)}
 .dl:hover{border-color:var(--accent);color:var(--accent)}
+
+/* live console / terminal / richer detail */
+.syscol{color:var(--muted);font-size:12px;max-width:280px;overflow:hidden;text-overflow:ellipsis}
+.chartrow{position:relative}
+.csel{position:absolute;top:4px;right:8px;font-size:11px;padding:3px 6px}
+.consolewrap{margin-top:10px;border-top:1px solid var(--border);padding-top:8px}
+.chead{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+.term{margin-left:auto;display:flex;gap:6px}
+.term input{width:min(340px,40vw);font-family:var(--mono);font-size:12px}
+.console{background:#0c0f14;border:1px solid var(--border);border-radius:8px;padding:8px 10px;
+  max-height:220px;overflow:auto;font-size:11px;white-space:pre-wrap;margin:0;line-height:1.35}
+.remarks{background:#182231;border-left:3px solid var(--accent);border-radius:6px;
+  padding:8px 12px;margin-top:10px;font-size:12px}
+.remarks div{padding:1px 0}
+.sechead{margin:16px 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted)}
+.kvtable{border-collapse:collapse;width:100%}
+.kvtable th{text-align:left;color:var(--muted);font-weight:500;width:150px;padding:4px 10px;
+  border-bottom:1px solid var(--border);font-size:12px}
+.kvtable td{padding:4px 10px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:12px}
+.statstable{border-collapse:collapse;width:100%}
+.statstable th,.statstable td{padding:6px 10px;border-bottom:1px solid var(--border);font-size:12px}
+.invjson{max-height:240px;overflow:auto;font-size:11px;background:#0c0f14;border-radius:8px;padding:8px}
+.toast{position:fixed;right:20px;bottom:20px;background:var(--card);border:1px solid var(--border);
+  border-left:3px solid var(--accent);border-radius:8px;padding:10px 14px;font-size:13px;
+  opacity:0;transform:translateY(10px);transition:.2s;pointer-events:none;z-index:100;max-width:440px}
+.toast.show{opacity:1;transform:none}
+.toast.err{border-left-color:var(--bad)}

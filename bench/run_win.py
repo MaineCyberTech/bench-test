@@ -40,6 +40,40 @@ def parse_args():
     return ap.parse_args()
 
 
+GPU_Q = ("utilization.gpu,utilization.memory,temperature.gpu,temperature.memory,fan.speed,"
+         "power.draw,power.limit,clocks.sm,clocks.mem,clocks.gr,memory.used,pstate,"
+         "utilization.encoder,utilization.decoder")
+
+COLUMNS = ["elapsed_s", "gpu_util_pct", "mem_util_pct", "temp_c", "temp_mem_c", "fan_pct",
+           "power_w", "power_limit_w", "sm_mhz", "mem_mhz", "gr_mhz", "vram_used_mib",
+           "pstate", "gpu_enc_pct", "gpu_dec_pct", "cpu_util_pct", "ram_used_gib",
+           "ram_total_gib", "swap_used_gib", "disk_read_mbs", "disk_write_mbs",
+           "net_rx_mbs", "net_tx_mbs"]
+
+
+def _num(s):
+    s = str(s).strip()
+    if not s or s.startswith("[") or s.lower() in ("n/a", "not supported"):
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _gpu_row():
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=" + GPU_Q, "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=5,
+                             creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)).stdout.strip()
+        v = [x.strip() for x in out.splitlines()[0].split(",")]
+        if len(v) >= 14:
+            return v
+    except Exception:
+        pass
+    return None
+
+
 def sampler(csv_path, stop_evt):
     try:
         import psutil
@@ -47,30 +81,54 @@ def sampler(csv_path, stop_evt):
         psutil = None
     with open(csv_path, "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["elapsed_s", "temp_c", "fan_pct", "power_w", "gpu_util_pct",
-                    "gpu_fan_rpm", "cpu_util_pct", "ram_used_gib"])
+        w.writerow(COLUMNS)
         fh.flush()
         t0 = time.time()
+        prev = {}
         while not stop_evt.is_set():
             row = [round(time.time() - t0, 1)]
-            try:
-                out = subprocess.run(
-                    ["nvidia-smi", "--query-gpu=temperature.gpu,fan.speed,power.draw,utilization.gpu",
-                     "--format=csv,noheader,nounits"],
-                    capture_output=True, text=True, timeout=5,
-                    creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)).stdout.strip()
-                v = [x.strip() for x in out.split(",")]
-                row += [float(v[0]), float(v[1]), float(v[2]), float(v[3]), float(v[1])]
-            except Exception:
-                row += ["", "", "", "", ""]
+            g = _gpu_row()
+            if g:
+                # util, mem_util, temp, temp_mem, fan, power, power_limit, sm, mem, gr,
+                # vram_mib, pstate, enc, dec
+                row += [_num(g[0]), _num(g[1]), _num(g[2]), _num(g[3]), _num(g[4]),
+                        _num(g[5]), _num(g[6]), _num(g[7]), _num(g[8]), _num(g[9]),
+                        _num(g[10]), (str(g[11]).strip().upper().lstrip("P") or None),
+                        _num(g[12]), _num(g[13])]
+            else:
+                row += [None] * 14
             if psutil:
                 try:
-                    row += [round(psutil.cpu_percent(), 0),
-                            round(psutil.virtual_memory().used / 1024 ** 3, 1)]
+                    vm = psutil.virtual_memory()
+                    sm = psutil.swap_memory()
+                    cpu = psutil.cpu_percent()
                 except Exception:
-                    row += ["", ""]
+                    vm = sm = None; cpu = None
+                row += [cpu,
+                        round(vm.used / 1024 ** 3, 2) if vm else None,
+                        round(vm.total / 1024 ** 3, 2) if vm else None,
+                        round(sm.used / 1024 ** 3, 2) if sm else None]
+                try:
+                    dio = psutil.disk_io_counters()
+                    nio = psutil.net_io_counters()
+                    now = time.time()
+                    if dio and prev.get("dio"):
+                        dt = max(0.001, now - prev["t"])
+                        row += [round((dio.read_bytes - prev["dio"].read_bytes) / 1e6 / dt, 1),
+                                round((dio.write_bytes - prev["dio"].write_bytes) / 1e6 / dt, 1)]
+                    else:
+                        row += [None, None]
+                    if nio and prev.get("nio"):
+                        dt = max(0.001, now - prev["t"])
+                        row += [round((nio.bytes_recv - prev["nio"].bytes_recv) * 8 / 1e6 / dt, 1),
+                                round((nio.bytes_sent - prev["nio"].bytes_sent) * 8 / 1e6 / dt, 1)]
+                    else:
+                        row += [None, None]
+                    prev = {"dio": dio, "nio": nio, "t": now}
+                except Exception:
+                    row += [None, None, None, None]
             else:
-                row += ["", ""]
+                row += [None] * 8
             w.writerow(row)
             fh.flush()
             try:

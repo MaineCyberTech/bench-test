@@ -19,7 +19,9 @@ call is a no-op, so benchmarking never depends on the control plane.
 import glob
 import json
 import os
+import re
 import socket
+import subprocess
 import sys
 import time
 import urllib.error
@@ -42,7 +44,109 @@ CSV_ALIASES = {
     "ram_used_gib": "ram_used", "ram_used": "ram_used",
     "sm_mhz": "sm_mhz", "sm_clock_mhz": "sm_mhz",
     "mem_used_gib": "mem_used", "vram_used_gib": "mem_used",
+    # extras streamed to the server for richer charts
+    "mem_util_pct": "mem_util", "mem_util": "mem_util",
+    "mem_mhz": "mem_mhz",
+    "vram_used_mib": "vram_used_mib",
+    "cpu_package_c": "cpu_temp_c", "cpu_temp_c": "cpu_temp_c",
+    "cpu_max_core_c": "cpu_max_core_c",
+    "cpu_fan_rpm": "cpu_fan_rpm",
+    "load1": "load1",
+    "swap_used_gib": "swap_used_gib",
+    "nvme_c": "nvme_c",
+    "gpu_enc_pct": "gpu_enc_pct",
+    "gpu_dec_pct": "gpu_dec_pct",
+    "pstate": "pstate",
+    # throughput / limits (Windows sampler + Linux logger)
+    "power_limit_w": "power_limit_w",
+    "temp_mem_c": "temp_mem_c",
+    "gr_mhz": "gr_mhz",
+    "ram_total_gib": "ram_total_gib",
+    "disk_read_mbs": "disk_read_mbs",
+    "disk_write_mbs": "disk_write_mbs",
+    "net_rx_mbs": "net_rx_mbs",
+    "net_tx_mbs": "net_tx_mbs",
 }
+
+
+def _pstate(v):
+    """'P0'/'P8' -> 0/8 (numeric, so it can be streamed as an extra metric)."""
+    s = str(v).strip().upper().lstrip("P")
+    return _f(s)
+
+
+def _parse_conf(path):
+    d = {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for ln in fh:
+                ln = ln.strip()
+                if not ln or ln.startswith("#") or "=" not in ln:
+                    continue
+                k, v = ln.split("=", 1)
+                d[k.strip()] = v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return d
+
+
+def load_conf():
+    """Resolve (server, token) from the environment or a bench-agent.conf.
+
+    Identical search order on Windows and Linux, so the GUI, TUI and agent all
+    check in the same way on every platform:
+        $BENCH_AGENT_CONF, ./bench-agent.conf, ~/.config/bench-agent.conf,
+        /etc/bench-agent.conf, /mnt/benchdata/bench-agent.conf
+    """
+    cands = [os.environ.get("BENCH_AGENT_CONF"),
+             os.path.join(os.getcwd(), "bench-agent.conf"),
+             os.path.expanduser("~/.config/bench-agent.conf"),
+             "/etc/bench-agent.conf",
+             "/mnt/benchdata/bench-agent.conf"]
+    conf = {}
+    for c in cands:
+        if c and os.path.isfile(c):
+            conf = _parse_conf(c)
+            break
+    server = os.environ.get("BENCHD_SERVER") or conf.get("BENCHD_SERVER") or ""
+    token = os.environ.get("BENCHD_TOKEN") or conf.get("BENCHD_TOKEN") or ""
+    return server, token
+
+
+def system_info():
+    """Best-effort host spec block for run history (cpu, ram, gpu, driver, platform)."""
+    import platform as _p
+    info = {"os": _p.system(), "platform": _p.platform(), "hostname": socket.gethostname(),
+            "python": _p.python_version()}
+    info["cpu"] = (_p.processor() or _p.machine() or "").strip()
+    try:
+        import psutil
+        info["ram_gib"] = round(psutil.virtual_memory().total / 1024 ** 3, 1)
+    except Exception:
+        try:
+            with open("/proc/meminfo") as fh:
+                for ln in fh:
+                    if ln.startswith("MemTotal"):
+                        info["ram_gib"] = round(int(ln.split()[1]) / 1048576.0, 1)
+                        break
+        except Exception:
+            pass
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=name,driver_version,memory.total",
+                              "--format=csv,noheader"], capture_output=True, text=True,
+                             timeout=8,
+                             creationflags=(getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                                            if os.name == "nt" else 0)).stdout.strip()
+        if out:
+            parts = [x.strip() for x in out.splitlines()[0].split(",")]
+            info["gpu"] = parts[0]
+            if len(parts) > 1:
+                info["driver"] = parts[1]
+            if len(parts) > 2:
+                info["vram"] = parts[2]
+    except Exception:
+        pass
+    return info
 
 
 def _f(v):
@@ -108,6 +212,17 @@ class Reporter:
         self.run_id = None
         self.enabled = bool(self.server and self.token)
         self.last_error = None
+        self.last_ok = None
+
+    def status(self):
+        """'off' | 'connecting' | 'connected' | 'offline' for the dashboards."""
+        if not self.enabled:
+            return "off"
+        if not self.runner_id:
+            return "connecting"
+        if self.last_ok and (time.time() - self.last_ok) < 10:
+            return "connected"
+        return "offline"
 
     # -- transport ---------------------------------------------------------
     def _req(self, method, path, body=None):
@@ -123,6 +238,7 @@ class Reporter:
             req.add_header("Content-Type", "application/json")
         try:
             with urllib.request.urlopen(req, data, timeout=self.timeout) as r:
+                self.last_ok = time.time()
                 return r.status, json.loads(r.read().decode() or "{}")
         except urllib.error.HTTPError as e:
             self.last_error = "HTTP %s" % e.code
@@ -163,13 +279,13 @@ class Reporter:
         return r if s == 200 else None
 
     def start_run(self, label, profile=None, host=None, platform=None, gpu=None,
-                  driver=None, torch=None):
+                  driver=None, torch=None, system=None):
         if not self.runner_id:
             return None
         s, r = self._req("POST", "/api/v1/runs", {
             "runner_id": self.runner_id, "host": host or self.name, "label": label,
             "profile": profile or {}, "started": time.time(), "platform": platform,
-            "gpu": gpu, "driver": driver, "torch": torch})
+            "gpu": gpu, "driver": driver, "torch": torch, "system": system or {}})
         if s == 200:
             self.run_id = r.get("run_id")
             return self.run_id
@@ -193,6 +309,15 @@ class Reporter:
         self._req("POST", "/api/v1/runs/%s/event" % self.run_id,
                   {"level": level, "message": message, "ts": time.time()})
 
+    def log(self, lines, stream="out"):
+        """Stream runner output lines to the server (live console / remote view)."""
+        if not self.run_id or not lines:
+            return
+        if isinstance(lines, str):
+            lines = [lines]
+        self._req("POST", "/api/v1/runs/%s/log" % self.run_id,
+                  {"stream": stream, "lines": [str(x) for x in lines]})
+
     def artifact(self, name, text, kind="json"):
         if not self.run_id:
             return
@@ -202,12 +327,13 @@ class Reporter:
                   {"name": name, "kind": kind, "content": base64.b64encode(raw).decode()})
 
     def finish(self, status="done", exit_code=0, summary=None, platform=None, gpu=None,
-               driver=None, torch=None):
+               driver=None, torch=None, ended=None, system=None):
         if not self.run_id:
             return
         self._req("POST", "/api/v1/runs/%s/finish" % self.run_id, {
             "status": status, "exit_code": exit_code, "summary": summary or {},
-            "platform": platform, "gpu": gpu, "driver": driver, "torch": torch})
+            "platform": platform, "gpu": gpu, "driver": driver, "torch": torch,
+            "ended": ended, "system": system or {}})
         self.run_id = None
 
     # -- control -----------------------------------------------------------
@@ -279,6 +405,7 @@ class ReporterPump:
         self.interval = interval
         self.log = log or (lambda *_a: None)
         self.samples = queue.Queue()
+        self.logs = queue.Queue()
         self._stop = False
         self._thread = None
 
@@ -298,6 +425,12 @@ class ReporterPump:
         except Exception:
             pass
 
+    def push_log(self, line):
+        try:
+            self.logs.put_nowait(line)
+        except Exception:
+            pass
+
     def _drain(self):
         batch = []
         while len(batch) < 120:
@@ -307,6 +440,14 @@ class ReporterPump:
                 break
         if batch:
             self.rep.telemetry(batch)
+        lines = []
+        while len(lines) < 200:
+            try:
+                lines.append(self.logs.get_nowait())
+            except Exception:
+                break
+        if lines:
+            self.rep.log(lines)
 
     def _loop(self):
         while not self._stop:
@@ -323,6 +464,99 @@ class ReporterPump:
             except Exception as e:
                 self.log("[report] pump error: %s" % e)
             time.sleep(self.interval)
+
+
+def read_inventory(results_dir):
+    """Full system inventory for a finished run.
+
+    Linux: the report's `sys`/info phase result. Windows: the newest
+    `*.sysinfo.json` artifact. Returns a normalised block plus the raw
+    inventory under `inventory`, or None.
+    """
+    inv = None
+    osname = None
+    try:
+        cands = [p for p in glob.glob(os.path.join(results_dir, "*-linux-*.json"))
+                 if not p.endswith((".info.json", ".manifest.json"))]
+        if cands:
+            with open(max(cands, key=os.path.getmtime)) as fh:
+                j = json.load(fh)
+            for ph in j.get("phases", []):
+                if ph.get("group") == "sys" and isinstance(ph.get("result"), dict):
+                    inv, osname = ph["result"], "Linux"
+                    break
+    except Exception:
+        pass
+    if inv is None:
+        try:
+            cands = glob.glob(os.path.join(results_dir, "*.sysinfo.json"))
+            if cands:
+                with open(max(cands, key=os.path.getmtime)) as fh:
+                    inv, osname = json.load(fh), "Windows"
+        except Exception:
+            pass
+    if not isinstance(inv, dict):
+        return None
+    out = {"os": osname, "inventory": inv}
+    if osname == "Linux":
+        c = inv.get("cpu") or {}
+        g = inv.get("gpu") or {}
+        out.update({"platform": inv.get("distro"), "kernel": inv.get("kernel"),
+                    "cpu": c.get("model"), "threads": c.get("logical_cpus"),
+                    "ram_gib": inv.get("memory_gib"), "gpu": g.get("name"),
+                    "driver": g.get("driver"), "vram": g.get("vram"),
+                    "storage": inv.get("storage"), "network": inv.get("network_ifaces")})
+    elif osname == "Windows":
+        c = inv.get("CPU") or {}
+        r = inv.get("RAM") or {}
+        o = inv.get("OS") or {}
+        out.update({"platform": o.get("caption"), "cpu": c.get("name"),
+                    "cores": c.get("cores"), "threads": c.get("threads"),
+                    "ram_gib": r.get("total_gib"), "manufacturer": inv.get("Manufacturer"),
+                    "model": inv.get("Model"), "board": inv.get("Board"),
+                    "bios": inv.get("BIOS")})
+        nv = inv.get("nvidia")
+        if isinstance(nv, dict):
+            out["driver"] = nv.get("driver") or nv.get("DriverVersion") or nv.get("version")
+        gpus = inv.get("GPUs")
+        if isinstance(gpus, list) and gpus and isinstance(gpus[0], dict):
+            out["gpu"] = gpus[0].get("name") or gpus[0].get("Name")
+    return out
+
+
+def run_exec(reporter, cmd, timeout=120, cwd=None):
+    """Run a shell command, streaming its output to the server (remote terminal)."""
+    import subprocess
+    if reporter:
+        reporter.log(["$ " + cmd], stream="exec")
+    try:
+        p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             text=True, bufsize=1, cwd=cwd,
+                             creationflags=(getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                                            if os.name == "nt" else 0))
+    except Exception as e:
+        if reporter:
+            reporter.log(["exec error: %s" % e], stream="exec")
+        return {"rc": -1, "error": str(e)}
+    buf = []
+    try:
+        for ln in p.stdout:
+            buf.append(ln.rstrip("\n"))
+            if len(buf) >= 20:
+                if reporter:
+                    reporter.log(buf, stream="exec")
+                buf = []
+        rc = p.wait(timeout=timeout)
+    except Exception as e:
+        try:
+            p.kill()
+        except Exception:
+            pass
+        buf.append("exec aborted: %s" % e)
+        rc = -9
+    if buf and reporter:
+        reporter.log(buf, stream="exec")
+    return {"rc": rc}
 
 
 class TelemetryTail:
@@ -360,7 +594,7 @@ class TelemetryTail:
         self.fh.readline()  # skip header for the tail
 
     def read(self):
-        """Return a list of canonical sample rows since the last call."""
+        """Return named sample dicts (canonical field -> value) since the last call."""
         if self.fh is None:
             p = self._find()
             if p:
@@ -375,11 +609,17 @@ class TelemetryTail:
             vals = line.strip().split(",")
             if not vals or vals[0] == "":
                 continue
-            row = []
-            for f in SAMPLE_FIELDS:
-                i = self.cols.get(f)
-                row.append(_f(vals[i]) if (i is not None and i < len(vals)) else None)
-            out.append(row)
+            d = {}
+            for canon, i in self.cols.items():
+                if i >= len(vals):
+                    continue
+                v = _f(vals[i])
+                if v is None and canon == "pstate":
+                    v = _pstate(vals[i])
+                if v is not None:
+                    d[canon] = v
+            if d:
+                out.append(d)
         return out
 
     def close(self):
@@ -431,6 +671,128 @@ def build_summary(report_path):
             out["net"] = r
         elif phase in ("stress", "fullsoak") and isinstance(r.get("verdict"), dict):
             out["fullsoak"] = {"group": group or "fullsoak", "phase": phase, "result": r}
+    return out
+
+
+def _throttle_active(thr):
+    if not thr:
+        return False
+    if isinstance(thr, str):
+        thr = [thr]
+    try:
+        for s in thr:
+            v = str(s).split(":", 1)[-1].strip().lower()
+            if v and v not in ("not active", "0 us", "0", "n/a", "not supported"):
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _merge_into(s, j):
+    """Merge one report dict into a runs-index-style summary (tolerant of shapes)."""
+    def setd(k, v):
+        if v is not None and k not in s:
+            s[k] = v
+    if not isinstance(j, dict):
+        return
+    if j.get("download_mbps") is not None and "net" not in s:
+        s["net"] = {k: j.get(k) for k in ("download_mbps", "upload_mbps", "ping_target",
+                                          "ping_target_ms", "ping_gateway_ms")}
+    ph = j.get("phases")
+    items = ph if isinstance(ph, list) else (list(ph.values()) if isinstance(ph, dict) else [])
+    for p in items:
+        if not isinstance(p, dict):
+            continue
+        r = p.get("result") if isinstance(p.get("result"), dict) else p
+        phase = p.get("phase") or r.get("phase")
+        if phase == "matmul" and isinstance(r.get("results"), dict):
+            sub = r["results"]
+            first = next(iter(sub.values()), {})
+            if isinstance(first, dict) and "tflops" in first:
+                setd("gpu_matmul_tflops", {k: v.get("tflops") for k, v in sub.items()})
+            elif isinstance(first, dict) and "gflops" in first:
+                setd("cpu_matmul_gflops", {k: v.get("gflops") for k, v in sub.items()})
+        elif phase == "soak":
+            if r.get("matmul_tflops") is not None:
+                setd("gpu_soak_tflops", r["matmul_tflops"])
+                setd("gpu_soak_telemetry", r.get("telemetry"))
+            elif r.get("gflops") is not None:
+                setd("cpu_soak_gflops", r["gflops"])
+            elif r.get("gbps") is not None:
+                setd("ram_soak_gbps", r["gbps"])
+        elif phase == "seqwrite":
+            setd("disk_seqwrite_mbps", r.get("mbps"))
+    if ("throttle" in j or "errors" in j) and isinstance(j.get("results"), dict) and "fullsoak" not in s:
+        active = _throttle_active(j.get("throttle"))
+        clean = (not j.get("errors")) and (not active)
+        s["fullsoak"] = {"result": {"verdict": {"clean": bool(clean), "throttle_active": active}}}
+    elif isinstance(j.get("verdict"), dict) and "fullsoak" not in s:
+        s["fullsoak"] = {"result": {"verdict": j["verdict"]}}
+    elif isinstance(j.get("gpu"), dict) and isinstance(j.get("cpu"), dict) and "combined" not in s:
+        s["combined"] = {"gpu": j.get("gpu"), "cpu": j.get("cpu")}
+
+
+def build_summary_dir(results_dir, window_h=8):
+    """Merge all of a run's report JSONs (Windows main + per-group) into one row."""
+    now = time.time()
+    reports = []
+    main = None
+    main_mt = 0.0
+    for p in glob.glob(os.path.join(results_dir, "*.json")):
+        b = os.path.basename(p)
+        if b.endswith((".info.json", ".sysinfo.json", ".sensors.json", ".pcie.json",
+                       ".health.json", ".env.json", ".manifest.json")):
+            continue
+        mt = os.path.getmtime(p)
+        if now - mt > window_h * 3600:
+            continue
+        try:
+            with open(p, encoding="utf-8-sig") as fh:
+                j = json.load(fh)
+        except Exception:
+            continue
+        if not isinstance(j, dict):
+            continue
+        reports.append(j)
+        if re.match(r"^.*-\d{8}-\d{6}\.json$", b) and isinstance(j.get("phases"), list) and mt > main_mt:
+            main, main_mt = j, mt
+    out = {}
+    for j in reports:
+        _merge_into(out, j)
+    if main:
+        out["host"] = main.get("host")
+        out["timestamp"] = main.get("timestamp")
+    return out
+
+
+def telemetry_summary(csv_path):
+    """min/avg/max for key telemetry fields from a 1 Hz CSV."""
+    try:
+        with open(csv_path, encoding="utf-8-sig") as fh:
+            header = fh.readline().strip().split(",")
+            cols = {}
+            for i, n in enumerate(header):
+                c = CSV_ALIASES.get(n.strip().lower())
+                if c in ("temp_c", "fan_pct", "power_w", "gpu_util", "mem_util"):
+                    cols[c] = i
+            acc = {c: [] for c in cols}
+            n = 0
+            for line in fh:
+                v = line.rstrip("\n").split(",")
+                if not v or v[0] == "":
+                    continue
+                n += 1
+                for c, i in cols.items():
+                    val = _f(v[i]) if i < len(v) else None
+                    if val is not None:
+                        acc[c].append(val)
+    except OSError:
+        return None
+    out = {"samples": n}
+    for c, vals in acc.items():
+        if vals:
+            out[c] = [min(vals), round(sum(vals) / len(vals), 1), max(vals)]
     return out
 
 
