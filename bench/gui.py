@@ -42,7 +42,8 @@ try:
                              telemetry_summary, newest_report, load_identity, run_exec, system_info,
                              read_inventory, load_conf, CSV_ALIASES, power_action,
                              supported_groups,
-                             update_toolkit, iso_fetch, iso_write, self_update, restart_self)
+                             update_toolkit, iso_fetch, iso_write, self_update, restart_self,
+                             toolkit_version)
 except Exception:  # reporting is optional
     Reporter = None
 
@@ -459,7 +460,7 @@ class Dashboard:
                                 persist=True, instance=self.instance)
             self.sysinfo = system_info()
             caps = {"os": _p.system(), "platform": _p.platform(), "kind": "gui",
-                    "groups": supported_groups(),
+                    "groups": supported_groups(), "toolkit": toolkit_version(REPO),
                     "gpu": self.sysinfo.get("gpu"), "driver": self.sysinfo.get("driver"),
                     "cpu": self.sysinfo.get("cpu"), "ram_gib": self.sysinfo.get("ram_gib")}
             self._connect_reporting(caps)

@@ -117,7 +117,7 @@ UI-facing:
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/state` | snapshot: runners, active runs (+latest telemetry, phases), recent |
+| GET | `/state` | snapshot: runners, active runs (+latest telemetry, phases), recent, `hosts`, `server_git` |
 | GET | `/stream?token=` | SSE: `snapshot`/`runner`/`run`/`phase`/`telemetry`/`command`/`log`/`schedule`/`event` |
 | GET | `/runners` · `/runs` · `/runs/<id>` | fleet / history / detail |
 | GET | `/runs/<id>/telemetry?max=N` | downsampled series (named fields) |
@@ -126,6 +126,7 @@ UI-facing:
 | GET | `/runs/<id>/telemetry.csv?token=` | full 1 Hz telemetry as CSV (download) |
 | GET | `/runs/<id>/artifact/<name>?token=` | download an attached artifact (binary-safe) |
 | GET | `/trends?host=&metric=` | metric-over-time series + per-series median/p95/p99 |
+| GET | `/health` | public liveness + the control plane's commit (`git`) |
 | GET | `/metrics` | the metric catalogue (key → label) |
 | GET/POST/DELETE | `/schedules` · `/schedules/<id>` | list / create / remove recurring runs (operator only) |
 | DELETE | `/runs/<id>` · `/runners/<id>` | delete a run (+data) / a runner (+its commands & schedules) |
@@ -218,6 +219,13 @@ pct exec 108 -- systemctl mask tmp.mount run-lock.mount dev-mqueue.mount
   rebuilds automatically on push to `main` touching `bench/**` or `live/**`.
 - Runners are considered **offline** after 15 s without a heartbeat; their history
   is retained.
+- **Staleness:** a runner reports its toolkit identity (`capabilities.toolkit`:
+  `mode` git|copy, `ref`, `commit`, `sha256`) and the server compares its commit
+  with the control plane's own (`/health` → `git`, `/state` → `server_git`) —
+  surfaced as `update_available` on each runner (Live badge, Fleet "toolkit"
+  column, a "stale" topstat). A server deployed by copying files (no `.git`) reads
+  a `.deployed-commit` / `.bench-version` stamp instead, so write one in the
+  deploy (or `git clone` the server and it works for free).
 - **Runner identity is stable per machine + role + instance.** Each runner sends
   a `machine_id` (Windows `MachineGuid`, Linux DMI uuid / `/etc/machine-id`, else
   a random id persisted next to the agent config; `$BENCH_MACHINE_ID` overrides)

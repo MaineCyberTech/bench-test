@@ -13,7 +13,7 @@ import sys
 import tarfile
 import threading
 
-from harness import Checker, tmpdir
+from harness import Checker, tmpdir, BENCH
 import benchreport as br
 
 
@@ -110,6 +110,19 @@ def run():
             os.path.isfile(os.path.join(r["dest"], "bench", "benchreport.py")), r.get("dest"))
     c.check("toolkit switched", r.get("switched") is True if CAN_SYMLINK else True,
             r if CAN_SYMLINK else "skipped: no symlink privilege on Windows")
+    vp = os.path.join(r["dest"], br.VERSION_FILE)
+    c.check("version stamp written", os.path.isfile(vp), vp)
+    try:
+        with open(vp, encoding="utf-8") as fh:
+            ver = json.load(fh)
+    except Exception:
+        ver = {}
+    c.check("version stamp records ref + sha",
+            ver.get("ref") == "main" and ver.get("sha256") == sha, ver)
+    c.check("toolkit_version reads a copy's stamp",
+            br.toolkit_version(r["dest"]).get("sha256") == sha, br.toolkit_version(r["dest"]))
+    c.check("toolkit_version reports git for this checkout",
+            br.toolkit_version(os.path.dirname(BENCH)).get("mode") == "git", "")
     if CAN_SYMLINK:
         c.check("toolkit dir is a symlink to the fetched copy",
                 os.path.islink(toolkit_dir)

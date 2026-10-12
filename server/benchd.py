@@ -34,6 +34,7 @@ import os
 import re
 import secrets
 import sqlite3
+import subprocess
 import threading
 import time
 import uuid
@@ -198,6 +199,43 @@ def online(last_seen):
     return (now() - (last_seen or 0)) < ONLINE_WINDOW
 
 
+_SERVER_GIT = {"v": None}
+
+
+def server_git():
+    """Short HEAD of the control plane's own code ('' when unknown).
+
+    Runners report their toolkit commit; comparing the two is what tells the
+    fleet view which sticks are behind the deployed code. A copy-deployed server
+    has no .git, so a stamp file written by the deploy is accepted too.
+    """
+    if _SERVER_GIT["v"] is None:
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        val = ""
+        try:
+            r = subprocess.run(["git", "-C", repo, "rev-parse", "--short", "HEAD"],
+                               capture_output=True, text=True, timeout=10)
+            if r.returncode == 0:
+                val = r.stdout.strip()
+        except Exception:
+            val = ""
+        if not val:
+            for rel in (".deployed-commit", ".bench-version"):
+                try:
+                    with open(os.path.join(repo, rel), encoding="utf-8") as fh:
+                        txt = fh.read().strip()
+                    if rel.endswith(".json") or txt.startswith("{"):
+                        val = str(json.loads(txt).get("commit") or "")
+                    else:
+                        val = txt.split()[0] if txt else ""
+                except Exception:
+                    val = ""
+                if val:
+                    break
+        _SERVER_GIT["v"] = val
+    return _SERVER_GIT["v"]
+
+
 ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 
 
@@ -254,6 +292,13 @@ def runner_public(r):
         r["capabilities"] = json.loads(r.get("capabilities") or "{}")
     except Exception:
         r["capabilities"] = {}
+    # is this runner's toolkit behind the deployed code?
+    tk = r["capabilities"].get("toolkit") or {}
+    rc = str(tk.get("commit") or r.get("git") or "").strip()
+    sg = server_git()
+    r["toolkit_commit"] = rc
+    r["toolkit_mode"] = tk.get("mode") or ("git" if r.get("git") else "")
+    r["update_available"] = bool(sg and rc and rc != sg)
     return r
 
 
@@ -420,7 +465,7 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         path, q = u.path, parse_qs(u.query)
         if path == "/health":
-            return self._send(200, {"ok": True, "time": now(),
+            return self._send(200, {"ok": True, "time": now(), "git": server_git(),
                                     "runners": len(self.store.q("SELECT id FROM runners"))})
         if path.startswith("/api/"):
             if path == "/api/v1/stream":
@@ -501,7 +546,8 @@ class Handler(BaseHTTPRequestHandler):
             hosts = [h["host"] for h in S.q(
                 "SELECT DISTINCT host FROM runs WHERE host IS NOT NULL ORDER BY host")]
             return self._send(200, {"runners": runners, "active": active, "recent": recent,
-                                    "metrics": METRICS, "hosts": hosts, "server_time": now()})
+                                    "metrics": METRICS, "hosts": hosts,
+                                    "server_git": server_git(), "server_time": now()})
         if path == "/api/v1/metrics":
             return self._send(200, {"metrics": METRICS})
         if path == "/api/v1/runners":

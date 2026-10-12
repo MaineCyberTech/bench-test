@@ -171,6 +171,13 @@ Identical across GUI/TUI/web; each sets every group and duration.
 Measured per-phase durations to estimate preset runtimes:
 [`docs/PHASE_TIMINGS.md`](docs/PHASE_TIMINGS.md).
 
+## Updates available
+
+Each runner reports the identity of the toolkit it is running, and the control
+plane compares it with its own commit — so the Fleet tab's **toolkit** column,
+a per-runner **update available** badge and a **stale** counter show which sticks
+are behind. Update one from its card's *update…* dialog (see below).
+
 ## Live USB
 
 `live/Build-LiveUSB.sh` builds a bootable Arch ISO carrying the toolkit at
@@ -197,7 +204,6 @@ from the fleet card's **update…** dialog, or as commands:
 
 `update` on a live runner now runs the toolkit update automatically (a git
 checkout still does `git pull`). The same operations are available locally:
-
 ```bash
 python bench/live_update.py toolkit --ref main      # self-update + switch
 python bench/live_update.py iso-list iso-nvidia-legacy-38

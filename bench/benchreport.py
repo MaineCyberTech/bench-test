@@ -747,6 +747,52 @@ def is_live():
     return os.path.isdir("/run/archiso") or os.path.exists("/etc/arch-release")
 
 
+VERSION_FILE = ".bench-version"
+
+
+def git_commit(repo=None):
+    """Short HEAD of a git checkout ('' when it isn't one)."""
+    repo = repo or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        r = subprocess.run(["git", "-C", repo, "rev-parse", "--short", "HEAD"],
+                           capture_output=True, text=True, timeout=10)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def toolkit_version(root=None):
+    """Identify the running toolkit so the fleet view can spot stale runners."""
+    root = root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if os.path.isdir(os.path.join(root, ".git")):
+        return {"mode": "git", "commit": git_commit(root), "ref": None,
+                "sha256": None, "fetched_at": None}
+    try:
+        with open(os.path.join(root, VERSION_FILE), encoding="utf-8") as fh:
+            v = json.load(fh)
+        if isinstance(v, dict):
+            v.setdefault("mode", "copy")
+            return v
+    except Exception:
+        pass
+    return {"mode": "copy", "commit": None, "ref": None, "sha256": None, "fetched_at": None}
+
+
+def _resolve_commit(ref):
+    """Best-effort ref -> short commit (needs network; '' when unknown)."""
+    s = str(ref or "")
+    if re.match(r"^[0-9a-f]{7,40}$", s):
+        return s[:7]
+    try:
+        url = "%s/repos/%s/commits/%s" % (GH_API, REPO_SLUG, s)
+        req = urllib.request.Request(url, headers={"User-Agent": UA,
+                                                   "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return (json.loads(r.read().decode()).get("sha") or "")[:7]
+    except Exception:
+        return ""
+
+
 def persist_root():
     """A writable place that survives the session if possible (the stick)."""
     for d in (PERSIST_DIR, "/var/tmp", tempfile.gettempdir()):
@@ -875,6 +921,13 @@ def update_toolkit(ref="main", sha256=None, log=None):
         return {"error": "archive did not contain the toolkit"}
     shutil.rmtree(dest, ignore_errors=True)
     os.replace(tmp, dest)
+    commit = _resolve_commit(ref)
+    try:
+        with open(os.path.join(dest, VERSION_FILE), "w", encoding="utf-8") as fh:
+            json.dump({"mode": "copy", "ref": ref, "commit": commit, "sha256": got,
+                       "fetched_at": time.time()}, fh, indent=1)
+    except OSError:
+        pass
     os.makedirs(root, exist_ok=True)
     cur = os.path.join(root, "current")
     try:
@@ -887,7 +940,7 @@ def update_toolkit(ref="main", sha256=None, log=None):
     log("[update] %s -> %s (switched=%s)" % (ref, dest, switched))
     return {"ok": True, "ref": ref, "bytes": n, "sha256": got, "dest": dest,
             "current": cur, "switched": switched, "toolkit": TOOLKIT_DIR,
-            "restart_required": bool(switched)}
+            "commit": commit, "restart_required": bool(switched)}
 
 
 def restart_self(delay=1.5, log=None):

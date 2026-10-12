@@ -237,10 +237,12 @@ function machineKey(r) { return r.machine_id || ("name:" + (r.name || "")); }
 function renderTop() {
   const online = STATE.runners.filter((r) => r.online).length;
   const machines = new Set(STATE.runners.map(machineKey)).size;
+  const stale = STATE.runners.filter((r) => r.update_available).length;
   $("#topstats").innerHTML = [
     ["machines", machines], ["runners", STATE.runners.length], ["online", online],
     ["active runs", STATE.active.length], ["history", STATE.recent.length],
-  ].map(([k, v]) => `<div class="tstat"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
+  ].concat(stale ? [["stale", stale]] : [])
+    .map(([k, v]) => `<div class="tstat"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
   document.title = STATE.active.length ? `(${STATE.active.length}) bench-test` : "bench-test control plane";
   const off = STATE.runners.length - online;
   $("#runnerCount").innerHTML = `${online} online · ${machines} machine${machines === 1 ? "" : "s"}` +
@@ -262,6 +264,10 @@ function runnerCard(r) {
     (caps.groups && caps.groups.length && caps.groups.length < ALL_GROUPS.length)
       ? `<span class="badge" title="groups this runner implements">${caps.groups.length}/${ALL_GROUPS.length} groups</span>`
       : "",
+    r.update_available
+      ? `<span class="badge stale" title="toolkit ${esc(r.toolkit_commit || "?")} vs control plane ${esc(STATE.server_git || "?")}">update available</span>`
+      : (r.toolkit_commit
+        ? `<span class="badge" title="toolkit ${esc(r.toolkit_commit)}">${esc(r.toolkit_commit)}</span>` : ""),
   ].join("");
   const dev = [caps.gpu || "no GPU", caps.cpu, caps.ram_gib ? caps.ram_gib + " GiB" : "",
                caps.driver ? "driver " + caps.driver : ""].filter(Boolean).join(" · ");
@@ -504,16 +510,28 @@ async function renderFleet() {
     peak: median(rs.map(peakTemp)),
   });
   const latest = (rs) => rs.slice().sort((a, b) => (b.started || 0) - (a.started || 0))[0];
-  $("#fleetCount").textContent = `${Object.keys(byHost).length} machines · ${done.length} finished runs`;
+  const tkState = (rs) => {
+    let seen = "";
+    for (const x of rs) {
+      const rr = STATE.runners.find((y) => y.id === x.runner_id);
+      if (rr && rr.update_available) return "update available";
+      if (rr && rr.toolkit_commit) seen = (rr.toolkit_mode === "git" ? "git " : "") + rr.toolkit_commit;
+    }
+    return seen || "—";
+  };
+  $("#fleetCount").textContent = `${Object.keys(byHost).length} machines · ${done.length} finished runs` +
+    (STATE.server_git ? ` · control plane ${STATE.server_git}` : "");
   $("#fleetHosts tbody").innerHTML = Object.entries(byHost).sort().map(([h, rs]) => {
-    const a = agg(rs), L = latest(rs);
+    const a = agg(rs), L = latest(rs), tk = tkState(rs);
+    const stale = tk === "update available";
     return `<tr data-detail="${esc(L.id)}">
       <td>${esc(h)}</td><td class="num">${rs.length}</td>
       <td class="muted">${ago(L.started)}</td>
       <td class="num">${fmt(a.gpu)}</td><td class="num">${fmt(a.cpu, 0)}</td>
       <td class="num">${fmt(a.ram)}</td><td class="num">${fmt(a.peak, 0)}</td>
+      <td class="${stale ? "delta down" : "muted"}">${esc(tk)}</td>
       <td><span class="pill ${esc(L.status)}">${esc(L.status)}</span></td></tr>`;
-  }).join("") || `<tr><td colspan="8" class="empty">No finished runs yet.</td></tr>`;
+  }).join("") || `<tr><td colspan="9" class="empty">No finished runs yet.</td></tr>`;
   $("#fleetGpus tbody").innerHTML = Object.entries(byGpu)
     .sort((x, y) => y[1].length - x[1].length).map(([g, rs]) => {
       const a = agg(rs);

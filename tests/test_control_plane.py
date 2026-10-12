@@ -241,6 +241,20 @@ def run():
     except Exception as e:
         c.check("sse opens", False, e)
 
+    # ---- toolkit version + staleness ----
+    st, h = cl.call("GET", "/health", token=None)
+    c.check("health exposes the control-plane commit", "git" in h, h)
+    st, stt = cl.call("GET", "/api/v1/state")
+    c.check("state exposes server_git", "server_git" in stt, list(stt)[:6])
+    st, reg3 = cl.call("POST", "/api/v1/register",
+                       {"name": "v1", "os": "Linux", "kind": "agent",
+                        "capabilities": {"toolkit": {"mode": "copy", "commit": "abc1234"}}})
+    row = [x for x in cl.call("GET", "/api/v1/runners")[1]["runners"]
+           if x["id"] == reg3["runner_id"]][0]
+    c.check("runner exposes its toolkit commit", row.get("toolkit_commit") == "abc1234", row)
+    c.check("staleness is a bool", isinstance(row.get("update_available"), bool), row.get("update_available"))
+    c.check("a different commit is flagged stale", row.get("update_available") is True, row)
+
     srv.stop()
     return c.fails
 
