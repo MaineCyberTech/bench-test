@@ -157,6 +157,7 @@ class Dashboard:
         # callback traceback to a None stderr, which loses the exception (and used
         # to kill the periodic loop / a pending command). Report it instead.
         self.root.report_callback_exception = self._tk_error
+        self._detect_curve()
         if tab:
             try:
                 self.nb.select(tab)
@@ -257,7 +258,8 @@ class Dashboard:
         head = ttk.Frame(r, padding=(14, 10, 14, 6))
         head.pack(fill="x")
         ttk.Label(head, text="bench-test", style="Head.TLabel").pack(side="left")
-        ttk.Label(head, text="  Linux workstation benchmark", style="Dim.TLabel").pack(side="left")
+        ttk.Label(head, text="  %s workstation benchmark" % ("Windows" if os.name == "nt" else "Linux"),
+                  style="Dim.TLabel").pack(side="left")
         self.hw = ttk.Label(head, text="detecting hardware...", style="Dim.TLabel")
         self.hw.pack(side="right")
 
@@ -824,6 +826,8 @@ class Dashboard:
                     self.hw.configure(text=item[1])
                 elif isinstance(item, tuple) and item[0] == "curve":
                     self.curve_btn.configure(text=item[1])
+                elif isinstance(item, tuple) and item[0] == "status":
+                    self._set_status(item[1], item[2])
                 else:
                     self._handle_line(str(item).rstrip("\n"))
         except queue.Empty:
@@ -1117,7 +1121,36 @@ class Dashboard:
                 shutil.copy2(path, folder)
         self._set_status("results copied to %s" % folder, GOOD)
 
+    def _detect_curve(self):
+        """Reflect the real fan-curve state in the button at startup.
+
+        On Windows the curve is a scheduled nvfancontrol task; on Linux it is the
+        resident fan_curve.py process.
+        """
+        def work():
+            state = "off"
+            try:
+                if os.name == "nt":
+                    r = subprocess.run(
+                        ["powershell", "-NoProfile", "-Command",
+                         "(Get-ScheduledTask -TaskName 'NVIDIA GPU Fan Curve' "
+                         "-ErrorAction SilentlyContinue).State"],
+                        capture_output=True, text=True, timeout=30,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                    state = "on" if any(s in (r.stdout or "") for s in ("Ready", "Running")) else "off"
+                else:
+                    r = subprocess.run(["pgrep", "-f", "fan_curve.py"], capture_output=True,
+                                       text=True, timeout=10)
+                    state = "on" if r.returncode == 0 else "off"
+            except Exception:
+                pass
+            self._curve_on = (state == "on")
+            self.q.put(("curve", "Fan curve: %s" % state))
+        threading.Thread(target=work, daemon=True).start()
+
     def toggle_curve(self):
+        if os.name == "nt":
+            return self._toggle_curve_windows()
         if not os.path.exists(FAN_CURVE):
             self._set_status("fan_curve.py not found", BAD)
             return
@@ -1131,10 +1164,47 @@ class Dashboard:
                 self._curve_on = ok and cmd == "set"
                 self.q.put(("curve", "Fan curve: %s" % ("on" if self._curve_on else "off")))
                 out = (r.stdout or r.stderr).strip().splitlines()
-                self._set_status(out[-1] if out else "fan curve %s (rc=%s)" % (cmd, r.returncode),
-                                 GOOD if ok else WARN)
+                self.q.put(("status", out[-1] if out else "fan curve %s (rc=%s)" % (cmd, r.returncode),
+                            GOOD if ok else WARN))
             except Exception as exc:
-                self._set_status("fan curve failed: %s" % exc, WARN)
+                self.q.put(("status", "fan curve failed: %s" % exc, WARN))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _toggle_curve_windows(self):
+        """Windows fan curve: install/remove the nvfancontrol scheduled task.
+
+        Installing needs elevation, so the script prompts for UAC itself; report
+        the real outcome rather than assuming it worked.
+        """
+        ps1 = os.path.join(BENCH, "Install-GpuFanCurve.ps1")
+        if not os.path.exists(ps1):
+            self._set_status("Install-GpuFanCurve.ps1 not found", BAD)
+            return
+        turning_off = self._curve_on
+        args = ["-Uninstall"] if turning_off else []
+
+        def work():
+            try:
+                r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                                    "-File", ps1] + args,
+                                   capture_output=True, text=True, timeout=300,
+                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                out = ((r.stdout or "") + (r.stderr or "")).strip()
+                ok = r.returncode == 0
+                self._curve_on = ok and not turning_off
+                self.q.put(("curve", "Fan curve: %s" % ("on" if self._curve_on else "off")))
+                denied = "denied" in out.lower() or "elevation" in out.lower() or "canceled" in out.lower()
+                if ok:
+                    msg = "fan curve %s" % ("removed" if turning_off else "installed (nvfancontrol task)")
+                elif denied:
+                    msg = "fan curve needs admin (UAC prompt declined)"
+                else:
+                    msg = "fan curve failed (rc=%s)" % r.returncode
+                self.q.put(("status", msg, GOOD if ok else WARN))
+                if self.pump:
+                    self.pump.push_log("[fan] %s" % (out.splitlines()[-1] if out else msg))
+            except Exception as exc:
+                self.q.put(("status", "fan curve failed: %s" % exc, WARN))
         threading.Thread(target=work, daemon=True).start()
 
     # -------------------------------------------------------------- demo ----

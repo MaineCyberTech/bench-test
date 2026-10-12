@@ -144,6 +144,58 @@ def _gpu_row():
     return None
 
 
+def _win_cpu_pct(prev):
+    """CPU % from GetSystemTimes deltas, so psutil isn't required."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        idle = ctypes.c_ulonglong()
+        kern = ctypes.c_ulonglong()
+        user = ctypes.c_ulonglong()
+        if not ctypes.windll.kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kern),
+                                                     ctypes.byref(user)):
+            return None
+        cur = (idle.value, kern.value, user.value)
+        old = prev.get("cpu_t")
+        prev["cpu_t"] = cur
+        if not old:
+            return None
+        di, dk, du = cur[0] - old[0], cur[1] - old[1], cur[2] - old[2]
+        total = dk + du                       # kernel time already includes idle
+        if total <= 0:
+            return None
+        return round(100.0 * (total - di) / total, 1)
+    except Exception:
+        return None
+
+
+def _win_mem():
+    """(used_gib, total_gib, swap_used_gib) via GlobalMemoryStatusEx."""
+    if os.name != "nt":
+        return None, None, None
+    try:
+        import ctypes
+
+        class MS(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong),
+                        ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong),
+                        ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+        st = MS()
+        st.dwLength = ctypes.sizeof(MS)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+            return None, None, None
+        return (round((st.ullTotalPhys - st.ullAvailPhys) / 1024 ** 3, 2),
+                round(st.ullTotalPhys / 1024 ** 3, 2),
+                round((st.ullTotalPageFile - st.ullAvailPageFile) / 1024 ** 3, 2))
+    except Exception:
+        return None, None, None
+
+
 def sampler(csv_path, stop_evt):
     try:
         import psutil
@@ -153,6 +205,9 @@ def sampler(csv_path, stop_evt):
         w = csv.writer(fh)
         w.writerow(COLUMNS)
         fh.flush()
+        if psutil is None:
+            print("[win] WARNING: python psutil is not installed - disk/net telemetry will be "
+                  "blank and CPU/RAM use the stdlib fallback (pip install psutil)", flush=True)
         t0 = time.time()
         prev = {}
         while not stop_evt.is_set():
@@ -208,7 +263,9 @@ def sampler(csv_path, stop_evt):
                 except Exception:
                     row += [None, None, None, None]
             else:
-                row += [None] * 9
+                used, total, swap = _win_mem()
+                row += [_win_cpu_pct(prev), used, total, swap, _CPU_TEMP["v"],
+                        None, None, None, None]
             row += extra
             w.writerow(row)
             fh.flush()
