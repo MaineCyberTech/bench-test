@@ -435,6 +435,17 @@ class Dashboard:
             self.log.delete("1.0", "100.0")
         self.log.see("end")
 
+    def _diag(self, line):
+        """Our own diagnostics: show locally *and* stream to the control plane,
+        so a broken UI thread or a failed registration is visible in the run's
+        console instead of only on screen."""
+        self._log(line)
+        try:
+            if self.pump:
+                self.pump.push_log(line)
+        except Exception:
+            pass
+
     def _set_status(self, text, color=MUTED):
         self.status.configure(text=text)
         self.status_dot.configure(fg=color)
@@ -494,9 +505,15 @@ class Dashboard:
             while self.rep and not self.rep.register(caps):
                 time.sleep(5)
             if self.rep and self.rep.runner_id:
-                self.pump = ReporterPump(self.rep, on_command=self._remote_command, log=self._log)
-                self.pump.start()
-                self._log("[report] connected to %s" % self.server)
+                try:
+                    self.pump = ReporterPump(self.rep, on_command=self._remote_command,
+                                             log=self._log)
+                    self.pump.start()
+                except Exception as exc:
+                    self._diag("[report] pump failed: %r" % exc)
+                    return
+                self._diag("[report] connected to %s" % self.server)
+                self._diag("[gui] hw: %s" % self.hw)
         threading.Thread(target=work, daemon=True).start()
 
     def _remote_command(self, cmd):
@@ -743,6 +760,16 @@ class Dashboard:
         self.root.after(200, self._poll)
 
     def _tick(self):
+        try:
+            self._tick_once()
+        except Exception as exc:            # never let one bad tick stop the loop
+            import traceback
+            self._diag("[gui] tick error: %r" % exc)
+            self._diag(traceback.format_exc().strip().splitlines()[-1])
+        finally:
+            self.root.after(1000, self._tick)
+
+    def _tick_once(self):
         now = time.time()
         running = 0
         total = len(self.starts)
