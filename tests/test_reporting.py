@@ -255,6 +255,15 @@ def run():
         c.check("%s uploads the telemetry CSV at the end of a run" % f,
                 "upload_telemetry_csv(" in src, f)
 
+    # ---- the net phase must not record a 403 as a 0 Mbps measurement ----
+    netps = open(os.path.join(BENCH, "Invoke-NetBench.ps1"), encoding="utf-8").read()
+    c.check("net phase checks the HTTP status before trusting the speed",
+            "http_code" in netps and "download_error" in netps, "")
+    c.check("net phase steps down the download size",
+            "@($DownMB, 50, 25, 10)" in netps, "")
+    c.check("the Python net phase chunks its download",
+            "chunk_mb" in open(os.path.join(BENCH, "net_bench.py"), encoding="utf-8").read(), "")
+
     srv.stop()
     return c.fails
 

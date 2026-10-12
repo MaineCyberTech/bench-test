@@ -28,13 +28,27 @@ $latGw = if ($gw) { Ping-Avg $gw 8 } else { $null }
 $latRef = Ping-Avg $PingTarget $PingCount
 Write-Host "[net] gateway=$gw ping=$latGw ms ; $PingTarget ping=$latRef ms"
 
-# download (curl prints bytes/sec)
-$durl = "https://speed.cloudflare.com/__down?bytes=$($DownMB * 1024 * 1024)"
-$dout = & curl.exe -s -o NUL -w '%{speed_download} %{time_total}' --max-time 120 $durl 2>$null
-$dparts = ($dout -split '\s+')
-$downBps = if ($dparts[0] -match '^[0-9\.]+$') { [double]$dparts[0] } else { 0 }
+# download (curl prints bytes/sec). Cloudflare answers 403 for large byte counts
+# (100MB), and a 403 body is a single byte - which was being recorded as a real
+# "0 Mbps" measurement. Check the status and step down instead.
+$downBps = 0; $downSecs = ''; $downErr = ''
+foreach ($mb in @($DownMB, 50, 25, 10)) {
+    if ($mb -le 0) { continue }
+    $durl = "https://speed.cloudflare.com/__down?bytes=$($mb * 1024 * 1024)"
+    $dout = & curl.exe -s -o NUL -w '%{speed_download} %{time_total} %{http_code}' --max-time 120 $durl 2>$null
+    $dparts = ($dout -split '\s+')
+    $bps = if ($dparts[0] -match '^[0-9\.]+$') { [double]$dparts[0] } else { 0 }
+    if ($dparts[2] -eq '200' -and $bps -gt 0) {
+        $downBps = $bps; $downSecs = $dparts[1]; $downErr = ''; break
+    }
+    $downErr = "HTTP $($dparts[2]) for ${mb}MB"
+}
 $downMbps = [math]::Round($downBps * 8 / 1e6, 1)
-Write-Host ("[net] download {0} Mbps ({1} MB/s) in {2}s" -f $downMbps, [math]::Round($downBps / 1e6, 1), $dparts[1])
+if ($downErr) {
+    Write-Host "[net] download FAILED: $downErr"
+} else {
+    Write-Host ("[net] download {0} Mbps ({1} MB/s) in {2}s" -f $downMbps, [math]::Round($downBps / 1e6, 1), $downSecs)
+}
 
 # upload
 $tmp = Join-Path $env:TEMP "bench_up_$stamp.bin"
@@ -52,6 +66,7 @@ $report = [ordered]@{
     host = $env:COMPUTERNAME; timestamp = (Get-Date).ToString('o')
     gateway = $gw; ping_gateway_ms = $latGw; ping_target = $PingTarget; ping_target_ms = $latRef
     download_mbps = $downMbps; download_mbs = [math]::Round($downBps / 1e6, 1)
+    download_error = $downErr
     upload_mbps = $upMbps; upload_mbs = [math]::Round($upBps / 1e6, 1)
 }
 $report | ConvertTo-Json -Depth 5 | Set-Content "$base.json" -Encoding UTF8
