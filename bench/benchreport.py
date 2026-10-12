@@ -574,6 +574,14 @@ class Reporter:
                   {"status": status, "result": result or {}})
 
 
+# a line that means the phase did not actually produce its result - a phase that
+# dies must not be reported as 'done' (that is how a dead GPU phase stayed
+# invisible: 'ModuleNotFoundError: No module named torch' inside a 'done' phase)
+FATAL_MARKERS = ("Traceback (most recent call last):", "ModuleNotFoundError:",
+                 "ImportError:", "SyntaxError:", "CUDA out of memory",
+                 "no CUDA-capable device", '"ok": false', '"ok":false')
+
+
 class PhaseTracker:
     """Turns '[group] label' runner lines into open/close phase events.
 
@@ -585,8 +593,14 @@ class PhaseTracker:
         self.reporter = reporter
         self.seq = 0
         self.open = []  # list of {seq, group, label}
+        self.failed = False
+
+    def _fatal(self, line):
+        return any(m in line for m in FATAL_MARKERS)
 
     def feed(self, line):
+        if self._fatal(line):
+            self.failed = True
         if not (line.startswith("[") and "]" in line):
             return None
         head = line[1:line.index("]")]
@@ -606,10 +620,12 @@ class PhaseTracker:
         return ("open", head, rest)
 
     def _close_all(self):
+        status = "failed" if self.failed else "done"
         for ph in self.open:
             if self.reporter:
-                self.reporter.phase(ph["seq"], ph["group"], ph["label"], "done", t1=time.time())
+                self.reporter.phase(ph["seq"], ph["group"], ph["label"], status, t1=time.time())
         self.open = []
+        self.failed = False
 
     def close(self):
         self._close_all()

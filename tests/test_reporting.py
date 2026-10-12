@@ -29,6 +29,23 @@ def run():
     c.check("prior phases closed on group change",
             st.get("sys") == "done" and st.get("gpu") == "done" and st.get("cpu") == "running", st)
 
+    # ---- a phase that crashed must not be reported as done ----
+    rep2 = Reporter(srv.base, srv.token, name="unit-crash", kind="agent")
+    rep2.register({"os": "test"})
+    rep2.start_run("crashy", {"gpu": 5})
+    tr2 = PhaseTracker(rep2)
+    for ln in ["[gpu] matmul", "Traceback (most recent call last):",
+               '  File "/opt/bench-test/bench/gpu_bench.py", line 19, in <module>',
+               "ModuleNotFoundError: No module named 'torch'", "[cpu] soak"]:
+        tr2.feed(ln)
+    tr2.close()
+    _, detail2 = cl.call("GET", "/api/v1/runs/" + rep2.run_id)
+    st2 = {p["grp"]: p["status"] for p in detail2["phases"]}
+    c.check("a phase with a traceback is reported failed", st2.get("gpu") == "failed", st2)
+    c.check("the phase after a crash still reports done", st2.get("cpu") == "done", st2)
+    # leave the run list as the later checks expect it
+    cl.call("DELETE", "/api/v1/runs/" + rep2.run_id)
+
     # ---- ReporterPump: telemetry + logs + commands ----
     got = []
     pump = ReporterPump(rep, on_command=lambda cmd: (got.append(cmd["kind"]),
