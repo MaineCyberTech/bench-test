@@ -890,6 +890,17 @@ def update_toolkit(ref="main", sha256=None, log=None):
             "restart_required": bool(switched)}
 
 
+def restart_self(delay=1.5, log=None):
+    """Re-exec this runner so it picks up a freshly switched toolkit (live USB)."""
+    log = log or (lambda _m: None)
+    time.sleep(max(0.0, delay))
+    log("[update] restarting to run the new toolkit")
+    try:
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    except Exception as e:
+        log("[update] restart failed: %s" % e)
+
+
 def self_update(repo=None, log=None):
     """Update a git checkout with `git pull`, or a live install with the toolkit copy."""
     repo = repo or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

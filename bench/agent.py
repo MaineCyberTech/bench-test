@@ -45,7 +45,7 @@ from benchreport import (Reporter, PhaseTracker, TelemetryTail,  # noqa: E402
                          build_summary, build_summary_dir, telemetry_summary, read_runs_index,
                          load_identity, run_exec, system_info, read_inventory, load_conf,
                          power_action, supported_groups,
-                         update_toolkit, iso_fetch, iso_write, self_update)
+                         update_toolkit, iso_fetch, iso_write, self_update, restart_self)
 
 DEFAULT_GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc",
                   "llm", "fan", "sys", "gfx"]
@@ -293,6 +293,8 @@ class Agent:
         except Exception as e:
             res = {"error": "%s: %s" % (type(e).__name__, e)}
         self.rep.ack(cid, "done" if res.get("ok") else "failed", res)
+        if res.get("switched"):
+            threading.Thread(target=restart_self, args=(1.5, self.log), daemon=True).start()
 
     def _exec_and_ack(self, cid, payload):
         cmd = payload.get("cmd") or ""

@@ -42,7 +42,7 @@ try:
                              telemetry_summary, newest_report, load_identity, run_exec, system_info,
                              read_inventory, load_conf, CSV_ALIASES, power_action,
                              supported_groups,
-                             update_toolkit, iso_fetch, iso_write, self_update)
+                             update_toolkit, iso_fetch, iso_write, self_update, restart_self)
 except Exception:  # reporting is optional
     Reporter = None
 
@@ -526,6 +526,8 @@ class Dashboard:
             except Exception as e:
                 res = {"error": "%s: %s" % (type(e).__name__, e)}
             self.rep.ack(cid, "done" if res.get("ok") else "failed", res)
+            if res.get("switched"):
+                restart_self(1.5, self._log)
         threading.Thread(target=work, daemon=True).start()
 
     def _exec_remote(self, cid, payload):
