@@ -130,7 +130,7 @@ UI-facing:
 | GET | `/metrics` | the metric catalogue (key → label) |
 | GET/POST/DELETE | `/schedules` · `/schedules/<id>` | list / create / remove recurring runs (operator only) |
 | DELETE | `/runs/<id>` · `/runners/<id>` | delete a run (+data) / a runner (+its commands & schedules) |
-| POST | `/runners/<id>/commands` | issue `start`/`stop`/`update`/`fan_curve`/`power_limit`/`restart`/`shutdown`/`reboot`/`exec`/`shell` (operator only) |
+| POST | `/runners/<id>/commands` | issue `start`/`stop`/`update`/`fan_curve`/`power_limit`/`restart`/`shutdown`/`reboot`/`exec`/`shell`/`update_toolkit`/`iso_fetch`/`iso_write`/`iso_write_slot` (operator only) |
 
 Runner-scoped routes (`/register`, heartbeat, `/runners/<id>/commands`, command
 `ack`, and run writes) require a **per-runner API key** and are scoped to the
@@ -160,6 +160,8 @@ gpu_fan_rpm, cpu_util, ram_used, sm_mhz, mem_used`.
 { "kind": "iso_fetch", "payload": { "tag": "iso-nvidia-legacy-38", "gpu": "nvidia-legacy" } }
 { "kind": "iso_write", "payload": { "iso": "/mnt/benchdata/iso/bench-live-*.iso",
                                     "device": "/dev/sdX", "confirm": true } }  // destructive
+{ "kind": "iso_write_slot", "payload": { "iso": "/var/tmp/bench-iso-stage/iso/bench-live-*.iso",
+                                         "confirm": true } }  // A/B: inactive slot + boot flag
 { "kind": "exec", "payload": { "cmd": "nvidia-smi -q | head", "timeout": 30 } }  // remote terminal
 ```
 
@@ -240,7 +242,13 @@ pct exec 108 -- systemctl mask tmp.mount run-lock.mount dev-mqueue.mount
   `--self-test` runners are flagged *ephemeral* and dropped once they stop
   heartbeating.
 - `update` runs `git pull --ff-only` on the runner and reports the new commit;
-  `restart` re-execs the agent so a fresh checkout takes effect.
+  `restart` re-execs the agent so a fresh checkout takes effect. The GUI, TUI and
+  agent repeat that check **at startup** and restart into the new code when they
+  pulled something (a dirty tree or `BENCH_NO_UPDATE=1` skips it).
+- A long job is never mistaken for a dropped one: the stale-command reaper gives
+  `iso_fetch` a 3 h budget, `iso_write`/`iso_write_slot` an hour,
+  `update_toolkit` 15 min and `exec` its own payload timeout, against 120 s for
+  start/stop and friends.
 - SQLite uses WAL; the DB grows ~1 row/second per active run (fine for a lab).
 
 ## Tests

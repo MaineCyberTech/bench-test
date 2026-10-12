@@ -47,7 +47,8 @@ from benchreport import (Reporter, PhaseTracker, TelemetryTail,  # noqa: E402
                          power_action, supported_groups,
                          update_toolkit, iso_fetch, iso_write, iso_write_slot,
                          self_update, restart_self,
-                         toolkit_version, is_live, update_needs_restart)
+                         toolkit_version, is_live, update_needs_restart,
+                         auto_update)
 
 DEFAULT_GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc",
                   "llm", "fan", "sys", "gfx"]
@@ -397,6 +398,11 @@ def main():
         return 2
     if a.self_test:
         return self_test(a)
+    # keep the runner current: pull if the checkout is behind, then restart into it
+    _up = auto_update(REPO, log=lambda m: print("[agent] " + m, flush=True))
+    if _up.get("updated"):
+        print("[agent] restarting into the newer checkout", flush=True)
+        restart_self(0.5, lambda m: print("[agent] " + m, flush=True))
     if a.once:
         extra = [x for x in a.extra if x != "--"]
         ag = Agent(a)

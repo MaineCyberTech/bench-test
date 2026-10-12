@@ -9,12 +9,21 @@ import io
 import json
 import os
 import socketserver
+import subprocess
 import sys
 import tarfile
 import threading
 
 from harness import Checker, tmpdir, BENCH
 import benchreport as br
+
+
+def _git(where, *args, check=True):
+    r = subprocess.run(["git", "-C", where] + list(args), capture_output=True, text=True,
+                       timeout=120)
+    if check and r.returncode != 0:
+        raise AssertionError("git %s failed: %s" % (" ".join(args), r.stderr.strip()))
+    return r
 
 
 def _tarball(files):
@@ -168,6 +177,67 @@ def run():
             br.update_needs_restart({"ok": True, "switched": False}) is False, "")
     c.check("failed update does not restart",
             br.update_needs_restart({"error": "x"}) is False, "")
+
+    # ---- auto_update: the startup check (no network needed) ----
+    saved_offline = os.environ.pop("BENCH_OFFLINE", None)
+    try:
+        c.check("auto_update can be turned off",
+                br.auto_update(BENCH, enabled=False)["updated"] is False, "")
+        c.check("auto_update ignores a non-git dir",
+                br.auto_update(sand)["kind"] == "none", br.auto_update(sand))
+
+        repo2 = tmpdir()
+        _git(repo2, "init", "-q")
+        _git(repo2, "config", "user.email", "t@t")
+        _git(repo2, "config", "user.name", "t")
+        open(os.path.join(repo2, "f.txt"), "w").write("x")
+        _git(repo2, "add", "-A")
+        _git(repo2, "commit", "-q", "-m", "init")
+        open(os.path.join(repo2, "f.txt"), "w").write("dirty")
+        c.check("auto_update refuses to touch a dirty checkout",
+                br.auto_update(repo2).get("skipped") == "dirty", br.auto_update(repo2))
+
+        os.environ["BENCH_NO_UPDATE"] = "1"
+        c.check("BENCH_NO_UPDATE=1 disables it", br.auto_update(repo2)["updated"] is False, "")
+        os.environ.pop("BENCH_NO_UPDATE")
+
+        # a clean checkout behind its upstream gets fast-forwarded
+        bare = os.path.join(sand, "origin.git")
+        _git(sand, "init", "-q", "--bare", "-b", "main", bare)
+        work, behind = os.path.join(sand, "work"), os.path.join(sand, "behind")
+        _git(sand, "clone", "-q", bare, work)
+        _git(work, "config", "user.email", "t@t")
+        _git(work, "config", "user.name", "t")
+        open(os.path.join(work, "a.txt"), "w").write("a")
+        _git(work, "add", "-A")
+        _git(work, "commit", "-q", "-m", "a")
+        _git(work, "push", "-q", "-u", "origin", "main")
+        _git(sand, "clone", "-q", bare, behind)          # now at commit a
+        open(os.path.join(work, "b.txt"), "w").write("b")
+        _git(work, "add", "-A")
+        _git(work, "commit", "-q", "-m", "b")
+        _git(work, "push", "-q", "origin", "main")
+
+        res = br.auto_update(behind, log=lambda _m: None)
+        c.check("auto_update pulls when behind", res.get("updated") is True, res)
+        c.check("auto_update reports how far behind", res.get("behind") == 1, res)
+        c.check("auto_update actually fast-forwarded the checkout",
+                os.path.isfile(os.path.join(behind, "b.txt")), res.get("out"))
+        c.check("auto_update is a no-op when current",
+                br.auto_update(behind)["updated"] is False, br.auto_update(behind))
+
+        os.environ["BENCH_OFFLINE"] = "1"
+        c.check("auto_update skips when offline",
+                br.auto_update(behind).get("skipped") == "offline", "")
+        os.environ.pop("BENCH_OFFLINE")
+    finally:
+        if saved_offline is not None:
+            os.environ["BENCH_OFFLINE"] = saved_offline
+
+    # ---- the dashboards/agent check for updates at startup ----
+    for f in ("gui.py", "tui.py", "agent.py"):
+        src = open(os.path.join(BENCH, f), encoding="utf-8").read()
+        c.check("auto-update wired into %s" % f, "auto_update(" in src, f)
 
     # ---- iso write guards (never actually writes) ----
     c.check("iso_write needs confirm", "confirm" in str(br.iso_write(r2["iso"], "/dev/null").get("error")), "")

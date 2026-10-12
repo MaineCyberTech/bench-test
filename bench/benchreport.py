@@ -1052,6 +1052,47 @@ def update_needs_restart(res):
     return bool(res.get("switched"))
 
 
+def auto_update(repo=None, log=None, enabled=None):
+    """Pull the checkout if it is behind upstream — intended to run at startup.
+
+    Refuses when: not a git checkout (e.g. the live USB, which updates via the
+    toolkit copy + boot link), BENCH_NO_UPDATE=1, BENCH_OFFLINE=1, the tree is
+    dirty (local edits win), or git fails. Returns a dict describing the outcome.
+    """
+    log = log or (lambda _m: None)
+    repo = repo or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if enabled is None:
+        enabled = os.environ.get("BENCH_NO_UPDATE") != "1"
+    if not enabled or not os.path.isdir(os.path.join(repo, ".git")):
+        return {"kind": "none", "ok": True, "updated": False}
+    if os.environ.get("BENCH_OFFLINE") == "1":
+        return {"kind": "git", "ok": True, "updated": False, "skipped": "offline"}
+
+    def git(*args, timeout=60):
+        return subprocess.run(["git", "-C", repo] + list(args), capture_output=True,
+                              text=True, timeout=timeout)
+
+    try:
+        dirty = git("status", "--porcelain").stdout.strip()
+        if dirty:
+            log("[update] local changes present - skipping auto-update")
+            return {"kind": "git", "ok": True, "updated": False, "skipped": "dirty"}
+        git("fetch", "--quiet", timeout=180)
+        behind = git("rev-list", "--count", "HEAD..@{u}").stdout.strip()
+        if not behind.isdigit() or behind == "0":
+            return {"kind": "git", "ok": True, "updated": False, "behind": 0}
+        log("[update] %s commit(s) behind upstream - pulling" % behind)
+        r = git("pull", "--ff-only", timeout=180)
+        out = ((r.stdout or "") + (r.stderr or "")).strip()
+        updated = r.returncode == 0 and "Already up to date" not in out
+        log("[update] pull rc=%s updated=%s" % (r.returncode, updated))
+        return {"kind": "git", "ok": r.returncode == 0, "updated": updated,
+                "behind": int(behind), "out": out[-400:]}
+    except Exception as e:
+        log("[update] auto-update failed: %s" % e)
+        return {"kind": "git", "ok": False, "updated": False, "error": str(e)}
+
+
 def restart_self(delay=1.5, log=None):
     """Re-exec this runner so it picks up a freshly switched toolkit (live USB).
 

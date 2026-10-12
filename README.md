@@ -201,6 +201,7 @@ from the fleet card's **update…** dialog, or as commands:
 | `update_toolkit` | `{ref, sha256?}` | fetch the toolkit at `ref` (branch/tag/sha), verify, extract onto BENCHDATA and re-point `/opt/bench-test`; re-pointed again at boot |
 | `iso_fetch` | `{tag, gpu?}` | download a release's ISO parts, reassemble and check `SHA256SUMS` |
 | `iso_write` | `{iso, device, confirm:true}` | write a staged ISO to **another** block device (refuses anything backing `/`, `/opt` or BENCHDATA) |
+| `iso_write_slot` | `{iso, confirm:true}` | **A/B reflash**: write the staged ISO to the *inactive* slot and flip the boot flag; the active slot and BENCHDATA are untouched, and grub auto-reverts after three unconfirmed boots |
 
 `update` on a live runner now runs the toolkit update automatically (a git
 checkout still does `git pull`). The same operations are available locally:
@@ -208,12 +209,25 @@ checkout still does `git pull`). The same operations are available locally:
 python bench/live_update.py toolkit --ref main      # self-update + switch
 python bench/live_update.py iso-list iso-nvidia-legacy-38
 python bench/live_update.py iso-fetch iso-nvidia-legacy-38
+python bench/live_update.py iso-write-slot <iso> --yes
 python bench/live_update.py iso-write <iso> --device /dev/sdX --yes
 ```
 
-Kernel/driver/package changes still need a new image: fetch it remotely, then
-write it to a *different* stick (or reflash in person) — a stick cannot safely
-overwrite the partition it is booted from.
+Kernel/driver/package changes need a new image. On an **A/B stick** the runner can
+take that itself, with no hands on it: `iso_fetch` stages the ISO in RAM, then
+`iso_write_slot` writes it to the *inactive* slot and flips the boot flag, and the
+next `reboot` boots it — if that image fails to boot three times, grub falls back
+to the slot that last worked. A single-slot stick still has to be written from
+another device or reflashed in person (a running system cannot safely overwrite
+the partition it is booted from).
+
+### Updating at start
+
+The GUI, TUI and agent **check their own checkout when they start** and
+fast-forward it when it is behind (`git pull --ff-only`), then restart into the new
+code. The check is skipped when the tree has local changes (your edits win), when
+it is not a git checkout (a live stick updates through `update_toolkit` and the
+boot link instead), and when offline. Set `BENCH_NO_UPDATE=1` to opt out.
 
 To auto-connect, put this on the BENCHDATA partition (or bake it via the
 `BENCH_AGENT_CONF` secret / `live/private/bench-agent.conf`):

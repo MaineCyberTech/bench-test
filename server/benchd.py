@@ -1219,12 +1219,38 @@ def reap_ephemeral_runners(store, bus):
             bus.publish({"event": "runner", "data": {"id": r["id"], "deleted": True}})
 
 
+# how long a runner may hold a command before it counts as dropped. Downloads
+# and raw disk writes legitimately take minutes, so they get a real budget
+# instead of the two-minute default meant for start/stop.
+ACK_TIMEOUT_S = 120
+SLOW_ACK_TIMEOUT_S = {
+    "iso_fetch": 3 * 3600,      # multi-GB download + SHA256
+    "iso_write": 3600,          # raw device write
+    "iso_write_slot": 3600,     # raw slot write + grub flip
+    "update_toolkit": 900,      # tarball fetch + switch
+    "update": 900,
+    "exec": 300,
+    "shell": 300,
+}
+
+
+def ack_timeout(kind, payload=None):
+    """Seconds a command of this kind may stay 'sent' before it is reaped."""
+    limit = SLOW_ACK_TIMEOUT_S.get(kind, ACK_TIMEOUT_S)
+    if kind in ("exec", "shell"):
+        try:
+            limit = max(limit, int(json.loads(payload or "{}").get("timeout") or 0) + 60)
+        except Exception:
+            pass
+    return limit
+
+
 def reap_stale_commands(store, bus):
     """Fail commands a runner fetched but never acked (its process died, or the
     UI thread dropped it) so they don't sit invisible in 'sent' forever."""
     t = now()
-    for c in store.q("SELECT id, runner_id, kind, sent FROM commands WHERE status='sent'"):
-        if c["sent"] and (t - c["sent"]) > 120:
+    for c in store.q("SELECT id, runner_id, kind, sent, payload FROM commands WHERE status='sent'"):
+        if c["sent"] and (t - c["sent"]) > ack_timeout(c["kind"], c["payload"]):
             store.ex("UPDATE commands SET status='failed', result=? WHERE id=?",
                      (json.dumps({"error": "no ack from the runner (dropped?)"}), c["id"]))
             bus.publish({"event": "command", "data": {"id": c["id"], "runner_id": c["runner_id"],

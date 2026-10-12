@@ -239,6 +239,31 @@ def run():
     c.check("reaper leaves a just-sent command",
             st.one("SELECT status FROM commands WHERE id='fresh-c'")["status"] == "sent", "")
 
+    # a long download must not be called dropped while it is still working
+    st.ex("INSERT INTO commands(id,runner_id,kind,payload,status,created,sent) "
+          "VALUES(?,?,?,?,?,?,?)",
+          ("iso-c", rid, "iso_fetch", '{"tag": "x"}', "sent", time.time() - 400,
+           time.time() - 400))
+    st.ex("INSERT INTO commands(id,runner_id,kind,payload,status,created,sent) "
+          "VALUES(?,?,?,?,?,?,?)",
+          ("exec-c", rid, "exec", '{"cmd": "sleep 1", "timeout": 600}', "sent",
+           time.time() - 500, time.time() - 500))
+    st.ex("INSERT INTO commands(id,runner_id,kind,payload,status,created,sent) "
+          "VALUES(?,?,?,?,?,?,?)",
+          ("exec-d", rid, "exec", '{"cmd": "sleep 1", "timeout": 60}', "sent",
+           time.time() - 500, time.time() - 500))
+    B.reap_stale_commands(st, B.Handler.bus)
+    c.check("reaper spares an in-progress ISO fetch",
+            st.one("SELECT status FROM commands WHERE id='iso-c'")["status"] == "sent", "")
+    c.check("reaper spares an exec inside its payload timeout",
+            st.one("SELECT status FROM commands WHERE id='exec-c'")["status"] == "sent", "")
+    c.check("reaper still drops an exec past its payload timeout",
+            st.one("SELECT status FROM commands WHERE id='exec-d'")["status"] == "failed", "")
+    c.check("ack_timeout scales with the kind and its payload timeout",
+            B.ack_timeout("start") == 120
+            and B.ack_timeout("iso_fetch") > 3600
+            and B.ack_timeout("exec", '{"timeout": 600}') == 660, "")
+
     # ---- delete ----
     st, _ = cl.call("DELETE", "/api/v1/runs/" + run_id)
     c.check("delete run", cl.call("GET", "/api/v1/runs/%s" % run_id)[0] == 404, "")

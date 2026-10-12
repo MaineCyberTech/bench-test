@@ -45,7 +45,7 @@ try:
                              update_toolkit, iso_fetch, iso_write, iso_write_slot,
                              self_update, restart_self,
                              toolkit_version, is_live, update_needs_restart, hardware_line,
-                             DASH_FIELDS)
+                             DASH_FIELDS, auto_update)
 except Exception:  # reporting is optional
     Reporter = None
 
@@ -158,6 +158,7 @@ class Dashboard:
         # to kill the periodic loop / a pending command). Report it instead.
         self.root.report_callback_exception = self._tk_error
         self._detect_curve()
+        self._auto_update()
         if tab:
             try:
                 self.nb.select(tab)
@@ -1120,6 +1121,23 @@ class Dashboard:
             else:
                 shutil.copy2(path, folder)
         self._set_status("results copied to %s" % folder, GOOD)
+
+    def _auto_update(self):
+        """Check for a newer checkout at startup and restart into it if pulled."""
+        def work():
+            def report(msg):
+                try:
+                    self.root.after(0, lambda: self._diag(msg))
+                except Exception:
+                    pass
+            res = auto_update(REPO, log=report)
+            if res.get("updated"):
+                report("[update] restarting into the newer checkout")
+                try:
+                    self.root.after(0, self._restart_runner)
+                except Exception:
+                    pass
+        threading.Thread(target=work, daemon=True).start()
 
     def _detect_curve(self):
         """Reflect the real fan-curve state in the button at startup.

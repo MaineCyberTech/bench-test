@@ -53,7 +53,7 @@ try:
                              update_toolkit, iso_fetch, iso_write, iso_write_slot,
                              self_update, restart_self,
                              toolkit_version, is_live, update_needs_restart, hardware_line,
-                             DASH_FIELDS)
+                             DASH_FIELDS, auto_update)
 except Exception:  # reporting is optional
     Reporter = None
 
@@ -147,6 +147,16 @@ class BenchTUI:
         self._apply_preset(1)
         self._demo_seed()
         self._setup_reporting()
+        self._auto_update()
+
+    def _auto_update(self):
+        """Check for a newer checkout at startup; restart into it if pulled."""
+        def work():
+            res = auto_update(REPO, log=lambda m: self.log.append(m))
+            if res.get("updated"):
+                self.log.append("[update] restarting into the newer checkout")
+                restart_self(1.0, lambda m: self.log.append(m))
+        threading.Thread(target=work, daemon=True).start()
 
     # ---------------------------------------------------------- reporting ---
     def _setup_reporting(self):
