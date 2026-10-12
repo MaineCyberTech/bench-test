@@ -810,14 +810,16 @@ function runnerUpdate(runnerId) {
       ${live ? "· live USB" : "· checkout"}</p>
     <div class="sechead">Toolkit — scripts, phases, dashboards</div>
     ${live ? `<p class="muted">Fetch onto the stick (BENCHDATA); it switches now and again at boot.</p>` :
-      `<p class="muted">This runner runs a <b>git checkout</b>, so the toolkit fetch does not apply —
-        use <b>Update</b> on its card (git pull + restart)${r.update_available ? "" : " (already current)"}.</p>`}
+      `<p class="muted">This runner runs a <b>git checkout</b>: use <b>update (git pull)</b>, then
+        <b>restart</b> if the badge persists — a process started before an update keeps running the
+        old code until it is restarted (a build from recent main restarts itself).</p>`}
     <div class="formrow"><label>ref</label>
       <input id="uRef" value="main" style="width:190px" placeholder="main | tag | sha" ${live ? "" : "disabled"}>
       <input id="uSha" placeholder="(optional) expected tarball sha256" style="flex:1" ${live ? "" : "disabled"}></div>
     <div class="formrow" style="justify-content:flex-end">
       <button class="accent" id="uGo" ${live ? "" : "disabled"}>update toolkit</button>
-      <button id="uGit">update (git pull) + restart</button></div>
+      <button id="uGit">update (git pull) + restart</button>
+      <button id="uRestart" title="re-exec the runner so it loads the code on disk">restart runner</button></div>
     <div class="sechead">ISO — kernel, drivers, packages</div>
     <div class="formrow"><label>release</label>
       <input id="uTag" placeholder="iso-nvidia-legacy-50" style="width:190px">
@@ -842,6 +844,7 @@ function runnerUpdate(runnerId) {
   $("#uGo").onclick = () => send("update_toolkit", {
     ref: $("#uRef").value.trim() || "main", sha256: $("#uSha").value.trim() || null });
   $("#uGit").onclick = () => send("update", {});
+  $("#uRestart").onclick = () => send("restart", {});
   $("#uFetch").onclick = () => send("iso_fetch", {
     tag: $("#uTag").value.trim(), gpu: $("#uGpu").value });
   const needIso = () => {

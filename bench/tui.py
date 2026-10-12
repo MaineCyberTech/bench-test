@@ -193,6 +193,9 @@ class BenchTUI:
             self.rep.ack(cmd.get("id"), "done", power_action(reboot=(kind == "reboot")))
         elif kind in ("update", "update_toolkit", "iso_fetch", "iso_write", "iso_write_slot"):
             self._update_remote(cmd.get("id"), kind, payload)
+        elif kind == "restart":
+            self.rep.ack(cmd.get("id"), "done", {"restart": "scheduled"})
+            threading.Thread(target=restart_self, args=(0.5,), daemon=True).start()
         elif kind in ("exec", "shell"):
             self._exec_remote(cmd.get("id"), payload)
         else:
