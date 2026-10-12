@@ -122,8 +122,8 @@ function onLog(d) {
   const buf = LOGS[d.run_id] || (LOGS[d.run_id] = []);
   for (const l of (d.lines || [])) buf.push(l);
   if (buf.length > 2000) buf.splice(0, buf.length - 2000);
-  const pre = document.querySelector(`[data-active="${d.run_id}"] .console`);
-  if (pre) { pre.textContent = buf.slice(-300).join("\n"); pre.scrollTop = pre.scrollHeight; }
+  const card = document.querySelector(`[data-active="${d.run_id}"]`);
+  if (card) paintConsole(card, d.run_id);
 }
 function setConn(on) {
   $("#connDot").className = "dot " + (on ? "on" : "off");
@@ -141,13 +141,17 @@ function _scrollState() {
   return { y: window.scrollY, consoles, table: tc ? tc.scrollTop : 0 };
 }
 function _restoreScroll(st) {
-  window.scrollTo(0, st.y);
-  document.querySelectorAll("[data-active]").forEach((el) => {
-    const pre = el.querySelector(".console");
-    if (pre && st.consoles[el.dataset.active] != null) pre.scrollTop = st.consoles[el.dataset.active];
-  });
-  const tc = document.querySelector(".tablecard");
-  if (tc) tc.scrollTop = st.table;
+  const apply = () => {
+    window.scrollTo(0, st.y);
+    document.querySelectorAll("[data-active]").forEach((el) => {
+      const pre = el.querySelector(".console");
+      if (pre && st.consoles[el.dataset.active] != null) pre.scrollTop = st.consoles[el.dataset.active];
+    });
+    const tc = document.querySelector(".tablecard");
+    if (tc) tc.scrollTop = st.table;
+  };
+  apply();
+  requestAnimationFrame(apply);  // again after the browser re-lays out
 }
 let _refreshTimer = null;
 function queueRefresh(delay) {
@@ -238,32 +242,27 @@ function renderRunners() {
   }).join("");
 }
 
-function renderActive() {
-  const el = $("#activeRuns");
-  if (!STATE.active.length) { el.innerHTML = `<div class="card muted">No runs in progress.</div>`; return; }
-  el.innerHTML = STATE.active.map((a) => {
-    const elapsed = a.started ? Date.now() / 1000 - a.started : 0;
-    const last = a.latest || {};
-    const preset = CHART[a.id] || Object.keys(CHART_PRESETS)[0];
-    const logLines = (LOGS[a.id] || []).slice(-300).join("\n");
-    return `<div class="runbox" data-active="${a.id}">
+function runCardHTML(a) {
+  const preset = CHART[a.id] || Object.keys(CHART_PRESETS)[0];
+  return `<div class="runbox" data-active="${a.id}">
       <div class="rh">
         <span class="statusp busy"></span>
         <div class="h">${esc(a.host)} · ${esc(a.label || "run")}</div>
-        <span class="muted mono">${dur(elapsed)} elapsed · ${esc(sysLine(a))}</span>
+        <span class="muted mono elapsed"></span>
+        <span class="muted mono sysline">${esc(sysLine(a))}</span>
         <div style="margin-left:auto" class="ract">
           <button class="danger" data-stop="${a.runner_id}">Stop</button>
           <button class="ghost" data-detail="${a.id}">details</button>
         </div>
       </div>
       <div class="gauges">
-        ${GAUGES.map(([k, label]) => `<div class="gauge"><div class="gv" data-g="${k}">${fmt(last[k], 0)}</div><div class="gk">${esc(label)}</div></div>`).join("")}
+        ${GAUGES.map(([k, label]) => `<div class="gauge"><div class="gv" data-g="${k}">—</div><div class="gk">${esc(label)}</div></div>`).join("")}
       </div>
       <div class="chartrow">
         <canvas class="runchart" height="180"></canvas>
         <select class="csel" data-chart="${a.id}">${Object.keys(CHART_PRESETS).map((k) => `<option${k === preset ? " selected" : ""}>${esc(k)}</option>`).join("")}</select>
       </div>
-      <div class="phases">${a.phases.map(phaseRow).join("")}</div>
+      <div class="phases"></div>
       <div class="consolewrap">
         <div class="chead"><span class="muted">live console</span>
           <form class="term" data-exec="${a.runner_id}">
@@ -271,13 +270,49 @@ function renderActive() {
             <button class="accent" type="submit">run</button>
           </form>
         </div>
-        <pre class="console mono">${esc(logLines)}</pre>
+        <pre class="console mono"></pre>
       </div>
     </div>`;
-  }).join("");
+}
+
+function paintHeader(card, a) {
+  const el = card.querySelector(".rh .elapsed");
+  if (el && a.started) el.textContent = dur(Date.now() / 1000 - a.started) + " elapsed";
+}
+function updatePhases(card, phases) {
+  const el = card.querySelector(".phases");
+  if (!el) return;
+  const st = el.scrollTop;
+  el.innerHTML = (phases || []).map(phaseRow).join("");
+  el.scrollTop = st;
+}
+function paintConsole(card, id) {
+  const pre = card.querySelector(".console");
+  if (!pre) return;
+  const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+  pre.textContent = (LOGS[id] || []).slice(-300).join("\n");
+  if (atBottom) pre.scrollTop = pre.scrollHeight;
+}
+
+function renderActive() {
+  const el = $("#activeRuns");
+  const ids = STATE.active.map((a) => a.id);
+  const existing = Array.from(el.querySelectorAll("[data-active]")).map((x) => x.dataset.active);
+  const same = ids.length > 0 && ids.length === existing.length && ids.every((id) => existing.includes(id));
+  if (!same) {
+    // rebuild only when the set of runs changed
+    if (!STATE.active.length) { el.innerHTML = `<div class="card muted">No runs in progress.</div>`; return; }
+    el.innerHTML = STATE.active.map(runCardHTML).join("");
+  }
+  // update in place (no innerHTML churn -> no scroll jump)
   STATE.active.forEach((a) => {
-    const card = document.querySelector(`[data-active="${a.id}"]`);
-    if (card) drawRunChart(card, a.id);
+    const card = el.querySelector(`[data-active="${a.id}"]`);
+    if (!card) return;
+    paintGauges(card, a.latest || {});
+    paintHeader(card, a);
+    updatePhases(card, a.phases || []);
+    paintConsole(card, a.id);
+    drawRunChart(card, a.id);
   });
 }
 
