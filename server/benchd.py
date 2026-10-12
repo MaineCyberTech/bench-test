@@ -198,6 +198,28 @@ def online(last_seen):
     return (now() - (last_seen or 0)) < ONLINE_WINDOW
 
 
+ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+
+
+def safe_id(v):
+    """Ids supplied by clients must be opaque tokens, never HTML-bearing text."""
+    return bool(v) and bool(ID_RE.match(str(v)))
+
+
+def safe_filename(n):
+    """Sanitise a name used in a Content-Disposition header."""
+    return re.sub(r"[^A-Za-z0-9._-]", "_", str(n or "artifact"))[:120]
+
+
+def int_arg(q, key, default, lo=0, hi=100000):
+    """Query-string int with a sane fallback (never raises on garbage)."""
+    try:
+        v = int(str(q.get(key, [default])[0]))
+    except (TypeError, ValueError):
+        v = default
+    return max(lo, min(v, hi))
+
+
 def dotted(obj, path):
     cur = obj
     for part in path.split("."):
@@ -214,6 +236,8 @@ def dotted(obj, path):
 
 
 def runner_public(r):
+    if r is None:
+        return None
     r = dict(r)
     r.pop("api_key", None)
     r["online"] = online(r.get("last_seen"))
@@ -234,6 +258,8 @@ def runner_public(r):
 
 
 def run_public(r):
+    if r is None:
+        return None
     r = dict(r)
     for k in ("summary", "profile", "system"):
         if r.get(k):
@@ -357,6 +383,30 @@ class Handler(BaseHTTPRequestHandler):
             return True
         return False
 
+    def _caller(self):
+        """(is_operator, runner_row_or_None) for the current request."""
+        if self.token is None:
+            return True, None
+        b = self._bearer()
+        if b and b == self.token:
+            return True, None
+        return False, self._runner_from_bearer()
+
+    def _may_act_as(self, rid):
+        """The operator, or the runner itself."""
+        op, r = self._caller()
+        return bool(op or (r and r["id"] == rid))
+
+    def _may_write_run(self, run_id):
+        """Writers may only touch their own run (operators may write any)."""
+        op, r = self._caller()
+        if op:
+            return True
+        if not r:
+            return False
+        row = self.store.one("SELECT runner_id FROM runs WHERE id=?", (run_id,))
+        return bool(row and row["runner_id"] == r["id"])
+
     # -- dispatch ----------------------------------------------------------
     def do_OPTIONS(self):
         self.send_response(204)
@@ -379,8 +429,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._stream()
             m = re.match(r"^/api/v1/runners/([^/]+)/commands$", path)
             if m:
-                if not self._runner_ok(m.group(1)):
-                    return self._err(401, "unauthorized")
+                if not self._may_act_as(m.group(1)):
+                    return self._err(403, "not your runner")
                 return self._runner_commands(m.group(1))
             if not self._is_operator(q):
                 return self._err(401, "unauthorized")
@@ -414,6 +464,7 @@ class Handler(BaseHTTPRequestHandler):
         if m:
             rid = m.group(1)
             self.store.ex("DELETE FROM commands WHERE runner_id=?", (rid,))
+            self.store.ex("DELETE FROM schedules WHERE runner_id=?", (rid,))
             self.store.ex("DELETE FROM runners WHERE id=?", (rid,))
             self.bus.publish({"event": "runner", "data": {"id": rid, "deleted": True}})
             return self._send(200, {"ok": True})
@@ -447,8 +498,10 @@ class Handler(BaseHTTPRequestHandler):
                                      "ORDER BY id DESC LIMIT 200", (a["id"],))[::-1]
             recent = [run_public(r) for r in
                       S.q("SELECT * FROM runs ORDER BY started DESC LIMIT 25")]
+            hosts = [h["host"] for h in S.q(
+                "SELECT DISTINCT host FROM runs WHERE host IS NOT NULL ORDER BY host")]
             return self._send(200, {"runners": runners, "active": active, "recent": recent,
-                                    "metrics": METRICS, "server_time": now()})
+                                    "metrics": METRICS, "hosts": hosts, "server_time": now()})
         if path == "/api/v1/metrics":
             return self._send(200, {"metrics": METRICS})
         if path == "/api/v1/runners":
@@ -458,8 +511,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"schedules": [schedule_public(s) for s in
                                                   S.q("SELECT * FROM schedules ORDER BY created")]})
         if path == "/api/v1/runs":
-            lim = min(int(q.get("limit", ["100"])[0]), 1000)
-            off = int(q.get("offset", ["0"])[0])
+            lim = int_arg(q, "limit", 100, 1, 1000)
+            off = int_arg(q, "offset", 0, 0, 100000000)
             host = q.get("host", [None])[0]
             where, args = "", []
             if host:
@@ -520,7 +573,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, {"commands": out})
 
     def _run_telemetry(self, run_id, q):
-        maxn = min(int(q.get("max", ["600"])[0]), 5000)
+        maxn = int_arg(q, "max", 600, 1, 5000)
         rows = self.store.q("SELECT * FROM telemetry WHERE run_id=? ORDER BY ts", (run_id,))
         if len(rows) > maxn:
             step = len(rows) / float(maxn)
@@ -534,8 +587,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, {"run_id": run_id, "rows": [tele_public(r) for r in rows]})
 
     def _run_logs(self, run_id, q):
-        after = int(q.get("after", ["0"])[0])
-        limit = min(int(q.get("limit", ["2000"])[0]), 5000)
+        after = int_arg(q, "after", 0, 0, 100000000)
+        limit = int_arg(q, "limit", 2000, 1, 5000)
         rows = self.store.q("SELECT id,ts,stream,line FROM logs WHERE run_id=? AND id>? "
                             "ORDER BY id LIMIT ?", (run_id, after, limit))
         return self._send(200, {"run_id": run_id, "lines": rows})
@@ -630,16 +683,21 @@ class Handler(BaseHTTPRequestHandler):
                                        "sm_mhz", "mem_used")])
         return self._send(200, raw=buf.getvalue().encode(), ctype="text/csv",
                           headers={"Content-Disposition":
-                                   'attachment; filename="%s-telemetry.csv"' % run_id})
+                                   'attachment; filename="%s-telemetry.csv"' % safe_filename(run_id)})
 
     def _artifact_download(self, run_id, name):
         a = self.store.one("SELECT * FROM artifacts WHERE run_id=? AND name=?", (run_id, name))
         if not a:
             return self._err(404, "no such artifact")
-        ctype = "application/json" if a["kind"] == "json" else "text/plain; charset=utf-8"
-        return self._send(200, raw=(a["content"] or "").encode(), ctype=ctype,
+        ctype = {"json": "application/json", "text": "text/plain; charset=utf-8"}.get(
+            a["kind"], "application/octet-stream")
+        try:
+            data = base64.b64decode(a["content"] or "", validate=True)
+        except Exception:
+            data = (a["content"] or "").encode("utf-8", "replace")  # legacy text rows
+        return self._send(200, raw=data, ctype=ctype,
                           headers={"Content-Disposition":
-                                   'attachment; filename="%s"' % a["name"]})
+                                   'attachment; filename="%s"' % safe_filename(a["name"])})
 
     def _trends(self, q):
         host = q.get("host", [None])[0]
@@ -703,11 +761,22 @@ class Handler(BaseHTTPRequestHandler):
     # -- POST api ----------------------------------------------------------
     def _api_post(self, path, q, b):
         S = self.store
+        # a writer may only touch its own run (404 unknown, 403 someone else's)
+        mrun = re.match(r"^/api/v1/runs/([^/]+)/(?:phase|telemetry|event|log|artifact|finish)$",
+                        path)
+        if mrun and not self._may_write_run(mrun.group(1)):
+            exists = S.one("SELECT id FROM runs WHERE id=?", (mrun.group(1),))
+            return self._err(404 if not exists else 403,
+                             "no such run" if not exists else "not your run")
         if path == "/api/v1/register":
             return self._register(b)
         m = re.match(r"^/api/v1/runners/([^/]+)/heartbeat$", path)
         if m:
             rid = m.group(1)
+            if not self._may_act_as(rid):
+                return self._err(403, "not your runner")
+            if not S.one("SELECT id FROM runners WHERE id=?", (rid,)):
+                return self._err(404, "no such runner")
             fields, args = ["last_seen=?"], [now()]
             for k in ("status", "current_run", "capabilities", "version", "git"):
                 if k in b:
@@ -716,28 +785,46 @@ class Handler(BaseHTTPRequestHandler):
             args.append(rid)
             S.ex("UPDATE runners SET %s WHERE id=?" % ",".join(fields), args)
             r = runner_public(S.one("SELECT * FROM runners WHERE id=?", (rid,)))
-            self.bus.publish({"event": "runner", "data": r})
+            if r:
+                self.bus.publish({"event": "runner", "data": r})
             pending = S.one("SELECT COUNT(*) c FROM commands WHERE runner_id=? AND status='queued'",
                             (rid,))["c"]
             return self._send(200, {"ok": True, "commands": pending, "server_time": now()})
         m = re.match(r"^/api/v1/runners/([^/]+)/commands$", path)
         if m:
             if not self._is_operator(q):
-                return self._err(401, "unauthorized")
+                return self._err(403, "operator only")
             return self._issue_command(m.group(1), b)
         m = re.match(r"^/api/v1/runners/([^/]+)/commands/([^/]+)/ack$", path)
         if m:
+            rid, cid = m.group(1), m.group(2)
+            if not self._may_act_as(rid):
+                return self._err(403, "not your command")
+            cmd = S.one("SELECT runner_id FROM commands WHERE id=?", (cid,))
+            if not cmd or cmd["runner_id"] != rid:
+                return self._err(404, "no such command")
             S.ex("UPDATE commands SET status=?, acked=?, result=? WHERE id=?",
-                 (b.get("status", "done"), now(), json.dumps(b.get("result") or {}), m.group(2)))
-            self.bus.publish({"event": "command", "data": {"id": m.group(2), "runner_id": m.group(1),
+                 (b.get("status", "done"), now(), json.dumps(b.get("result") or {}), cid))
+            self.bus.publish({"event": "command", "data": {"id": cid, "runner_id": rid,
                                                            "status": b.get("status", "done"),
                                                            "result": b.get("result")}})
             return self._send(200, {"ok": True})
         if path == "/api/v1/schedules":
+            if not self._is_operator(q):
+                return self._err(403, "operator only")
             return self._create_schedule(b)
         if path == "/api/v1/runs":
+            op, r = self._caller()
             rid = b.get("runner_id")
+            if not op:
+                if not r:
+                    return self._err(401, "unauthorized")
+                if rid and rid != r["id"]:
+                    return self._err(403, "not your runner")
+                rid = r["id"]
             run_id = b.get("id") or str(uuid.uuid4())
+            if not safe_id(run_id):
+                return self._err(400, "bad run id")
             S.ex("INSERT INTO runs(id,runner_id,host,label,profile,started,status,platform,gpu,"
                  "driver,torch,system,preset) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                  (run_id, rid, b.get("host"), b.get("label"), json.dumps(b.get("profile") or {}),
@@ -747,12 +834,13 @@ class Handler(BaseHTTPRequestHandler):
             if rid:
                 S.ex("UPDATE runners SET status='busy', current_run=? WHERE id=?", (run_id, rid))
             run = run_public(S.one("SELECT * FROM runs WHERE id=?", (run_id,)))
-            self.bus.publish({"event": "run", "data": run})
+            if run:
+                self.bus.publish({"event": "run", "data": run})
             return self._send(200, {"run_id": run_id})
         m = re.match(r"^/api/v1/runs/([^/]+)/phase$", path)
         if m:
             run_id = m.group(1)
-            seq = int(b.get("seq", 0))
+            seq = int_arg({"seq": [b.get("seq", 0)]}, "seq", 0, hi=100000)
             existing = S.one("SELECT id FROM phases WHERE run_id=? AND seq=?", (run_id, seq))
             if existing:
                 S.ex("UPDATE phases SET status=?, t1=?, detail=? WHERE id=?",
@@ -773,16 +861,20 @@ class Handler(BaseHTTPRequestHandler):
             rows = []
             last_named = None
             for s in samples:
+                ts = None
                 if isinstance(s, dict):
                     core = [s.get(f) for f in SAMPLE_FIELDS]
                     extra = {k: v for k, v in s.items()
-                             if k not in SAMPLE_FIELDS and isinstance(v, (int, float))}
+                             if k not in SAMPLE_FIELDS and k != "ts"
+                             and isinstance(v, (int, float)) and not isinstance(v, bool)}
+                    if isinstance(s.get("ts"), (int, float)):
+                        ts = float(s["ts"])
                     last_named = dict(s)
                 else:
                     core = (list(s) + [None] * len(SAMPLE_FIELDS))[:len(SAMPLE_FIELDS)]
                     extra = {}
                     last_named = dict(zip(SAMPLE_FIELDS, core))
-                rows.append([run_id, now()] + core + [json.dumps(extra) if extra else None])
+                rows.append([run_id, ts or now()] + core + [json.dumps(extra) if extra else None])
             with S.lock:
                 S.conn.executemany(
                     "INSERT INTO telemetry(run_id,ts,elapsed,temp_c,fan_pct,power_w,gpu_util,"
@@ -819,11 +911,13 @@ class Handler(BaseHTTPRequestHandler):
         if m:
             run_id = m.group(1)
             name = b.get("name", "artifact")
-            content = b.get("content")
-            raw = base64.b64decode(content) if content else b""
+            content = b.get("content") or ""
+            try:
+                raw = base64.b64decode(content, validate=True) if content else b""
+            except Exception:
+                raw = b""
             S.ex("INSERT INTO artifacts(run_id,name,kind,size,sha256,content) VALUES(?,?,?,?,?,?)",
-                 (run_id, name, b.get("kind", "json"), len(raw),
-                  b.get("sha256"), raw.decode("utf-8", "replace")))
+                 (run_id, name, b.get("kind", "json"), len(raw), b.get("sha256"), content))
             return self._send(200, {"ok": True})
         m = re.match(r"^/api/v1/runs/([^/]+)/finish$", path)
         if m:
@@ -840,13 +934,16 @@ class Handler(BaseHTTPRequestHandler):
                 S.ex("UPDATE runners SET status='idle', current_run=NULL WHERE id=?",
                      (run["runner_id"],))
             run = run_public(S.one("SELECT * FROM runs WHERE id=?", (run_id,)))
-            self.bus.publish({"event": "run", "data": run})
+            if run:
+                self.bus.publish({"event": "run", "data": run})
             return self._send(200, {"ok": True})
         return self._err(404, "not found")
 
     def _register(self, b):
         S = self.store
         rid = b.get("runner_id")
+        if rid and not safe_id(rid):
+            rid = None
         key = b.get("api_key")
         kind = b.get("kind", "agent")
         mid = (b.get("machine_id") or "").strip() or None
@@ -905,7 +1002,7 @@ class Handler(BaseHTTPRequestHandler):
         if not rid or not S.one("SELECT id FROM runners WHERE id=?", (rid,)):
             return self._err(400, "runner_id required")
         kind = b.get("kind", "every")
-        every_s = int(b.get("every_s") or 0)
+        every_s = int_arg({"e": [b.get("every_s") or 0]}, "e", 0, hi=30 * 86400)
         at_time = b.get("at_time") or "03:00"
         sid = str(uuid.uuid4())
         nxt = (next_daily(at_time) if kind == "daily"
@@ -940,12 +1037,29 @@ def scheduler_tick(store, bus):
     fired = 0
     due = store.q("SELECT * FROM schedules WHERE enabled=1 AND next_run<=?", (now(),))
     for s in due:
+        every = max(60, s["every_s"] or 3600)
+        rr = store.one("SELECT last_seen, status FROM runners WHERE id=?", (s["runner_id"],))
+        if not rr or not online(rr["last_seen"]):
+            # don't pile commands onto a runner that isn't there
+            store.ex("UPDATE schedules SET next_run=?, last_status=? WHERE id=?",
+                     (now() + every, "skipped: runner offline", s["id"]))
+            bus.publish({"event": "schedule", "data": schedule_public(
+                store.one("SELECT * FROM schedules WHERE id=?", (s["id"],)))})
+            continue
+        busy = rr["status"] == "busy" or bool(store.one(
+            "SELECT id FROM commands WHERE runner_id=? AND kind='start' AND status='queued' "
+            "LIMIT 1", (s["runner_id"],)))
+        if busy:
+            store.ex("UPDATE schedules SET next_run=?, last_status=? WHERE id=?",
+                     (now() + every, "skipped: busy", s["id"]))
+            bus.publish({"event": "schedule", "data": schedule_public(
+                store.one("SELECT * FROM schedules WHERE id=?", (s["id"],)))})
+            continue
         cmd = str(uuid.uuid4())
         store.ex("INSERT INTO commands(id,runner_id,kind,payload,status,created) "
                  "VALUES(?,?,?,?,?,?)",
                  (cmd, s["runner_id"], "start", s["profile"] or "{}", "queued", now()))
-        nxt = (next_daily(s["at_time"]) if s["kind"] == "daily"
-               else now() + max(60, s["every_s"] or 3600))
+        nxt = (next_daily(s["at_time"]) if s["kind"] == "daily" else now() + every)
         store.ex("UPDATE schedules SET next_run=?, last_run=?, last_status=? WHERE id=?",
                  (nxt, now(), "queued", s["id"]))
         bus.publish({"event": "command", "data": {"id": cmd, "runner_id": s["runner_id"],
@@ -985,6 +1099,8 @@ def reap_ephemeral_runners(store, bus):
     t = now()
     for r in store.q("SELECT id, last_seen FROM runners WHERE ephemeral=1"):
         if (t - (r["last_seen"] or 0)) > 60:
+            store.ex("DELETE FROM commands WHERE runner_id=?", (r["id"],))
+            store.ex("DELETE FROM schedules WHERE runner_id=?", (r["id"],))
             store.ex("DELETE FROM runners WHERE id=?", (r["id"],))
             bus.publish({"event": "runner", "data": {"id": r["id"], "deleted": True}})
 

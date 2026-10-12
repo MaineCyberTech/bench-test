@@ -133,6 +133,52 @@ def run():
         st, r = cl.call("POST", "/api/v1/runners/%s/commands" % rid, {"kind": kind})
         c.check("%s command accepted" % kind, st == 200 and r.get("id"), (st, r))
 
+    # ---- authorization: a runner key is scoped to its own runner + run ----
+    st, other = cl.call("POST", "/api/v1/register", {"name": "lab-2", "os": "Linux", "kind": "agent"})
+    orid, okey = other.get("runner_id"), other.get("api_key")
+    st, _ = cl.call("POST", "/api/v1/runs/%s/phase" % run_id,
+                    {"seq": 9, "group": "gpu", "label": "x", "status": "running"}, token=okey)
+    c.check("runner cannot write another runner's run", st in (403, 404), st)
+    st, _ = cl.call("POST", "/api/v1/runs/%s/telemetry" % run_id, {"samples": []}, token=okey)
+    c.check("runner cannot post telemetry to another run", st in (403, 404), st)
+    st, _ = cl.call("POST", "/api/v1/runners/%s/heartbeat" % rid, {"status": "idle"}, token=okey)
+    c.check("runner cannot heartbeat as another runner", st == 403, st)
+    st, _ = cl.call("POST", "/api/v1/schedules", {"runner_id": rid, "label": "x"}, token=okey)
+    c.check("runner cannot create schedules", st == 403, st)
+    st, _ = cl.call("POST", "/api/v1/runs/%s/event" % run_id,
+                    {"level": "info", "message": "x"}, token=okey)
+    c.check("runner cannot write events to another run", st in (403, 404), st)
+
+    # ---- malformed input must be rejected, not 500 ----
+    for q in ("?limit=abc", "?offset=x", "?limit=-5", "?limit=99999"):
+        st, _ = cl.call("GET", "/api/v1/runs" + q)
+        c.check("bad query %s -> not 5xx" % q, st < 500, st)
+    st, _ = cl.call("GET", "/api/v1/runs/%s/telemetry?max=zzz" % run_id)
+    c.check("bad telemetry max -> not 5xx", st < 500, st)
+    st, _ = cl.call("GET", "/api/v1/runs/%s/logs?after=x&limit=y" % run_id)
+    c.check("bad log paging -> not 5xx", st < 500, st)
+    st, _ = cl.call("POST", "/api/v1/runners/no-such-runner/heartbeat", {"status": "idle"})
+    c.check("heartbeat unknown runner -> 404", st == 404, st)
+
+    # ---- binary artifacts survive the round-trip ----
+    import base64 as _b64
+    blob = bytes(range(256)) * 4
+    cl.call("POST", "/api/v1/runs/%s/artifact" % run_id,
+            {"name": "blob.bin", "kind": "bin",
+             "content": _b64.b64encode(blob).decode()}, token=key)
+    st, body = cl.call("GET", "/api/v1/runs/%s/artifact/blob.bin?token=%s" % (run_id, TOKEN), raw=True)
+    c.check("binary artifact round-trips byte-for-byte",
+            st == 200 and body == blob, (st, len(body)))
+
+    # ---- per-sample telemetry timestamps are honoured ----
+    cl.call("POST", "/api/v1/runs/%s/telemetry" % run_id,
+            {"samples": [{"elapsed": 1, "temp_c": 50, "ts": 1600000000.0},
+                         {"elapsed": 2, "temp_c": 51, "ts": 1600000001.0}]}, token=key)
+    st, t2 = cl.call("GET", "/api/v1/runs/%s/telemetry" % run_id)
+    c.check("telemetry honours per-sample ts",
+            any(abs((x.get("ts") or 0) - 1600000000.0) < 1.0 for x in t2["rows"]),
+            [x.get("ts") for x in t2["rows"]][-3:])
+
     # ---- finish + trends ----
     st, _ = cl.call("POST", "/api/v1/runs/%s/finish" % run_id,
                     {"status": "done", "exit_code": 0, "ended": time.time(),
