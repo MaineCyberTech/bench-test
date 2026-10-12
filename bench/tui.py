@@ -49,7 +49,8 @@ try:
                              telemetry_summary, newest_report, load_identity, run_exec, system_info,
                              read_inventory, load_conf, CSV_ALIASES, power_action,
                              supported_groups,
-                             update_toolkit, iso_fetch, iso_write, self_update, restart_self,
+                             update_toolkit, iso_fetch, iso_write, iso_write_slot,
+                             self_update, restart_self,
                              toolkit_version)
 except Exception:  # reporting is optional
     Reporter = None
@@ -189,7 +190,7 @@ class BenchTUI:
             if self.running:
                 self.stop()
             self.rep.ack(cmd.get("id"), "done", power_action(reboot=(kind == "reboot")))
-        elif kind in ("update", "update_toolkit", "iso_fetch", "iso_write"):
+        elif kind in ("update", "update_toolkit", "iso_fetch", "iso_write", "iso_write_slot"):
             self._update_remote(cmd.get("id"), kind, payload)
         elif kind in ("exec", "shell"):
             self._exec_remote(cmd.get("id"), payload)
@@ -206,6 +207,8 @@ class BenchTUI:
                 elif kind == "iso_write":
                     res = iso_write(payload.get("iso"), payload.get("device"),
                                     bool(payload.get("confirm")), log=log)
+                elif kind == "iso_write_slot":
+                    res = iso_write_slot(payload.get("iso"), bool(payload.get("confirm")), log=log)
                 elif kind == "update_toolkit":
                     res = update_toolkit(payload.get("ref") or "main", payload.get("sha256"), log=log)
                 else:

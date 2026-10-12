@@ -1199,6 +1199,126 @@ def _finish_stick(device, iso_bytes, confs, log=None):
     return {"partition": part, "restored": restored}
 
 
+def _esp_device():
+    """The BENCH_ESP partition device, or '' when this is not an A/B stick."""
+    out = subprocess.run(["blkid", "-o", "device", "-t", "LABEL=BENCH_ESP"],
+                         capture_output=True, text=True, timeout=10).stdout.split()
+    return out[0] if out else ""
+
+
+def _grubenv_read(path):
+    env = {}
+    try:
+        with open(path, "rb") as fh:
+            for ln in fh.read(1024).decode("utf-8", "replace").splitlines():
+                if "=" in ln and not ln.startswith("#"):
+                    k, v = ln.split("=", 1)
+                    env[k.strip()] = v.strip()
+    except OSError:
+        pass
+    return env
+
+
+def _grubenv_write(path, env):
+    body = "# GRUB Environment Block\n"
+    for k in sorted(env):
+        body += "%s=%s\n" % (k, env[k])
+    body += "#" * (1024 - len(body))
+    with open(path, "wb") as fh:
+        fh.write(body[:1024].encode())
+
+
+def _slot_uuids(disk):
+    """(uuid_a, uuid_b) for the two slot partitions (2 and 3)."""
+    out = []
+    for n in (2, 3):
+        r = subprocess.run(["blkid", "-p", "-o", "value", "-s", "UUID", "%s%d" % (disk, n)],
+                           capture_output=True, text=True, timeout=15).stdout.strip()
+        out.append(r)
+    return out[0], out[1]
+
+
+def _write_ab_grub_cfg(path, ua, ub):
+    with open(path, "w") as fh:
+        fh.write("""set timeout=5
+set timeout_style=menu
+load_env
+if [ "${attempts}" -ge 3 ]; then
+    if [ "${active}" = "A" ]; then set active=B; else set active=A; fi
+    set attempts=0
+    save_env active attempts
+fi
+if [ "${active}" = "B" ]; then set default=1; else set default=0; fi
+menuentry "bench-test (slot A)" {
+    search --no-floppy --set=root --fs-uuid %s
+    linux /arch/boot/x86_64/vmlinuz-linux archisobasedir=arch archisosearchuuid=%s bench_slot=A copytoram=y nvidia_drm.modeset=1 nvidia_drm.fbdev=1
+    initrd /arch/boot/x86_64/initramfs-linux.img
+}
+menuentry "bench-test (slot B)" {
+    search --no-floppy --set=root --fs-uuid %s
+    linux /arch/boot/x86_64/vmlinuz-linux archisobasedir=arch archisosearchuuid=%s bench_slot=B copytoram=y nvidia_drm.modeset=1 nvidia_drm.fbdev=1
+    initrd /arch/boot/x86_64/initramfs-linux.img
+}
+""" % (ua, ua, ub, ub))
+
+
+def iso_write_slot(iso_path, confirm=False, log=None):
+    """A/B update: write the ISO into the INACTIVE slot and flip the boot flag.
+
+    The active slot and BENCHDATA are never touched; grub auto-reverts after
+    three unconfirmed boots. Auto-detects the stick via the BENCH_ESP label."""
+    log = log or (lambda _m: None)
+    if not confirm:
+        return {"error": "confirm=true required"}
+    if not iso_path or not os.path.isfile(iso_path):
+        return {"error": "no such iso: %s" % iso_path}
+    esp = _esp_device()
+    if not esp:
+        return {"error": "no BENCH_ESP partition found - not an A/B stick (use iso_write)"}
+    disk = esp.rstrip("0123456789")
+    ua, ub = _slot_uuids(disk)
+    if not ua or not ub:
+        return {"error": "cannot read slot UUIDs on %s" % disk}
+    # never write an ISO stored on the target stick
+    iso_dev = _device_of_path(os.path.dirname(os.path.abspath(iso_path)))
+    if iso_dev and iso_dev.rstrip("0123456789") == disk:
+        return {"error": "the staged ISO lives on the target stick - stage it in RAM or elsewhere"}
+    mnt = "/run/bench-esp"
+    os.makedirs(mnt, exist_ok=True)
+    if not os.path.ismount(mnt):
+        if subprocess.run(["mount", esp, mnt], capture_output=True, timeout=30).returncode != 0:
+            return {"error": "cannot mount %s" % esp}
+    env = _grubenv_read(os.path.join(mnt, "boot/grub/grubenv"))
+    active = (env.get("active") or "A").upper()
+    target = "B" if active == "A" else "A"
+    part = "%s%d" % (disk, 2 if target == "A" else 3)
+    log("[ab] active=%s -> writing slot %s (%s)" % (active, target, part))
+    _unmount_all(disk)
+    iso_bytes = os.path.getsize(iso_path)
+    try:
+        with open(iso_path, "rb") as src, open(part, "wb", buffering=0) as dst:
+            shutil.copyfileobj(src, dst, length=4 << 20)
+            dst.flush()
+            os.fsync(dst.fileno())
+    except Exception as e:
+        return {"error": "write failed: %s" % e, "slot": target}
+    subprocess.run(["sync"], timeout=60)
+    subprocess.run(["blockdev", "--rereadpt", disk], capture_output=True, timeout=30)
+    time.sleep(1)
+    ua, ub = _slot_uuids(disk)
+    if not ua or not ub:
+        return {"error": "slot UUIDs unreadable after write", "slot": target}
+    _write_ab_grub_cfg(os.path.join(mnt, "boot/grub/grub.cfg"), ua, ub)
+    env["active"] = target
+    env["attempts"] = "0"
+    _grubenv_write(os.path.join(mnt, "boot/grub/grubenv"), env)
+    subprocess.run(["sync"], timeout=60)
+    subprocess.run(["umount", mnt], capture_output=True, timeout=30)
+    log("[ab] slot %s updated - reboot to try it (auto-revert after 3 failed boots)" % target)
+    return {"ok": True, "slot": target, "partition": part, "bytes": iso_bytes,
+            "previous": active}
+
+
 def iso_write(iso_path, device, confirm=False, log=None):
     """Write a staged ISO to a block device (destructive; guarded)."""
     log = log or (lambda _m: None)

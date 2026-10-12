@@ -19,7 +19,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from benchreport import (iso_fetch, iso_write, toolkit_boot_link,  # noqa: E402
+from benchreport import (iso_fetch, iso_write, iso_write_slot, toolkit_boot_link,  # noqa: E402
                          update_toolkit, gh_release)
 
 
@@ -46,6 +46,10 @@ def main():
     f.add_argument("tag")
     f.add_argument("--gpu", default="nvidia-legacy")
     f.add_argument("--dest", default=None)
+
+    ws = sub.add_parser("iso-write-slot", help="A/B update: write the inactive slot + flip the boot flag")
+    ws.add_argument("iso")
+    ws.add_argument("--yes", action="store_true")
 
     w = sub.add_parser("iso-write", help="write a staged ISO to a block device")
     w.add_argument("iso")
@@ -75,6 +79,10 @@ def main():
         return 0 if r.get("ok") else 1
     if a.cmd == "iso-write":
         r = iso_write(a.iso, a.device, confirm=a.yes, log=_log)
+        print(r)
+        return 0 if r.get("ok") else 1
+    if a.cmd == "iso-write-slot":
+        r = iso_write_slot(a.iso, confirm=a.yes, log=_log)
         print(r)
         return 0 if r.get("ok") else 1
     return 2

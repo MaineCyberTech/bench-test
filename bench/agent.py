@@ -45,7 +45,8 @@ from benchreport import (Reporter, PhaseTracker, TelemetryTail,  # noqa: E402
                          build_summary, build_summary_dir, telemetry_summary, read_runs_index,
                          load_identity, run_exec, system_info, read_inventory, load_conf,
                          power_action, supported_groups,
-                         update_toolkit, iso_fetch, iso_write, self_update, restart_self,
+                         update_toolkit, iso_fetch, iso_write, iso_write_slot,
+                         self_update, restart_self,
                          toolkit_version)
 
 DEFAULT_GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc",
@@ -254,7 +255,7 @@ class Agent:
             elif kind in ("shutdown", "reboot"):
                 self.stop_battery()
                 result = power_action(reboot=(kind == "reboot"))
-            elif kind in ("update_toolkit", "iso_fetch", "iso_write"):
+            elif kind in ("update_toolkit", "iso_fetch", "iso_write", "iso_write_slot"):
                 threading.Thread(target=self._update_and_ack, args=(cid, kind, payload),
                                  daemon=True).start()
                 return
@@ -289,6 +290,8 @@ class Agent:
             elif kind == "iso_fetch":
                 res = iso_fetch(payload.get("tag") or "", payload.get("gpu") or "nvidia-legacy",
                                 payload.get("dest"), log=self.log)
+            elif kind == "iso_write_slot":
+                res = iso_write_slot(payload.get("iso"), bool(payload.get("confirm")), log=self.log)
             else:
                 res = iso_write(payload.get("iso"), payload.get("device"),
                                 bool(payload.get("confirm")), log=self.log)
