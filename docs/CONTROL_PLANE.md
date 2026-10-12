@@ -244,7 +244,9 @@ pct exec 108 -- systemctl mask tmp.mount run-lock.mount dev-mqueue.mount
 - `update` runs `git pull --ff-only` on the runner and reports the new commit;
   `restart` re-execs the agent so a fresh checkout takes effect. The GUI, TUI and
   agent repeat that check **at startup** and restart into the new code when they
-  pulled something (a dirty tree or `BENCH_NO_UPDATE=1` skips it).
+  pulled something (a dirty tree or `BENCH_NO_UPDATE=1` skips it). A control-plane
+  update also restarts the runner (deferred while a run is in progress, or forced
+  with `payload.restart`), so it stops reporting the commit it started with.
 - A long job is never mistaken for a dropped one: the stale-command reaper gives
   `iso_fetch` a 3 h budget, `iso_write`/`iso_write_slot` an hour,
   `update_toolkit` 15 min and `exec` its own payload timeout, against 120 s for

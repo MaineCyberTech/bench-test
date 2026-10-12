@@ -204,7 +204,11 @@ from the fleet card's **update…** dialog, or as commands:
 | `iso_write_slot` | `{iso, confirm:true}` | **A/B reflash**: write the staged ISO to the *inactive* slot and flip the boot flag; the active slot and BENCHDATA are untouched, and grub auto-reverts after three unconfirmed boots |
 
 `update` on a live runner now runs the toolkit update automatically (a git
-checkout still does `git pull`). The same operations are available locally:
+checkout still does `git pull`). An update **restarts the runner** so the new code
+is what actually runs — otherwise it keeps reporting the commit it started with and
+the "update available" badge never clears. The restart is deferred while a run is
+in progress (force it with `payload.restart`). The same operations are available
+locally:
 ```bash
 python bench/live_update.py toolkit --ref main      # self-update + switch
 python bench/live_update.py iso-list iso-nvidia-legacy-38
@@ -212,6 +216,12 @@ python bench/live_update.py iso-fetch iso-nvidia-legacy-38
 python bench/live_update.py iso-write-slot <iso> --yes
 python bench/live_update.py iso-write <iso> --device /dev/sdX --yes
 ```
+
+BENCHDATA is **vfat**, so it cannot hold the `current` symlink that names the
+fetched copy; the fetch leaves a `current.txt` pointer instead, and the boot-time
+re-point follows the symlink, then that pointer, then falls back to the freshest
+fetched copy. A stick flashed before that fix keeps using the toolkit baked into
+its ISO until it is updated once more (or reflashed).
 
 Kernel/driver/package changes need a new image. On an **A/B stick** the runner can
 take that itself, with no hands on it: `iso_fetch` stages the ISO in RAM, then
