@@ -45,16 +45,19 @@ try:
                              update_toolkit, iso_fetch, iso_write, iso_write_slot,
                              self_update, restart_self,
                              toolkit_version, is_live, update_needs_restart, hardware_line,
-                             DASH_FIELDS, auto_update, should_restart_after_update)
+                             DASH_FIELDS, auto_update, should_restart_after_update,
+                             venv_python)
 except Exception:  # reporting is optional
     Reporter = None
 
 # --- runner: Linux shell script, or the Windows battery via run_win.py ---
 # When frozen (PyInstaller) sys.executable is the bundle exe, not python, so the
-# runner has to be launched with a real interpreter.
+# runner has to be launched with a real interpreter. Prefer the venv: it holds
+# numpy/psutil/PyTorch, and a dashboard started from a bare system python would
+# otherwise run the sampler without psutil (no CPU/RAM/disk/net telemetry).
 if os.name == "nt":
-    RUNNER = sys.executable if not getattr(sys, "frozen", False) else (
-        shutil.which("python") or shutil.which("python3") or "python")
+    RUNNER = venv_python(REPO) or (sys.executable if not getattr(sys, "frozen", False) else (
+        shutil.which("python") or shutil.which("python3") or "python"))
     RUNNER_PREFIX = [os.path.join(BENCH, "run_win.py")]
 else:
     RUNNER = os.path.join(BENCH, "Run-LinuxBench.sh")

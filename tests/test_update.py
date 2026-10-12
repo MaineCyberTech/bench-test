@@ -299,6 +299,20 @@ def run():
     c.check("_mounts_of tolerates an unknown device",
             br._mounts_of("/dev/definitely-not-a-disk") == [], "")
 
+    # ---- the sampler must run under the venv when there is one ----
+    fake = os.path.join(sand, "fakerepo")
+    os.makedirs(os.path.join(fake, "bench"))
+    c.check("venv_python is empty without a venv",
+            br.venv_python(fake) == "", br.venv_python(fake))
+    venvdir = os.path.join(fake, ".venv", "Scripts")
+    os.makedirs(venvdir)
+    open(os.path.join(venvdir, "python.exe"), "w").close()
+    c.check("venv_python finds the venv interpreter",
+            br.venv_python(fake) == os.path.join(venvdir, "python.exe"), br.venv_python(fake))
+    for f in ("gui.py", "agent.py"):
+        src = open(os.path.join(BENCH, f), encoding="utf-8").read()
+        c.check("%s prefers the venv interpreter" % f, "venv_python(" in src, f)
+
     # ---- iso write guards (never actually writes) ----
     c.check("iso_write needs confirm", "confirm" in str(br.iso_write(r2["iso"], "/dev/null").get("error")), "")
     c.check("iso_write rejects a missing iso",

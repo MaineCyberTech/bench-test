@@ -48,7 +48,7 @@ from benchreport import (Reporter, PhaseTracker, TelemetryTail,  # noqa: E402
                          update_toolkit, iso_fetch, iso_write, iso_write_slot,
                          self_update, restart_self,
                          toolkit_version, is_live, update_needs_restart,
-                         auto_update)
+                         auto_update, venv_python)
 
 DEFAULT_GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc",
                   "llm", "fan", "sys", "gfx"]
@@ -126,7 +126,8 @@ class Agent:
     # -- runner ------------------------------------------------------------
     def runner_cmd(self, args):
         if os.name == "nt":
-            return [sys.executable, os.path.join(BENCH, "run_win.py")] + args + ["-o", self.out_dir]
+            return [venv_python(REPO) or sys.executable,
+                    os.path.join(BENCH, "run_win.py")] + args + ["-o", self.out_dir]
         return ["bash", os.path.join(BENCH, "Run-LinuxBench.sh")] + args + ["-o", self.out_dir]
 
     def run_battery(self, label, profile, extra_args=None):
@@ -134,7 +135,7 @@ class Agent:
         cmd = self.runner_cmd(args)
         self.log("run: %s" % " ".join(cmd))
         env = os.environ.copy()
-        env.setdefault("BENCH_PY", sys.executable)
+        env.setdefault("BENCH_PY", venv_python(REPO) or sys.executable)
         env["PATH"] = os.path.dirname(sys.executable) + os.pathsep + env.get("PATH", "")
         os.makedirs(self.out_dir, exist_ok=True)
         self.rep.start_run(label, profile, host=self.a.name or platform.node(),

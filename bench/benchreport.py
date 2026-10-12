@@ -1179,6 +1179,21 @@ def _newest_toolkit_copy(root):
     return best
 
 
+def venv_python(repo=None):
+    """The repo's virtualenv interpreter when it exists, else ''.
+
+    numpy/psutil/PyTorch live in the venv, so a dashboard or agent started from a
+    bare system python must not run the telemetry sampler with that bare
+    interpreter: without psutil it records no CPU/RAM/disk/net telemetry.
+    """
+    repo = repo or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for rel in (("Scripts", "python.exe"), ("bin", "python3"), ("bin", "python")):
+        p = os.path.join(repo, ".venv", *rel)
+        if os.path.isfile(p):
+            return p
+    return ""
+
+
 def toolkit_boot_link(log=None):
     """Re-point the toolkit at the persisted copy at boot (live USB)."""
     log = log or (lambda _m: None)
