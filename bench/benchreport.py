@@ -1965,6 +1965,16 @@ def _merge_into(s, j):
     if j.get("download_mbps") is not None and "net" not in s:
         s["net"] = {k: j.get(k) for k in ("download_mbps", "upload_mbps", "ping_target",
                                           "ping_target_ms", "ping_gateway_ms")}
+    # Windows nvenc writes a flat report with no phases array, so the loop below
+    # never sees it
+    if "nvenc" not in s:
+        res = j.get("results")
+        if isinstance(res, list):
+            res = {str(x.get("codec")): {k: v for k, v in x.items() if k != "codec"}
+                   for x in res if isinstance(x, dict) and x.get("codec")}
+        if isinstance(res, dict) and any(isinstance(v, dict) and "fps" in v
+                                         for v in res.values()):
+            s["nvenc"] = {"width": j.get("width"), "height": j.get("height"), "results": res}
     ph = j.get("phases")
     items = ph if isinstance(ph, list) else (list(ph.values()) if isinstance(ph, dict) else [])
     for p in items:
@@ -1973,6 +1983,8 @@ def _merge_into(s, j):
         r = p.get("result") if isinstance(p.get("result"), dict) else p
         phase = p.get("phase") or r.get("phase")
         grp = p.get("group") or r.get("group")
+        if grp == "gfx" and isinstance(r, dict):
+            setd("gfx", r)
         if phase == "matmul" and isinstance(r.get("results"), dict):
             sub = r["results"]
             first = next(iter(sub.values()), {})
@@ -2172,6 +2184,12 @@ def build_summary_dir(results_dir, window_h=8):
     verdicts = _hardware_verdicts(results_dir)
     if verdicts:
         out["verdicts"] = verdicts
+    # Windows gfx is a Unigine Valley run kept as a screenshot
+    if "gfx" not in out:
+        shots = sorted(glob.glob(os.path.join(results_dir, "valley-*.png")),
+                       key=os.path.getmtime)
+        if shots:
+            out["gfx"] = {"screenshot": os.path.basename(shots[-1])}
     return out
 
 
