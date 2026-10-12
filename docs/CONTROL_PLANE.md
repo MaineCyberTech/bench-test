@@ -120,12 +120,15 @@ UI-facing:
 | GET | `/state` | snapshot: runners, active runs (+latest telemetry, phases), recent |
 | GET | `/stream?token=` | SSE: `snapshot`/`runner`/`run`/`phase`/`telemetry`/`command` |
 | GET | `/runners` · `/runs` · `/runs/<id>` | fleet / history / detail |
-| GET | `/runs/<id>/telemetry?max=N` | downsampled series |
+| GET | `/runs/<id>/telemetry?max=N` | downsampled series (named fields) |
+| GET | `/runs/<id>/logs?after=&limit=` | the run's live console lines |
+| GET | `/runs/<id>/stats` | per-field min / avg / max over the run |
 | GET | `/runs/<id>/telemetry.csv?token=` | full 1 Hz telemetry as CSV (download) |
 | GET | `/runs/<id>/artifact/<name>?token=` | download an attached artifact |
 | GET | `/trends?host=&metric=` | metric-over-time series |
 | GET/POST/DELETE | `/schedules` · `/schedules/<id>` | list / create / remove recurring runs |
-| POST | `/runners/<id>/commands` | issue `start`/`stop`/`update`/`fan_curve`/`power_limit`/`restart` |
+| DELETE | `/runs/<id>` | delete a run and its data |
+| POST | `/runners/<id>/commands` | issue `start`/`stop`/`update`/`fan_curve`/`power_limit`/`restart`/`exec` |
 
 Telemetry sample order (10 floats): `elapsed, temp_c, fan_pct, power_w, gpu_util,
 gpu_fan_rpm, cpu_util, ram_used, sm_mhz, mem_used`.
@@ -140,7 +143,42 @@ gpu_fan_rpm, cpu_util, ram_used, sm_mhz, mem_used`.
 { "kind": "fan_curve", "payload": { "on": true } }
 { "kind": "power_limit", "payload": { "watts": 250 } }
 { "kind": "restart" }
+{ "kind": "exec", "payload": { "cmd": "nvidia-smi -q | head", "timeout": 30 } }  // remote terminal
 ```
+
+## Deployment (Proxmox)
+
+Run `benchd` as a small unprivileged **LXC container** so it shows in the Proxmox UI:
+
+```bash
+# on the Proxmox node (root)
+pct create 108 local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst \
+  --hostname benchd --cores 1 --memory 1024 --rootfs local-lvm:4 \
+  --net0 name=eth0,bridge=vmbr0,ip=192.168.222.188/24,gw=192.168.222.1 \
+  --nameserver 192.168.222.1 --unprivileged 1 --onboot 1 --start 1 --password '...'
+pct exec 108 -- mkdir -p /opt/bench-test/server/web
+pct push 108 benchd.py /opt/bench-test/server/benchd.py          # + web/ + unit
+pct push 108 benchd.conf /etc/benchd.conf && pct exec 108 -- chmod 600 /etc/benchd.conf
+pct exec 108 -- cp /opt/bench-test/server/benchd.service /etc/systemd/system/
+pct exec 108 -- systemctl enable --now benchd
+# mask the unprivileged-LXC mount units so systemd is not 'degraded'
+pct exec 108 -- systemctl mask tmp.mount run-lock.mount dev-mqueue.mount
+```
+
+`onboot=1` starts it with the node. Live-USB and workstation runners reach it over the LAN/overlay.
+
+## Data captured per run
+
+- **Summary** (runs-index-style): GPU matmul (fp16/bf16/tf32/fp32), soak TFLOPS + telemetry,
+  CPU matmul/soak, RAM, disk seq write, network, full-system verdict — the same keys on
+  Windows and Linux so trends/compare line up.
+- **Telemetry** (1 Hz): GPU util/mem-util/temp(+mem temp)/fan/power(+limit)/SM+mem+gr clocks/
+  VRAM/pstate/enc+dec, CPU util + package/core temp, RAM + swap, disk read/write, net rx/tx.
+- **Full inventory** per run: CPU, board/BIOS, DIMMs, GPUs + driver, storage, NICs
+  (Windows `sysinfo` / Linux `sys` phase) — attached to the run as `system.inventory`.
+- **Live console**: the runner's stdout streams to the server (`/logs`) and shows in the
+  dashboard; the terminal box sends `exec` and streams output back.
+- **Preset** used, plus host, GPU, driver, torch, git and start/end times.
 
 ## Security
 
