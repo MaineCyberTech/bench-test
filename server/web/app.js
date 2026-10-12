@@ -18,7 +18,6 @@ const PRESETS = {
   "Soak only (long)": { groups: gset("gpu", "fullsoak", "sys"), spin: { ...DEF_SPIN, gpu: 1800, fullsoak: 1800 } },
   "Full-system soak (long)": { groups: gset("fullsoak", "sys"), spin: { ...DEF_SPIN, fullsoak: 1800 } },
 };
-const C = { temp: "#ef6b73", power: "#4c9aff", util: "#46c98d", fan: "#e5b567" };
 const SERIES = {
   temp_c: ["temp °C", "#ef6b73"], power_w: ["power W", "#4c9aff"], gpu_util: ["GPU %", "#46c98d"],
   fan_pct: ["fan %", "#e5b567"], mem_util: ["VRAM %", "#b48ead"], sm_mhz: ["SM MHz", "#8fa1b3"],
@@ -189,7 +188,8 @@ async function refresh() {
   try {
     const s = await api("/state");
     STATE = s;
-    HOSTS = [...new Set(STATE.recent.map((r) => r.host).filter(Boolean))].sort();
+    HOSTS = (s.hosts && s.hosts.length) ? s.hosts
+      : [...new Set(STATE.recent.map((r) => r.host).filter(Boolean))].sort();
     for (const a of STATE.active) {
       ensureTel(a.id);
       if (!LOGS[a.id] && a.logs_tail) LOGS[a.id] = a.logs_tail.map((l) => l.line);
@@ -262,7 +262,7 @@ function runnerCard(r) {
   ].join("");
   const dev = [caps.gpu || "no GPU", caps.cpu, caps.ram_gib ? caps.ram_gib + " GiB" : "",
                caps.driver ? "driver " + caps.driver : ""].filter(Boolean).join(" · ");
-  return `<div class="runner ${r.online ? "" : "off"} ${r.status === "busy" ? "busy" : ""}" data-runner="${r.id}">
+  return `<div class="runner ${r.online ? "" : "off"} ${r.status === "busy" ? "busy" : ""}" data-runner="${esc(r.id)}">
       <div class="rhead">
         <span class="statusp ${cls}"></span>
         <div style="flex:1;min-width:0"><div class="rname">${esc(r.label || r.name)}</div></div>
@@ -271,15 +271,15 @@ function runnerCard(r) {
       <div class="rmeta">${esc(dev || "no hardware detail")}</div>
       ${phase ? `<div class="phasechip"><span class="d"></span>${esc(phase.grp)} · ${esc(phase.label || "")}</div>` : ""}
       <div class="ract" style="margin-top:12px">
-        <button class="accent" data-start="${r.id}" ${disabled}>Start run</button>
-        <button data-stop="${r.id}" ${run ? "" : "disabled"}>Stop</button>
-        <button class="ghost" data-update="${r.id}" ${disabled}>Update</button>
-        <button class="ghost" data-fan="${r.id}" ${disabled}>Fan curve</button>
-        <button class="ghost power" data-power="${r.id}" data-powerkind="reboot" ${disabled}
+        <button class="accent" data-start="${esc(r.id)}" ${disabled}>Start run</button>
+        <button data-stop="${esc(r.id)}" ${run ? "" : "disabled"}>Stop</button>
+        <button class="ghost" data-update="${esc(r.id)}" ${disabled}>Update</button>
+        <button class="ghost" data-fan="${esc(r.id)}" ${disabled}>Fan curve</button>
+        <button class="ghost power" data-power="${esc(r.id)}" data-powerkind="reboot" ${disabled}
                 title="Reboot this machine">reboot</button>
-        <button class="ghost power" data-power="${r.id}" data-powerkind="shutdown" ${disabled}
+        <button class="ghost power" data-power="${esc(r.id)}" data-powerkind="shutdown" ${disabled}
                 title="Power off this machine">shut down</button>
-        <button class="ghost forget" data-forget="${r.id}" title="Remove this runner from the fleet">forget</button>
+        <button class="ghost forget" data-forget="${esc(r.id)}" title="Remove this runner from the fleet">forget</button>
       </div>
       <div class="rmeta" style="margin-top:8px">last seen ${ago(r.last_seen)}${r.git ? " · git " + esc(String(r.git).slice(0, 7)) : ""}</div>
     </div>`;
@@ -302,15 +302,15 @@ function renderRunners() {
 
 function runCardHTML(a) {
   const preset = CHART[a.id] || Object.keys(CHART_PRESETS)[0];
-  return `<div class="runbox" data-active="${a.id}">
+  return `<div class="runbox" data-active="${esc(a.id)}">
       <div class="rh">
         <span class="statusp busy"></span>
         <div class="h">${esc(a.host)} · ${esc(a.label || "run")}</div>
         <span class="muted mono elapsed"></span>
         <span class="muted mono sysline">${esc(sysLine(a))}</span>
         <div style="margin-left:auto" class="ract">
-          <button class="danger" data-stop="${a.runner_id}">Stop</button>
-          <button class="ghost" data-detail="${a.id}">details</button>
+          <button class="danger" data-stop="${esc(a.runner_id)}">Stop</button>
+          <button class="ghost" data-detail="${esc(a.id)}">details</button>
         </div>
       </div>
       <div class="gauges">
@@ -323,7 +323,7 @@ function runCardHTML(a) {
       <div class="phases"></div>
       <div class="consolewrap">
         <div class="chead"><span class="muted">live console</span>
-          <form class="term" data-exec="${a.runner_id}">
+          <form class="term" data-exec="${esc(a.runner_id)}">
             <input placeholder="run a command on this runner…" autocomplete="off">
             <button class="accent" type="submit">run</button>
           </form>
@@ -454,7 +454,7 @@ async function renderHistory() {
     tb.innerHTML = rows.map((r) => {
       const s = r.summary || {};
       const peak = peakTemp(r);
-      // ▲/▼ vs the previous run of the same preset on the same host (>=5%)
+      // ▲/▼ vs the previous run of the same preset on the same host (>=3%)
       let vsBadge = "";
       const pg = numOrNull(r.__prev && r.__prev.summary && r.__prev.summary.gpu_soak_tflops);
       const cg = numOrNull(s.gpu_soak_tflops);
@@ -465,7 +465,7 @@ async function renderHistory() {
             + `${dd > 0 ? "▲" : "▼"}${Math.abs(dd).toFixed(0)}%</span>`;
         }
       }
-      return `<tr data-detail="${r.id}">
+      return `<tr data-detail="${esc(r.id)}">
         <td>${esc(r.host)}</td>
         <td class="syscol" title="${esc(sysLine(r))}">${esc(sysLine(r))}</td>
         <td>${esc(r.preset || "—")}</td>
@@ -502,7 +502,7 @@ async function renderFleet() {
   $("#fleetCount").textContent = `${Object.keys(byHost).length} machines · ${done.length} finished runs`;
   $("#fleetHosts tbody").innerHTML = Object.entries(byHost).sort().map(([h, rs]) => {
     const a = agg(rs), L = latest(rs);
-    return `<tr data-detail="${L.id}">
+    return `<tr data-detail="${esc(L.id)}">
       <td>${esc(h)}</td><td class="num">${rs.length}</td>
       <td class="muted">${ago(L.started)}</td>
       <td class="num">${fmt(a.gpu)}</td><td class="num">${fmt(a.cpu, 0)}</td>
@@ -554,7 +554,7 @@ function labelFor(m) { const f = STATE.metrics.find((x) => x[0] === m); return f
 function renderCompareOptions() {
   const finished = STATE.recent.filter((r) => r.status !== "running");
   const opts = finished.slice(0, 60).map((r) =>
-    `<option value="${r.id}">${esc(r.host)} · ${esc(r.label || "")} · ${ts(r.started)}</option>`).join("");
+    `<option value="${esc(r.id)}">${esc(r.host)} · ${esc(r.label || "")} · ${ts(r.started)}</option>`).join("");
   const a = $("#cmpA"), b = $("#cmpB");
   if (a.dataset.filled === String(finished.length)) return;
   a.innerHTML = opts; b.innerHTML = opts;
@@ -589,8 +589,10 @@ async function runCompare() {
 /* ------------------------------------------------------------ charts ---- */
 function drawChart(cv, series, opt = {}) {
   const dpr = window.devicePixelRatio || 1;
-  const w = cv.clientWidth, h = cv.height;
-  cv.width = w * dpr; cv.height = h * dpr;
+  const h = +cv.getAttribute("height") || 180;   // fixed CSS height (never compound)
+  const w = cv.clientWidth;
+  cv.style.height = h + "px";
+  cv.width = Math.max(1, w * dpr); cv.height = h * dpr;
   const g = cv.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
   const pl = 52, pr = 18, pt = 18, pb = 28;
   const x0 = pl, y0 = h - pb, x1 = w - pr, y1 = pt;
@@ -899,12 +901,12 @@ async function renderSchedules() {
       <td>${esc(rname(s.runner_id))}</td><td>${esc(s.label)}</td><td>${when}</td>
       <td class="mono">${ts(s.next_run)}</td>
       <td class="muted">${s.last_run ? ts(s.last_run) : "—"}</td>
-      <td><button class="danger" data-sched-del="${s.id}">delete</button></td></tr>`;
+      <td><button class="danger" data-sched-del="${esc(s.id)}">delete</button></td></tr>`;
   }).join("") || `<tr><td colspan="6" class="muted" style="padding:16px">No schedules.</td></tr>`;
 }
 
 function newSchedule() {
-  const opts = STATE.runners.map((r) => `<option value="${r.id}">${esc(r.label || r.name)}</option>`).join("");
+  const opts = STATE.runners.map((r) => `<option value="${esc(r.id)}">${esc(r.label || r.name)}</option>`).join("");
   openModal(`<h3>New schedule</h3>
     <div class="formrow"><label>runner</label><select id="scRunner" style="flex:1">${opts}</select></div>
     <div class="formrow"><label>label</label><input id="scLabel" style="flex:1" value="scheduled run"></div>
@@ -923,18 +925,23 @@ function newSchedule() {
     $("#scEvery").style.display = daily ? "none" : "";
   };
   $("#scGo").onclick = async () => {
-    const p = PRESETS[$("#scPreset").value] || {};
-    const profile = { label: $("#scPreset").value,
-      skip: p.groups ? GROUPS.filter((g) => !p.groups[g]) : [] };
-    if (p.spin) Object.assign(profile, { gpu_soak: p.spin.gpu, combined: p.spin.combined,
-      fullsoak: p.spin.fullsoak, gfx: p.spin.gfx });
-    await api("/schedules", "POST", {
-      runner_id: $("#scRunner").value, label: $("#scLabel").value, profile,
-      kind: $("#scKind").value, every_s: +$("#scEvery").value, at_time: $("#scAt").value });
-    closeModal(); renderSchedules();
+    try {
+      const p = PRESETS[$("#scPreset").value] || {};
+      const profile = { label: $("#scPreset").value,
+        skip: p.groups ? GROUPS.filter((g) => !p.groups[g]) : [] };
+      if (p.spin) Object.assign(profile, { gpu_soak: p.spin.gpu, combined: p.spin.combined,
+        fullsoak: p.spin.fullsoak, gfx: p.spin.gfx });
+      await api("/schedules", "POST", {
+        runner_id: $("#scRunner").value, label: $("#scLabel").value, profile,
+        kind: $("#scKind").value, every_s: +$("#scEvery").value, at_time: $("#scAt").value });
+      closeModal(); renderSchedules();
+    } catch (e) { toast("schedule failed: " + e.message, "err"); }
   };
 }
-async function deleteSchedule(id) { await api("/schedules/" + id, "DELETE"); renderSchedules(); }
+async function deleteSchedule(id) {
+  try { await api("/schedules/" + id, "DELETE"); renderSchedules(); }
+  catch (e) { toast("delete failed: " + e.message, "err"); }
+}
 
 /* -------------------------------------------------------------- modal --- */
 function openModal(html) {
@@ -993,7 +1000,7 @@ document.addEventListener("click", (e) => {
   if (t.dataset.stop) return cmd(t.dataset.stop, "stop");
   if (t.dataset.update) return cmd(t.dataset.update, "update");
   if (t.dataset.fan) return cmd(t.dataset.fan, "fan_curve", { on: true });
-  if (t.dataset.detail) return showDetail(t.dataset.detail);
+  if (t.dataset.detail) return showDetail(t.dataset.detail).catch((e) => toast("details failed: " + e.message, "err"));
   if (t.dataset.schedDel) return deleteSchedule(t.dataset.schedDel);
   if (t.dataset.forget) return forgetRunner(t.dataset.forget);
   if (t.dataset.power) return powerRunner(t.dataset.power, t.dataset.powerkind);
@@ -1008,7 +1015,7 @@ $("#histSearch").oninput = () => { clearTimeout(window._hs); window._hs = setTim
 $("#trendHost").onchange = renderTrends;
 $("#trendMetric").onchange = renderTrends;
 $("#trendMetric2").onchange = renderTrends;
-$("#cmpRun").onclick = runCompare;
+$("#cmpRun").onclick = () => runCompare().catch((e) => toast("compare failed: " + e.message, "err"));
 document.addEventListener("change", (e) => {
   const id = e.target && e.target.dataset && e.target.dataset.chart;
   if (!id) return;
@@ -1030,7 +1037,6 @@ document.addEventListener("submit", async (e) => {
     toast("sent to runner: " + cmd);
   } catch (err) { toast("exec failed: " + err, "err"); }
 });
-$("#modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
 window.addEventListener("resize", () => { renderActive(); });
 
 /* ---------------------------------------------------------------- boot -- */

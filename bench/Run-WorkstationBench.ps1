@@ -25,6 +25,7 @@ param(
     [switch]$SkipNet,
     [switch]$SkipCpu,
     [switch]$SkipGpu,
+    [switch]$SkipSys,
     [switch]$SkipCombined,
     [switch]$SkipLlm,
     [switch]$SkipNvenc,
@@ -41,6 +42,7 @@ function Get-NewestArtifact([string]$pattern) {
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
 }
 
+if (-not $SkipSys) {
 Write-Host "=== [1/11] system + GPU inventory + sensors ===" -ForegroundColor Yellow
 & "$PSScriptRoot\Get-GpuInfo.ps1" -Json | Set-Content "$base.info.json" -Encoding UTF8
 & "$PSScriptRoot\Get-GpuInfo.ps1"
@@ -55,6 +57,7 @@ $summary.artifacts.sensors = "$base.sensors.json"
 $summary.artifacts.pcie = "$base.pcie.json"
 $summary.artifacts.health = "$base.health.json"
 $summary.artifacts.env = "$base.env.json"
+} else { Write-Host "=== [1/11] system inventory skipped (-SkipSys) ===" -ForegroundColor DarkGray }
 
 if (-not $SkipGpu) {
     Write-Host "=== [2/11] GPU compute battery (telemetry + report) ===" -ForegroundColor Yellow

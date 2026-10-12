@@ -101,4 +101,4 @@ jobs:
             - `bench-app-windows.zip` · `bench-app-linux.zip`
             Unzip, then run `bench-gui`, `bench-tui` or `bench-agent`.
             Connecting to a control plane needs no other install; running a local
-            battery needs a toolkit checkout (`--repo DIR` / `$BENCH_REPO`).
+            battery needs a toolkit checkout (`$BENCH_REPO`).

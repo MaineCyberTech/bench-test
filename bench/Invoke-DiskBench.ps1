@@ -35,7 +35,7 @@ if (-not (Test-Path $Path)) { throw "path not found: $Path" }
 # SMART / health for the physical disk backing $Path
 function Get-DiskHealth {
     $part = Get-Partition -DriveLetter $Drive -ErrorAction SilentlyContinue | Select-Object -First 1
-    $pd = if ($part) { Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { $_.DeviceId -eq (Get-Disk -Number $part.DiskNumber).Number } } else { $null }
+    $pd = if ($part) { Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { "$($_.DeviceId)" -eq "$((Get-Disk -Number $part.DiskNumber -ErrorAction SilentlyContinue).Number)" } } else { $null }
     if (-not $pd) { $pd = Get-PhysicalDisk -ErrorAction SilentlyContinue | Select-Object -First 1 }
     $rc = if ($pd) { $pd | Get-StorageReliabilityCounter -ErrorAction SilentlyContinue } else { $null }
     return [ordered]@{

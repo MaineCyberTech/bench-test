@@ -252,10 +252,16 @@ def main():
         ps.append("-SkipLlm")
     if a.skip_combined:
         ps.append("-SkipCombined")
+    if a.skip_sys:
+        ps.append("-SkipSys")
     if a.skip_gfx:
         ps.append("-SkipValley")
     elif os.path.isdir(a.valley_bin):
         ps += ["-ValleyBin", a.valley_bin]
+    if a.gfx_seconds != 60:
+        # Unigine Valley's run length is fixed by its preset, so the Windows gfx
+        # duration is not configurable; say so rather than silently ignoring it.
+        print("[win] note: --gfx-seconds is not adjustable on Windows (Valley preset)", flush=True)
 
     cmd = ["powershell"] + ps
     print("[win] runner: %s" % " ".join(cmd), flush=True)

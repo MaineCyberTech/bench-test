@@ -9,7 +9,7 @@ bundles) that run **without a Python install** — the dashboards/agent are
 stdlib-only (tkinter / curses), so the bundle carries its own interpreter.
 
 Running a *local* battery still needs the toolkit (and numpy/PyTorch for the
-compute phases): point the app at a checkout with `--repo DIR` / `$BENCH_REPO`,
+compute phases): point the app at a checkout with `$BENCH_REPO`,
 or put the bundle next to a `bench/` directory. Connecting to a control plane and
 viewing/controlling runs needs nothing else.
 
@@ -23,8 +23,9 @@ import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BENCH = os.path.join(REPO, "bench")
-APPS = [("bench-gui", "gui.py", True), ("bench-tui", "tui.py", False),
-        ("bench-agent", "agent.py", False)]  # (name, script, no-console)
+APPS = [("bench-gui", "gui.py", True), ("bench-agent", "agent.py", False)]
+if sys.platform != "win32":            # the TUI needs curses (not in Windows CPython)
+    APPS.insert(1, ("bench-tui", "tui.py", False))
 
 
 def main():

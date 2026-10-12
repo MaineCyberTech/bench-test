@@ -106,6 +106,13 @@ fi
 
 cp -r "$LIVE/airootfs/." "$PROFILE/airootfs/"
 
+# the headless-X config pins the NVIDIA driver; drop it for non-NVIDIA images so
+# gfx/fan (which start X with that configdir) still work on the amd build
+case "$GPU" in
+    nvidia*) : ;;
+    *) rm -f "$PROFILE/airootfs/etc/X11/bench-headless.d/10-headless.conf" ;;
+esac
+
 # optional private upload credentials (gitignored, never in the repo):
 # live/private/bench-upload.conf is baked to /etc/bench-upload.conf so uploads
 # work even when the stick's own copy cannot be reached (mount trouble)
@@ -142,10 +149,11 @@ for f in "$PROFILE/grub/grub.cfg" "$PROFILE/grub/loopback.cfg"; do
     [ -f "$f" ] && sed -i -E 's/^(linux .*)$/\1 nvidia_drm.modeset=1 nvidia_drm.fbdev=1 copytoram=y/' "$f"
 done
 
-# toolkit into the image (no git/venv/results/ISOs)
+# toolkit into the image (no git/venv/results/ISOs/PACKAGED SECRETS)
 mkdir -p "$PROFILE/airootfs/opt/bench-test"
 rsync -a \
     --exclude '.git' --exclude '.venv' --exclude 'results' --exclude 'live/out*' \
+    --exclude 'live/private' --exclude 'server/data' --exclude 'server/benchd.conf' \
     "$REPO/" "$PROFILE/airootfs/opt/bench-test/"
 
 # FurMark 2 linux64 into tools/: repo copy -> tools release asset -> geeks3d

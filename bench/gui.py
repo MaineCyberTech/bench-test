@@ -45,8 +45,11 @@ except Exception:  # reporting is optional
     Reporter = None
 
 # --- runner: Linux shell script, or the Windows battery via run_win.py ---
+# When frozen (PyInstaller) sys.executable is the bundle exe, not python, so the
+# runner has to be launched with a real interpreter.
 if os.name == "nt":
-    RUNNER = sys.executable
+    RUNNER = sys.executable if not getattr(sys, "frozen", False) else (
+        shutil.which("python") or shutil.which("python3") or "python")
     RUNNER_PREFIX = [os.path.join(BENCH, "run_win.py")]
 else:
     RUNNER = os.path.join(BENCH, "Run-LinuxBench.sh")
@@ -830,9 +833,15 @@ class Dashboard:
     # ------------------------------------------------------------ results ---
     def _load_results(self):
         try:
-            js = sorted(glob.glob(os.path.join(self.results_dir, "*-linux-*.json")) or
-                        glob.glob(os.path.join(self.results_dir, "*.json")),
+            # prefer a real aggregate report; never treat infra dumps as one
+            infra = (".info.json", ".sysinfo.json", ".sensors.json", ".pcie.json",
+                     ".health.json", ".env.json", ".manifest.json", ".llm.json",
+                     ".nvenc.json")
+            js = sorted(glob.glob(os.path.join(self.results_dir, "*-linux-*.json")),
                         key=os.path.getmtime)
+            if not js:
+                js = sorted([p for p in glob.glob(os.path.join(self.results_dir, "*.json"))
+                             if not p.endswith(infra)], key=os.path.getmtime)
             if not js:
                 return
             report = js[-1]
