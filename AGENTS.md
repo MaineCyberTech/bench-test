@@ -141,6 +141,18 @@ you add behaviour. Never commit with a failing suite.
   dashboards' group list.
 - **Windows manifests use 7-digit fractional seconds** — `datetime.fromisoformat`
   rejects them; normalise before parsing (see `import_results.epoch`).
+- **Disk on live vs desktop:** desktop/CI hosts test the machine's real disk
+  (scratch under `/var/tmp` when it is not tmpfs); the **live USB** is skipped
+  unless a real volume is mounted at `/mnt/internal` — it never benchmarks the USB
+  stick or RAM.
+- **curses keys:** Python's `curses` has no `KEY_PGUP`/`KEY_PGDN`; use
+  `KEY_PPAGE`/`KEY_NPAGE` (a PgUp press otherwise raises `AttributeError`).
+- **CI builds the ISO automatically** on push to `main` touching `bench/**` or
+  `live/**` (`.github/workflows/build-iso.yml`, default variant `nvidia-legacy`),
+  and on manual dispatch.
+- **Read result files as UTF-8.** Windows' default code page (cp1252) throws on
+  the sysinfo/report JSON (`°C`, etc.), silently dropping the inventory — always
+  pass `encoding="utf-8-sig"` when opening a run's artifacts.
 - **Timing expectations:** see `docs/PHASE_TIMINGS.md` for measured per-phase
   durations (used to estimate preset runtimes).
 

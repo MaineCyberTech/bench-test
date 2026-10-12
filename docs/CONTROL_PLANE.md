@@ -196,6 +196,10 @@ pct exec 108 -- systemctl mask tmp.mount run-lock.mount dev-mqueue.mount
 
 - The agent **fails soft**: if the control plane is down, the run proceeds and the
   dashboard keeps working locally; reporting resumes when the server is back.
+- The **live USB** bakes `/etc/bench-agent.conf` (via the `BENCH_AGENT_CONF`
+  secret) and its launchers mount BENCHDATA on demand; the dashboards retry
+  registration, so the stick checks in as soon as the network is up. The ISO
+  rebuilds automatically on push to `main` touching `bench/**` or `live/**`.
 - Runners are considered **offline** after 15 s without a heartbeat; their history
   is retained.
 - `update` runs `git pull --ff-only` on the runner and reports the new commit;

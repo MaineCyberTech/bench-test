@@ -70,9 +70,10 @@ cpu, ram, disk, nvenc, net, sys, llm, fan  # fixed (see above)
   the configured size (10 GiB steady write, 2 GiB seq write).
 - CPU/RAM soak lengths are fixed in the runner (`-CpuSoakSeconds 120`,
   `-RamSoakSeconds 120`); the gpu/combined/fullsoak/gfx lengths follow the preset.
-- On the live USB the `disk` group is skipped unless a real internal volume is
-  mounted (see `docs/CONTROL_PLANE.md` / `Run-LinuxBench.sh`), and `fan` replaces
-  the Windows `llm`/`nvenc` cost.
+- On desktop/CI hosts the `disk` group tests the machine's **real disk** (scratch
+  under `/var/tmp`); on the **live USB** it is skipped unless a real internal
+  volume is mounted at `/mnt/internal` (never the USB stick or RAM), and `fan`
+  replaces the Windows `llm`/`nvenc` cost.
 
 Regenerate after a hardware/driver change by running the battery with short soaks
 and reading `/api/v1/runs/<id>` (phase `t0`/`t1`).

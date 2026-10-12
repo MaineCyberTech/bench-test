@@ -139,7 +139,8 @@ config is present, and collects results to the **BENCHDATA** partition.
 
 ```bash
 sudo ./live/Build-LiveUSB.sh --gpu nvidia-legacy --write /dev/sdX
-# or via the "Build live ISO" GitHub workflow (attaches the ISO to a release)
+# or via the "Build live ISO" GitHub workflow (attaches the ISO to a release).
+# The workflow rebuilds automatically on push to main touching bench/** or live/**.
 ```
 
 To auto-connect, put this on the BENCHDATA partition (or bake it via the
@@ -148,8 +149,10 @@ To auto-connect, put this on the BENCHDATA partition (or bake it via the
 BENCHD_SERVER=http://lab:8722
 BENCHD_TOKEN=…
 ```
-The disk group is **skipped** on the live USB unless a real internal volume is
-mounted at `/mnt/internal` (never benchmarks the USB or RAM).
+The launchers mount BENCHDATA on demand and the dashboards retry registration, so
+the stick checks in as soon as the network is up. The disk group is **skipped** on
+the live USB unless a real internal volume is mounted at `/mnt/internal` (never
+benchmarks the USB or RAM); desktop/CI hosts test the machine's real disk.
 
 ## Tests
 
