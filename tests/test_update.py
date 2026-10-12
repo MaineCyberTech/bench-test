@@ -154,6 +154,38 @@ def run():
         c.check("boot-link target is the fetched copy",
                 os.path.isfile(os.path.join(toolkit_dir, "bench", "benchreport.py")), "")
 
+    # ---- boot-time re-point when BENCHDATA cannot hold symlinks (it is vfat) ----
+    root2 = os.path.join(sand, "stick2", "bench-toolkit")
+    for name, when in (("main", 111), ("older", 11)):
+        os.makedirs(os.path.join(root2, name, "bench"))
+        open(os.path.join(root2, name, "bench", "benchreport.py"), "w").close()
+        with open(os.path.join(root2, name, br.VERSION_FILE), "w") as fh:
+            json.dump({"fetched_at": when}, fh)
+    c.check("_newest_toolkit_copy picks the freshest fetched copy",
+            os.path.basename(br._newest_toolkit_copy(root2)) == "main",
+            br._newest_toolkit_copy(root2))
+    c.check("_newest_toolkit_copy tolerates a missing root",
+            br._newest_toolkit_copy(os.path.join(sand, "absent")) == "", "")
+
+    saved_persist = br.PERSIST_DIR
+    try:
+        br.PERSIST_DIR = os.path.join(sand, "stick-empty")
+        c.check("boot-link reports nothing to point at",
+                br.toolkit_boot_link() is False, "")
+        br.PERSIST_DIR = os.path.join(sand, "stick2")
+        with open(os.path.join(root2, "current.txt"), "w") as fh:
+            fh.write(os.path.join(root2, "main"))
+        if CAN_SYMLINK:
+            os.remove(toolkit_dir)
+            os.makedirs(toolkit_dir)
+            c.check("boot-link follows current.txt when 'current' is absent",
+                    br.toolkit_boot_link() is True, "")
+            os.remove(os.path.join(root2, "current.txt"))
+            c.check("boot-link falls back to the newest copy without a pointer",
+                    br.toolkit_boot_link() is True, "")
+    finally:
+        br.PERSIST_DIR = saved_persist
+
     # ---- iso fetch: concatenate parts + verify SHA256SUMS ----
     _Stub.parts = [b"A" * 1024, b"B" * 2048, b"C" * 512]
     iso_bytes = b"".join(_Stub.parts)

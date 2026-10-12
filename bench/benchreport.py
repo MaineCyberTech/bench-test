@@ -1030,7 +1030,14 @@ def update_toolkit(ref="main", sha256=None, log=None, root=None):
             os.remove(cur)
         os.symlink(dest, cur)
     except OSError:
+        # BENCHDATA is vfat and cannot hold symlinks; leave a plain pointer so the
+        # boot-time re-point (toolkit_boot_link) still finds this copy.
         cur = dest
+        try:
+            with open(os.path.join(root, "current.txt"), "w", encoding="utf-8") as fh:
+                fh.write(dest)
+        except OSError:
+            pass
     switched = repoint_toolkit(toolkit_dir, dest)
     log("[update] %s -> %s (switched=%s)" % (ref, dest, switched))
     return {"ok": True, "ref": ref, "bytes": n, "sha256": got, "dest": dest,
@@ -1124,17 +1131,63 @@ def self_update(repo=None, log=None):
     return update_toolkit(log=log, root=repo)
 
 
+def _newest_toolkit_copy(root):
+    """The most recently fetched toolkit copy under `root` ('' when there is none).
+
+    BENCHDATA is vfat, so the 'current' symlink cannot exist there; this is the
+    last-resort way to find what the control plane last fetched.
+    """
+    best, best_t = "", -1.0
+    try:
+        for name in sorted(os.listdir(root)):
+            d = os.path.join(root, name)
+            if not os.path.isdir(d) or name in ("current",):
+                continue
+            if not os.path.isfile(os.path.join(d, "bench", "benchreport.py")):
+                continue
+            t = 0.0
+            try:
+                with open(os.path.join(d, VERSION_FILE), encoding="utf-8") as fh:
+                    t = float(json.load(fh).get("fetched_at") or 0)
+            except Exception:
+                try:
+                    t = os.path.getmtime(d)
+                except OSError:
+                    t = 0.0
+            if t > best_t:
+                best, best_t = d, t
+    except OSError:
+        return ""
+    return best
+
+
 def toolkit_boot_link(log=None):
     """Re-point the toolkit at the persisted copy at boot (live USB)."""
     log = log or (lambda _m: None)
-    cur = os.path.join(persist_root(), "bench-toolkit", "current")
-    if not os.path.isfile(os.path.join(cur, "bench", "benchreport.py")):
+    root = os.path.join(persist_root(), "bench-toolkit")
+    cur = os.path.join(root, "current")
+    target = ""
+    if os.path.isfile(os.path.join(cur, "bench", "benchreport.py")):
+        target = os.path.realpath(cur)
+    else:
+        # no symlink (vfat BENCHDATA cannot hold one): try the pointer file, then
+        # the freshest fetched copy
+        try:
+            with open(os.path.join(root, "current.txt"), encoding="utf-8") as fh:
+                p = fh.read().strip()
+        except OSError:
+            p = ""
+        if p and os.path.isfile(os.path.join(p, "bench", "benchreport.py")):
+            target = p
+        else:
+            target = _newest_toolkit_copy(root)
+    if not target:
         return False
-    if os.path.islink(TOOLKIT_DIR) and os.path.realpath(TOOLKIT_DIR) == os.path.realpath(cur):
+    if os.path.islink(TOOLKIT_DIR) and os.path.realpath(TOOLKIT_DIR) == os.path.realpath(target):
         return True
-    ok = repoint_toolkit(TOOLKIT_DIR, os.path.realpath(cur))
+    ok = repoint_toolkit(TOOLKIT_DIR, os.path.realpath(target))
     if ok:
-        log("[bench] toolkit -> %s" % os.path.realpath(cur))
+        log("[bench] toolkit -> %s" % os.path.realpath(target))
     return ok
 
 

@@ -8,21 +8,25 @@
 set -u
 
 conf=""
+# BENCHDATA holds the persisted toolkit (remote self-update) and the results, so
+# mount it whether or not the image also bakes a config - the re-point below and
+# every run depend on it.
+if ! mountpoint -q /mnt/benchdata 2>/dev/null; then
+    dev="$(blkid -L BENCHDATA 2>/dev/null || true)"
+    if [ -n "$dev" ]; then
+        mkdir -p /mnt/benchdata 2>/dev/null || true
+        i=0
+        while [ "$i" -lt 6 ]; do
+            mount "$dev" /mnt/benchdata 2>/dev/null && break
+            i=$((i + 1)); sleep 1
+        done
+    fi
+fi
+
 if [ -f /etc/bench-agent.conf ]; then
     conf=/etc/bench-agent.conf
-else
-    if ! mountpoint -q /mnt/benchdata 2>/dev/null; then
-        dev="$(blkid -L BENCHDATA 2>/dev/null || true)"
-        if [ -n "$dev" ]; then
-            mkdir -p /mnt/benchdata 2>/dev/null || true
-            i=0
-            while [ "$i" -lt 6 ]; do
-                mount "$dev" /mnt/benchdata 2>/dev/null && break
-                i=$((i + 1)); sleep 1
-            done
-        fi
-    fi
-    [ -f /mnt/benchdata/bench-agent.conf ] && conf=/mnt/benchdata/bench-agent.conf
+elif [ -f /mnt/benchdata/bench-agent.conf ]; then
+    conf=/mnt/benchdata/bench-agent.conf
 fi
 
 if [ -n "$conf" ]; then
