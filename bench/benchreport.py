@@ -208,7 +208,7 @@ class Reporter:
         self.version = version
         self.git = git
         self.timeout = timeout
-        self.log = log or (lambda *_a: None)
+        self.logfn = log or (lambda *_a: None)
         self.run_id = None
         self.enabled = bool(self.server and self.token)
         self.last_error = None
@@ -261,9 +261,9 @@ class Reporter:
                 self.token = r["api_key"]
                 if self.persist:
                     save_identity(self.server, self.runner_id, self.api_key)
-            self.log("[report] registered as %s (%s)" % (self.runner_id[:8], self.server))
+            self.logfn("[report] registered as %s (%s)" % (self.runner_id[:8], self.server))
             return True
-        self.log("[report] register failed (%s)" % (self.last_error or s))
+        self.logfn("[report] register failed (%s)" % (self.last_error or s))
         return False
 
     def heartbeat(self, status=None, current_run=None, capabilities=None):

@@ -50,8 +50,8 @@ _DEF_DUR = {"gpu": "600", "combined": "300", "fullsoak": "300", "gfx": "60"}
 PRESETS = [
     ("Quick check (short soaks)", {"groups": list(GROUPS),
                                    "dur": {"gpu": "60", "combined": "60", "fullsoak": "60", "gfx": "30"}}),
-    ("System info + 30s soak (all)", {"groups": _g("sys", "gpu", "combined", "fullsoak"),
-                                      "dur": {**_DEF_DUR, "gpu": "30", "combined": "30", "fullsoak": "30"}}),
+    ("System info + 30s soak (all)", {"groups": _g("sys", "fullsoak"),
+                                      "dur": {**_DEF_DUR, "fullsoak": "30"}}),
     ("Full run (defaults)", {"groups": list(GROUPS), "dur": dict(_DEF_DUR)}),
     ("GPU compute", {"groups": _g("gpu", "sys"), "dur": {**_DEF_DUR, "gpu": "60"}}),
     ("CPU + RAM + disk", {"groups": _g("cpu", "ram", "disk", "sys"), "dur": dict(_DEF_DUR)}),
