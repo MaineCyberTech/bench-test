@@ -166,6 +166,28 @@ def run():
     from benchreport import power_action
     c.check("power_action is callable", callable(power_action), power_action)
 
+    # ---- dashboard parity helpers (one spec for GUI + TUI) ----
+    from benchreport import (DASH_FIELDS, SAMPLE_FIELDS as _SF, CSV_ALIASES as _CA,
+                             hardware_line)
+    canon = set(_SF) | set(_CA.values())
+    missing = [k for k, _l, _d in DASH_FIELDS if k not in canon]
+    c.check("DASH_FIELDS keys are real telemetry fields", not missing, missing)
+    c.check("hardware_line never renders None",
+            "None" not in hardware_line({"cpu": None, "ram_gib": None, "gpu": None}),
+            hardware_line({"cpu": None}))
+    full = hardware_line({"cpu": "Intel(R) Core(TM) i7-6800K CPU @ 3.40GHz", "ram_gib": 32,
+                          "gpu": "NVIDIA GeForce RTX 4070 Ti SUPER", "driver": "617.42",
+                          "cores": 6, "threads": 12})
+    c.check("hardware_line has cpu + ram + gpu + driver",
+            "i7-6800K" in full and "32 GiB" in full and "RTX 4070" in full and "617.42" in full,
+            full)
+    c.check("hardware_line tags cores/threads", "(6c/12t)" in full, full)
+    c.check("hardware_line copes with an empty dict", hardware_line({}) == "", hardware_line({}))
+    for f in ("gui.py", "tui.py"):
+        src = open(os.path.join(BENCH, f), encoding="utf-8").read()
+        c.check("%s uses the shared dashboard spec" % f,
+                "DASH_FIELDS" in src and "hardware_line" in src, "")
+
     srv.stop()
     return c.fails
 

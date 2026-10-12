@@ -173,24 +173,109 @@ def _cpu_name():
     return (_p.processor() or _p.machine() or "").strip()
 
 
+# Telemetry the dashboards surface. One list, so the GUI and TUI cannot drift:
+# (canonical field, label, decimals) — "-" decimals means the raw value (text,
+# e.g. pstate "P8"). Keep in step with the sampler columns (docs/DATA.md).
+DASH_FIELDS = [
+    ("temp_c", "GPU TEMP", 0), ("gpu_util", "GPU %", 0), ("mem_util", "VRAM %", 0),
+    ("vram_used_mib", "VRAM MiB", 0), ("sm_mhz", "SM MHz", 0), ("mem_mhz", "MEM MHz", 0),
+    ("power_w", "POWER W", 0), ("power_limit_w", "CAP W", 0), ("fan_pct", "FAN %", 0),
+    ("gpu_fan_rpm", "GPU RPM", 0), ("pstate", "PSTATE", "-"), ("gpu_enc_pct", "ENC %", 0),
+    ("gpu_dec_pct", "DEC %", 0), ("temp_mem_c", "VRAM °C", 0), ("temp_limit_c", "GPU LIMIT", 0),
+    ("throttle", "THROTTLE", 0), ("video_mhz", "NVENC MHz", 0), ("pcie_gen", "PCIE GEN", 0),
+    ("pcie_width", "PCIE WIDTH", 0), ("retired", "RETIRED", 0),
+    ("cpu_util", "CPU %", 0), ("cpu_temp_c", "CPU °C", 0), ("cpu_max_core_c", "CORE MAX °C", 0),
+    ("cpu_fan_rpm", "CPU FAN", 0), ("cpu_pkg_w", "CPU W", 1), ("cpu_mhz", "CPU MHz", 0),
+    ("nvme_c", "NVMe °C", 0), ("ram_used", "RAM GiB", 1), ("load1", "LOAD1", 2),
+    ("psi_io", "IO STALL", 1), ("disk_read_mbs", "DISK R", 1), ("disk_write_mbs", "DISK W", 1),
+    ("net_rx_mbs", "NET RX", 1), ("net_tx_mbs", "NET TX", 1),
+]
+
+
+def hardware_line(info=None):
+    """One-line hardware summary for the dashboards (cross-platform).
+
+    Never renders a placeholder like "None GiB": unknown fields are left out.
+    """
+    si = info if isinstance(info, dict) else (system_info() or {})
+    bits = []
+    cpu = re.sub(r"\((R|TM)\)", "", str(si.get("cpu") or "")).strip()
+    cpu = re.sub(r"\s+CPU\s*@.*$", "", cpu, flags=re.I).strip()
+    if cpu:
+        cores, thr = si.get("cores"), si.get("threads")
+        if cores and thr:
+            cpu += " (%sc/%st)" % (cores, thr)
+        elif thr:
+            cpu += " (%st)" % thr
+        elif cores:
+            cpu += " (%sc)" % cores
+        bits.append(cpu)
+    if si.get("ram_gib"):
+        bits.append("%s GiB" % si["ram_gib"])
+    if si.get("gpu"):
+        g = str(si["gpu"])
+        bits.append(g + ((" · driver %s" % si["driver"]) if si.get("driver") else ""))
+    return " · ".join(bits)
+
+
+def _total_ram_gib():
+    """Installed RAM in GiB, without requiring psutil."""
+    try:
+        import psutil
+        return round(psutil.virtual_memory().total / 1024 ** 3, 1)
+    except Exception:
+        pass
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            class _MS(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong),
+                            ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong),
+                            ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong),
+                            ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            st = _MS()
+            st.dwLength = ctypes.sizeof(_MS)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+                return round(st.ullTotalPhys / 1024 ** 3, 1)
+        except Exception:
+            pass
+    try:
+        with open("/proc/meminfo") as fh:
+            for ln in fh:
+                if ln.startswith("MemTotal"):
+                    return round(int(ln.split()[1]) / 1048576.0, 1)
+    except Exception:
+        pass
+    try:
+        return round(os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / 1024 ** 3, 1)
+    except Exception:
+        return None
+
+
 def system_info():
     """Best-effort host spec block for run history (cpu, ram, gpu, driver, platform)."""
     import platform as _p
     info = {"os": _p.system(), "platform": _p.platform(), "hostname": socket.gethostname(),
             "python": _p.python_version()}
     info["cpu"] = _cpu_name()
+    ram = _total_ram_gib()
+    if ram:
+        info["ram_gib"] = ram
+    cpus = os.cpu_count()
+    if cpus:
+        info["threads"] = cpus
     try:
         import psutil
-        info["ram_gib"] = round(psutil.virtual_memory().total / 1024 ** 3, 1)
+        phys = psutil.cpu_count(logical=False)
+        if phys:
+            info["cores"] = phys
     except Exception:
-        try:
-            with open("/proc/meminfo") as fh:
-                for ln in fh:
-                    if ln.startswith("MemTotal"):
-                        info["ram_gib"] = round(int(ln.split()[1]) / 1048576.0, 1)
-                        break
-        except Exception:
-            pass
+        pass
     try:
         out = subprocess.run(["nvidia-smi", "--query-gpu=name,driver_version,memory.total",
                               "--format=csv,noheader"], capture_output=True, text=True,

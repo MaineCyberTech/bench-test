@@ -17,6 +17,7 @@ import glob
 import json
 import os
 import queue
+import re
 import signal
 import subprocess
 import sys
@@ -51,7 +52,8 @@ try:
                              supported_groups,
                              update_toolkit, iso_fetch, iso_write, iso_write_slot,
                              self_update, restart_self,
-                             toolkit_version, is_live, update_needs_restart)
+                             toolkit_version, is_live, update_needs_restart, hardware_line,
+                             DASH_FIELDS)
 except Exception:  # reporting is optional
     Reporter = None
 
@@ -85,6 +87,14 @@ PRESETS = [
 SPARK = "▁▂▃▄▅▆▇█"
 
 
+# fields the TUI already renders explicitly (so the catch-all line skips them)
+_TUI_SHOWN = {"temp_c", "gpu_util", "mem_util", "vram_used_mib", "sm_mhz", "power_w",
+              "fan_pct", "cpu_util", "ram_used", "cpu_temp_c", "cpu_max_core_c", "nvme_c",
+              "cpu_fan_rpm", "gpu_enc_pct", "gpu_dec_pct", "pstate", "temp_limit_c",
+              "power_limit_w", "throttle", "pcie_gen", "pcie_width", "retired", "video_mhz",
+              "cpu_pkg_w"}
+
+
 class BenchTUI:
     def __init__(self, scr, opts):
         self.scr = scr
@@ -107,6 +117,7 @@ class BenchTUI:
         self.scroll = 0
         self.follow = True
         self.hw = "detecting..."
+        self.vram_total = None
         self.tel = {k: deque(maxlen=1000) for k in ("t", "temp", "fan", "power", "util")}
         self.tel_path = None
         self.tel_cols = {}
@@ -523,7 +534,11 @@ class BenchTUI:
             self.tel_cols, self.csv_last = {}, None
             try:
                 with open(newest) as fh:
-                    self.tel_cols = {n: i for i, n in enumerate(fh.readline().strip().split(","))}
+                    self.tel_cols = {}
+                    for i, n in enumerate(fh.readline().strip().split(",")):
+                        canon = CSV_ALIASES.get(n.strip().lower(), n.strip().lower())
+                        if canon and canon not in self.tel_cols:
+                            self.tel_cols[canon] = i
             except OSError:
                 return
         try:
@@ -548,28 +563,26 @@ class BenchTUI:
             i = self.tel_cols.get(name)
             return vals[i].strip() if i is not None and i < len(vals) else None
 
-        self.csv_now = {k: get(k) for k in ("temp_c", "fan_pct", "power_w", "gpu_util_pct",
-                                            "mem_util_pct", "vram_used_mib", "sm_mhz",
-                                            "cpu_package_c", "cpu_max_core_c", "nvme_c",
-                                            "cpu_fan_rpm", "gpu_fan_rpm", "gpu_enc_pct", "gpu_dec_pct")}
+        self.csv_now = {k: get(k) for k in
+                        ("temp_c", "fan_pct", "power_w", "gpu_util", "mem_util",
+                         "vram_used_mib", "sm_mhz", "mem_mhz", "gr_mhz",
+                         "cpu_temp_c", "cpu_max_core_c", "cpu_fan_rpm", "gpu_fan_rpm",
+                         "nvme_c", "gpu_enc_pct", "gpu_dec_pct", "temp_mem_c", "video_mhz",
+                         "temp_limit_c", "power_limit_w", "throttle", "retired",
+                         "pcie_gen", "pcie_width", "cpu_pkg_w", "cpu_mhz", "load1", "psi_io",
+                         "disk_read_mbs", "disk_write_mbs", "net_rx_mbs", "net_tx_mbs")}
         self.csv_now["pstate"] = raw("pstate")
         elapsed = get("elapsed_s")
         if elapsed is not None and elapsed != self.csv_last:
             self.csv_last = elapsed
             self.tel["t"].append(elapsed)
             for key, col in (("temp", "temp_c"), ("fan", "fan_pct"), ("power", "power_w"),
-                             ("util", "gpu_util_pct")):
+                             ("util", "gpu_util")):
                 v = self.csv_now.get(col)
                 if v is not None:
                     self.tel[key].append(v)
             if self.pump:
-                sample = {}
-                for name in self.tel_cols:
-                    canon = CSV_ALIASES.get(name.strip().lower())
-                    if canon:
-                        v = get(name)
-                        if v is not None:
-                            sample[canon] = v
+                sample = {k: v for k, v in self.csv_now.items() if v is not None}
                 if sample:
                     self.pump.push_sample(sample)
 
@@ -615,26 +628,35 @@ class BenchTUI:
             pass
 
     def _detect_hardware(self):
-        parts = []
+        """Header line: CPU · RAM · GPU (cross-platform, shared with the GUI)."""
+        si = {}
         try:
-            out = subprocess.run([sys.executable, os.path.join(BENCH, "linux_info.py"), "info"],
-                                 capture_output=True, text=True, timeout=90).stdout
-            for line in out.splitlines():
-                if line.startswith("RESULT_JSON:"):
-                    d = json.loads(line.split(":", 1)[1])
-                    cpu = (d.get("cpu") or {}).get("model", "")
-                    cpu = cpu.replace("(R)", "").replace("(TM)", "").replace("CPU", "").strip()
-                    parts += [cpu, "%s GiB" % d.get("memory_gib")]
+            si = system_info() or {}
         except Exception:
-            pass
+            si = {}
         try:
             import gpu_util
             gpu_util.probe()
-            if gpu_util.NAME:
-                parts.append(gpu_util.NAME)
+            if gpu_util.NAME and not si.get("gpu"):
+                si["gpu"] = gpu_util.NAME
+            if gpu_util.VRAM_TOTAL_MIB:
+                self.vram_total = gpu_util.VRAM_TOTAL_MIB
         except Exception:
             pass
-        self.hw = " · ".join(p for p in parts if p) or "hardware detection unavailable"
+        if not self.vram_total:
+            try:
+                digits = re.sub(r"[^0-9]", "", str(si.get("vram") or ""))
+                if digits:
+                    self.vram_total = int(digits)
+            except Exception:
+                pass
+        cpu = si.get("cpu")
+        if cpu:
+            # "Intel(R) Core(TM) i7-6800K CPU @ 3.40GHz" -> "Intel Core i7-6800K"
+            cpu = re.sub(r"\((?:R|TM)\)", "", str(cpu))
+            cpu = re.sub(r"\s*CPU\s*@.*$", "", cpu, flags=re.I).strip()
+            si["cpu"] = re.sub(r"\s+", " ", cpu)
+        self.hw = hardware_line(si) or "hardware detection unavailable"
 
     # -------------------------------------------------------------- demo ----
     def _demo_seed(self):
@@ -801,12 +823,13 @@ class BenchTUI:
             self._bar(ry, MX + 2, barw, (util / 100) if util is not None else None, "gpu", "%5s" % (
                 ("%.0f %%" % util) if util is not None else "--"), 2); ry += 1
         if room():
-            total = None
-            try:
-                import gpu_util
-                total = gpu_util.VRAM_TOTAL_MIB
-            except Exception:
-                pass
+            total = self.vram_total
+            if total is None:
+                try:
+                    import gpu_util
+                    total = gpu_util.VRAM_TOTAL_MIB
+                except Exception:
+                    total = None
             frac = (vram / total) if (vram and total) else 0
             vtxt = ("%.0f/%.0f MiB" % (vram, total)) if (vram and total) else "--"
             self._bar(ry, MX + 2, barw, frac, "vram", vtxt, 6); ry += 1
@@ -830,8 +853,8 @@ class BenchTUI:
             chunks = []
             if t is not None:
                 chunks.append("gpu %.0f°" % t)
-            if self.csv_now.get("cpu_package_c") is not None:
-                chunks.append("cpu %.0f°" % self.csv_now["cpu_package_c"])
+            if self.csv_now.get("cpu_temp_c") is not None:
+                chunks.append("cpu %.0f°" % self.csv_now["cpu_temp_c"])
             if self.csv_now.get("cpu_max_core_c") is not None:
                 chunks.append("core-max %.0f°" % self.csv_now["cpu_max_core_c"])
             if self.csv_now.get("nvme_c") is not None:
@@ -842,7 +865,7 @@ class BenchTUI:
                 chunks.append("enc/dec %s/%s%%" % (self.csv_now.get("gpu_enc_pct", "--"),
                                                    self.csv_now.get("gpu_dec_pct", "--")))
             self._put(ry, MX + 2, "temps  " + " · ".join(chunks), curses.color_pair(
-                self._severity(max([v for v in (t, self.csv_now.get("cpu_package_c"),
+                self._severity(max([v for v in (t, self.csv_now.get("cpu_temp_c"),
                                                 self.csv_now.get("nvme_c")) if v is not None] or [0]))))
             ry += 1
         if room():
@@ -850,6 +873,47 @@ class BenchTUI:
             self._put(ry, MX + 2, "clock %s MHz · %s" % (
                 ("%.0f" % clk) if clk is not None else "--", self.csv_now.get("pstate") or ""),
                 curses.color_pair(8)); ry += 1
+        if room():
+            h, hot = [], False
+            if self.csv_now.get("throttle") is not None:
+                if self.csv_now["throttle"]:
+                    h.append("THROTTLED"); hot = True
+                else:
+                    h.append("no throttle")
+            if self.csv_now.get("temp_limit_c") is not None:
+                h.append("limit %.0f°" % self.csv_now["temp_limit_c"])
+            if self.csv_now.get("power_limit_w") is not None:
+                h.append("cap %.0fW" % self.csv_now["power_limit_w"])
+            if self.csv_now.get("cpu_pkg_w") is not None:
+                h.append("cpu %.0fW" % self.csv_now["cpu_pkg_w"])
+            if self.csv_now.get("pcie_gen") and self.csv_now.get("pcie_width"):
+                h.append("pcie %.0fx%.0f" % (self.csv_now["pcie_gen"], self.csv_now["pcie_width"]))
+            if self.csv_now.get("video_mhz") is not None:
+                h.append("nvenc %.0f" % self.csv_now["video_mhz"])
+            if self.csv_now.get("retired"):
+                h.append("retired pages!"); hot = True
+            if h:
+                pair = 4 if hot else 8            # red when something is wrong
+                self._put(ry, MX + 2, "health " + " · ".join(h),
+                          curses.color_pair(pair) | (curses.A_BOLD if hot else curses.A_DIM))
+                ry += 1
+        if room():
+            # whatever else the shared spec defines, so new sampler columns show
+            # up here without touching the layout (disk/net rates, CPU MHz, PSI…)
+            bits = []
+            for k, lbl, dec in DASH_FIELDS:
+                if k in _TUI_SHOWN:
+                    continue
+                v = self.csv_now.get(k)
+                if v in (None, ""):
+                    continue
+                bits.append("%s %s" % (lbl.lower(),
+                                       ("%.*f" % (dec, v)) if dec != "-" else str(v)))
+                if len(bits) >= 4:
+                    break
+            if bits:
+                self._put(ry, MX + 2, " · ".join(bits), curses.color_pair(8) | curses.A_DIM)
+                ry += 1
         if room():
             self._spark(ry, MX + 2, barw, self.tel["temp"], 100.0, 4)
             self._put(ry, MX + barw + 4, "temp hist", curses.color_pair(8) | curses.A_DIM); ry += 1

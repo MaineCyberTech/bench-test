@@ -44,7 +44,8 @@ try:
                              supported_groups,
                              update_toolkit, iso_fetch, iso_write, iso_write_slot,
                              self_update, restart_self,
-                             toolkit_version, is_live, update_needs_restart)
+                             toolkit_version, is_live, update_needs_restart, hardware_line,
+                             DASH_FIELDS)
 except Exception:  # reporting is optional
     Reporter = None
 
@@ -141,6 +142,7 @@ class Dashboard:
         self.run_t0 = None
         self.collected_ok = False
         self._stopped = False
+        self.vram_total = None
         self.rep = None
         self.pump = None
         self.tracker = None
@@ -343,11 +345,15 @@ class Dashboard:
         tiles = ttk.Frame(tele, style="Card.TFrame")
         tiles.pack(fill="x")
         self.tiles = {}
-        for key, label in [("temp", "GPU TEMP"), ("fan", "FAN %/RPM"), ("power", "POWER W"),
-                           ("util", "GPU %"), ("vram", "VRAM %"), ("ctemp", "CPU °C"),
-                           ("cpu", "CPU %"), ("ram", "RAM GIB")]:
-            card = self._card(tiles, padding=10)
-            card.pack(side="left", expand=True, fill="x", padx=(0, 8))
+        self._tile_rows = []
+        row = None
+        for i, (key, label, _dec) in enumerate(DASH_FIELDS):
+            if i % 8 == 0:                       # wrap into rows of 8
+                row = ttk.Frame(tiles, style="Card.TFrame")
+                row.pack(fill="x", pady=(0, 6))
+                self._tile_rows.append(row)
+            card = self._card(row, padding=8)
+            card.pack(side="left", expand=True, fill="x", padx=(0, 6))
             ttk.Label(card, text=label, style="Sect.TLabel").pack(anchor="w")
             val = ttk.Label(card, text="--", style="Value.TLabel")
             val.pack(anchor="w")
@@ -435,16 +441,28 @@ class Dashboard:
 
     def _detect_hardware(self):
         def work():
+            si = {}
             try:
-                si = system_info()
+                si = system_info() or {}
             except Exception:
                 si = {}
-            bits = [si.get("os") or si.get("platform"), si.get("cpu")]
-            if si.get("ram_gib"):
-                bits.append("%s GiB" % si["ram_gib"])
-            if si.get("gpu"):
-                bits.append(str(si["gpu"]) + ((" · driver " + str(si["driver"])) if si.get("driver") else ""))
-            text = "  |  ".join(b for b in bits if b)
+            try:
+                import gpu_util
+                gpu_util.probe()
+                if gpu_util.NAME and not si.get("gpu"):
+                    si["gpu"] = gpu_util.NAME
+                if gpu_util.VRAM_TOTAL_MIB:
+                    self.vram_total = gpu_util.VRAM_TOTAL_MIB
+            except Exception:
+                pass
+            if not self.vram_total:
+                try:
+                    digits = "".join(c for c in str(si.get("vram") or "") if c.isdigit())
+                    if digits:
+                        self.vram_total = int(digits)
+                except Exception:
+                    pass
+            text = hardware_line(si)
             self.q.put(("hw", text or "hardware detection unavailable"))
         threading.Thread(target=work, daemon=True).start()
 
@@ -752,7 +770,10 @@ class Dashboard:
                 self._cols, self._last_elapsed = {}, None
                 try:
                     with open(newest) as fh:
-                        self._cols = {n: i for i, n in enumerate(fh.readline().strip().split(","))}
+                        for i, n in enumerate(fh.readline().strip().split(",")):
+                            canon = CSV_ALIASES.get(n.strip().lower(), n.strip().lower())
+                            if canon and canon not in self._cols:
+                                self._cols[canon] = i
                 except OSError:
                     pass
         if not self.tele_path or not os.path.exists(self.tele_path):
@@ -775,24 +796,24 @@ class Dashboard:
             except ValueError:
                 return None
 
-        temp, fan = get("temp_c"), get("fan_pct")
-        power, util = get("power_w"), get("gpu_util_pct")
-        rpm, cpu, ram = get("gpu_fan_rpm"), get("cpu_util_pct"), get("ram_used_gib")
-        vram = get("mem_util_pct")
-        ctemp = get("cpu_package_c")
-        if ctemp is None:
-            ctemp = get("cpu_temp_c")
-        for key, val in (("temp", temp), ("fan", fan), ("power", power), ("util", util),
-                         ("vram", vram), ("ctemp", ctemp), ("cpu", cpu), ("ram", ram)):
-            if val is None:
-                continue
-            text = "%.0f" % val
-            if key == "fan" and rpm is not None:
-                text += " / %.0f" % rpm
-            self.tiles[key].configure(text=text)
+        def raw(name):
+            i = self._cols.get(name)
+            return vals[i].strip() if (i is not None and i < len(vals)) else None
+
+        # every dashboard field, from the shared spec (decimals "-" = text)
+        for key, _label, dec in DASH_FIELDS:
+            v = raw(key) if dec == "-" else get(key)
+            if v not in (None, ""):
+                self.tiles[key].configure(text=(v if dec == "-" else "%.*f" % (dec, v)))
+        temp, fan, power, util = get("temp_c"), get("fan_pct"), get("power_w"), get("gpu_util")
+        rpm = get("gpu_fan_rpm")
+        if fan is not None and rpm is not None:
+            self.tiles["fan_pct"].configure(text="%.0f / %.0f" % (fan, rpm))
         if temp is not None:
-            self.tiles["temp"].configure(foreground=BAD if temp >= 80 else (WARN if temp >= 70 else ACCENT))
-        elapsed = get("elapsed_s")
+            self.tiles["temp_c"].configure(foreground=BAD if temp >= 80 else (WARN if temp >= 70 else ACCENT))
+        if get("throttle"):
+            self.tiles["throttle"].configure(foreground=BAD, text="yes")
+        elapsed = get("elapsed")
         if elapsed is not None and elapsed != self._last_elapsed:
             self._last_elapsed = elapsed
             self.tel["t"].append(elapsed)
@@ -800,13 +821,8 @@ class Dashboard:
                 if val is not None:
                     self.tel[key].append(val)
             if self.pump:
-                sample = {}
-                for name in self._cols:
-                    canon = CSV_ALIASES.get(name.strip().lower())
-                    if canon:
-                        v = get(name)
-                        if v is not None:
-                            sample[canon] = v
+                sample = {k: v for k, v in
+                          ((n, get(n)) for n in self._cols) if v is not None}
                 if sample:
                     self.pump.push_sample(sample)
             for key in self.tel:
@@ -1045,10 +1061,13 @@ class Dashboard:
             self.tel["power"].append(20 + 130 * phase + (i % 7) * 1.5)
             self.tel["fan"].append(26 + 33 * phase)
             self.tel["util"].append(min(100, 100 * phase))
-        for key, txt, color in [("temp", "66", ACCENT), ("fan", "59 / 2601", GOOD),
-                                ("power", "152", ACCENT), ("util", "100", ACCENT),
-                                ("cpu", "87", WARN), ("ram", "9.8", ACCENT)]:
-            self.tiles[key].configure(text=txt, foreground=color)
+        for key, txt, color in [("temp_c", "66", ACCENT), ("fan_pct", "59 / 2601", GOOD),
+                                ("power_w", "152", ACCENT), ("gpu_util", "100", ACCENT),
+                                ("cpu_util", "87", WARN), ("ram_used", "9.8", ACCENT),
+                                ("sm_mhz", "2751", ACCENT), ("vram_used_mib", "9012", ACCENT),
+                                ("pstate", "P0", ACCENT), ("throttle", "0", GOOD)]:
+            if key in self.tiles:
+                self.tiles[key].configure(text=txt, foreground=color)
         cards = [("soak", "1.8 TF  67°C"), ("cpu", "152 GF"), ("ram", "8.5 GB/s"),
                  ("disk", "1216 MB/s"), ("net", "243 Mb/s"), ("gfx", "3019  50 fps")]
         for key, val in cards:

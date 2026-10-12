@@ -18,6 +18,10 @@ mandatory third-party dependency.
 
 ## 2. Where it surfaces
 
+Both dashboards render the **same** field set from one shared list
+(`benchreport.DASH_FIELDS`) and the same hardware line
+(`benchreport.hardware_line()`), so the GUI and TUI cannot drift:
+
 - **History table** — sortable/filterable: host, system, preset, label, started,
   duration, status, GPU soak TF, CPU soak GF, RAM GB/s, peak °C.
 - **Run detail** — headline tiles (**+ %Δ vs the previous run of the same preset
