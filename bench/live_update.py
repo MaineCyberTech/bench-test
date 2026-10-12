@@ -20,7 +20,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from benchreport import (iso_fetch, iso_write, iso_write_slot, toolkit_boot_link,  # noqa: E402
-                         update_toolkit, gh_release)
+                         update_toolkit, gh_release, ensure_torch_packages)
 
 
 def _log(m):
@@ -38,6 +38,8 @@ def main():
     t.add_argument("--force", action="store_true", help="allow switching a non-live install")
 
     sub.add_parser("boot-link", help="re-point the toolkit at the persisted copy")
+
+    sub.add_parser("torch-link", help="keep the image's PyTorch importable after a re-point")
 
     ls = sub.add_parser("iso-list", help="list a release's assets")
     ls.add_argument("tag")
@@ -64,6 +66,8 @@ def main():
         return 0 if update_toolkit(a.ref, a.sha256, log=_log).get("ok") else 1
     if a.cmd == "boot-link":
         return 0 if toolkit_boot_link(log=_log) else 1
+    if a.cmd == "torch-link":
+        return 0 if ensure_torch_packages(log=_log) else 1
     if a.cmd == "iso-list":
         rel, err = gh_release(a.tag)
         if err:

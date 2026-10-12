@@ -313,6 +313,29 @@ def run():
         src = open(os.path.join(BENCH, f), encoding="utf-8").read()
         c.check("%s prefers the venv interpreter" % f, "venv_python(" in src, f)
 
+    # ---- the image's PyTorch must survive a toolkit re-point ----
+    c.check("_overlay_lowerdirs tolerates a missing /proc/mounts",
+            isinstance(br._overlay_lowerdirs(), list), "")
+    torchdir = os.path.join(sand, "pypkg")
+    os.makedirs(os.path.join(torchdir, "torch"))
+    saved_torch = br.TORCH_DIR
+    try:
+        br.TORCH_DIR = torchdir
+        c.check("ensure_torch_packages accepts an already-baked dir",
+                br.ensure_torch_packages() == torchdir, "")
+        br.TORCH_DIR = os.path.join(sand, "absent-pypkg")
+        c.check("ensure_torch_packages reports nothing to link",
+                br.ensure_torch_packages() == "", br.ensure_torch_packages())
+    finally:
+        br.TORCH_DIR = saved_torch
+    for f in ("gui.py", "tui.py"):
+        src = open(os.path.join(BENCH, f), encoding="utf-8").read()
+        c.check("%s hides the runner console on Windows" % f, "CREATE_NO_WINDOW" in src, f)
+    c.check("the boot env links torch before re-pointing the toolkit",
+            "torch-link" in open(os.path.join(os.path.dirname(BENCH), "live", "airootfs",
+                                              "usr", "local", "bin", "bench-agent-env"),
+                                 encoding="utf-8").read(), "")
+
     # ---- iso write guards (never actually writes) ----
     c.check("iso_write needs confirm", "confirm" in str(br.iso_write(r2["iso"], "/dev/null").get("error")), "")
     c.check("iso_write rejects a missing iso",

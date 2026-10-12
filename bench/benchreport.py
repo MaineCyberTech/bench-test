@@ -1045,6 +1045,9 @@ def update_toolkit(ref="main", sha256=None, log=None, root=None):
                 fh.write(dest)
         except OSError:
             pass
+    # keep the image's PyTorch reachable: re-pointing the toolkit hides the baked
+    # copy, and every GPU phase dies with ModuleNotFoundError without it
+    ensure_torch_packages(log)
     switched = repoint_toolkit(toolkit_dir, dest)
     log("[update] %s -> %s (switched=%s)" % (ref, dest, switched))
     return {"ok": True, "ref": ref, "bytes": n, "sha256": got, "dest": dest,
@@ -1192,6 +1195,78 @@ def venv_python(repo=None):
         if os.path.isfile(p):
             return p
     return ""
+
+
+TORCH_DIR = os.environ.get("BENCH_TORCH_DIR") or "/opt/bench-pypackages"
+
+
+def _overlay_lowerdirs():
+    """The overlay's lower dirs from /proc/mounts (the live image's squashfs)."""
+    out = []
+    try:
+        with open("/proc/mounts") as fh:
+            for ln in fh:
+                parts = ln.split()
+                if len(parts) < 4:
+                    continue
+                for opt in parts[3].split(","):
+                    if opt.startswith("lowerdir="):
+                        out += [p for p in opt.split("=", 1)[1].split(":") if p]
+    except OSError:
+        pass
+    return out
+
+
+def _pth_files():
+    import glob
+    return glob.glob("/usr/lib/python3*/site-packages/zz-bench-torch.pth")
+
+
+def ensure_torch_packages(log=None):
+    """Keep the image's PyTorch importable after the toolkit is re-pointed.
+
+    Images bake the packages either into the toolkit dir (older builds, at
+    /opt/bench-test/py-packages) or into TORCH_DIR (newer ones). Re-pointing
+    /opt/bench-test at a fetched copy hides the older location, which silently
+    removes torch - every GPU phase then dies with ModuleNotFoundError - so the
+    packages are bound to the stable path and the .pth is made to list it.
+
+    Returns the directory python should use ('' when there is nothing to link).
+    """
+    log = log or (lambda _m: None)
+    stable = TORCH_DIR
+    if os.path.isdir(os.path.join(stable, "torch")):
+        return stable
+    src = ""
+    cands = [os.path.join(TOOLKIT_DIR, "py-packages")]
+    cands += [os.path.join(d, "opt", "bench-test", "py-packages") for d in _overlay_lowerdirs()]
+    for cand in cands:
+        if os.path.isdir(os.path.join(cand, "torch")):
+            src = cand
+            break
+    if not src:
+        return ""
+    try:
+        os.makedirs(stable, exist_ok=True)
+        if not os.path.ismount(stable):
+            r = subprocess.run(["mount", "--bind", src, stable], capture_output=True, timeout=60)
+            if r.returncode != 0:
+                log("[torch] could not bind %s -> %s" % (src, stable))
+                return ""
+        for pth in _pth_files():
+            try:
+                with open(pth, encoding="utf-8") as fh:
+                    have = fh.read().split()
+            except OSError:
+                continue
+            if stable not in have:
+                with open(pth, "a", encoding="utf-8") as fh:
+                    fh.write(stable + "\n")
+        log("[torch] %s -> %s" % (src, stable))
+    except Exception as e:
+        log("[torch] link failed: %s" % e)
+        return ""
+    return stable
 
 
 def toolkit_boot_link(log=None):

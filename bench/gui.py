@@ -712,7 +712,9 @@ class Dashboard:
         try:
             self.proc = subprocess.Popen([RUNNER] + RUNNER_PREFIX + args, cwd=REPO, env=env,
                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                         text=True, bufsize=1, start_new_session=True)
+                                         text=True, bufsize=1, start_new_session=True,
+                                         creationflags=(subprocess.CREATE_NO_WINDOW
+                                                        if os.name == "nt" else 0))
         except Exception as exc:
             self._set_status("failed to start: %s" % exc, BAD)
             return

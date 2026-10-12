@@ -312,7 +312,9 @@ class BenchTUI:
         try:
             self.proc = subprocess.Popen([RUNNER] + self._args(), cwd=REPO, env=env,
                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                         text=True, bufsize=1, start_new_session=True)
+                                         text=True, bufsize=1, start_new_session=True,
+                                         creationflags=(getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                                                        if os.name == "nt" else 0))
         except Exception as exc:
             self._set("failed to start: %s" % exc, 4)
             return
