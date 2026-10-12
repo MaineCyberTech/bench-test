@@ -7,6 +7,7 @@ const gset = (...on) => Object.fromEntries(ALL_GROUPS.map((g) => [g, on.includes
 const DEF_SPIN = { gpu: 600, combined: 300, fullsoak: 300, gfx: 60 };
 const PRESETS = {
   "Quick check (short soaks)": { groups: gset(...ALL_GROUPS), spin: { gpu: 60, combined: 60, fullsoak: 60, gfx: 30 } },
+  "System info + 30s soak (all)": { groups: gset("sys", "gpu", "combined", "fullsoak"), spin: { ...DEF_SPIN, gpu: 30, combined: 30, fullsoak: 30 } },
   "Full run (defaults)": { groups: gset(...ALL_GROUPS), spin: { ...DEF_SPIN } },
   "GPU compute": { groups: gset("gpu", "sys"), spin: { ...DEF_SPIN, gpu: 60 } },
   "CPU + RAM + disk": { groups: gset("cpu", "ram", "disk", "sys"), spin: { ...DEF_SPIN } },

@@ -72,6 +72,8 @@ PRESETS = {
     "Select a preset...": None,
     "Quick check (short soaks)": {"groups": _ALL_G,
                                   "spin": {"gpu": 60, "combined": 60, "fullsoak": 60, "gfx": 30}},
+    "System info + 30s soak (all)": {"groups": _g("sys", "gpu", "combined", "fullsoak"),
+                                     "spin": {**_DEF_DUR, "gpu": 30, "combined": 30, "fullsoak": 30}},
     "Full run (defaults)": {"groups": _ALL_G, "spin": dict(_DEF_DUR)},
     "GPU compute": {"groups": _g("gpu", "sys"), "spin": {**_DEF_DUR, "gpu": 60}},
     "CPU + RAM + disk": {"groups": _g("cpu", "ram", "disk", "sys"), "spin": dict(_DEF_DUR)},
