@@ -159,6 +159,16 @@ def run():
     r3 = br.iso_fetch("iso-stub-1", "nvidia-legacy", dest=os.path.join(sand, "iso2"))
     c.check("iso mismatched sum flagged", r3.get("verified") is False, r3)
 
+    # ---- restart semantics ----
+    c.check("git update always restarts (so the commit re-registers)",
+            br.update_needs_restart({"ok": True, "kind": "git", "out": "Already up to date."}) is True, "")
+    c.check("toolkit switch restarts",
+            br.update_needs_restart({"ok": True, "switched": True}) is True, "")
+    c.check("no-op toolkit update does not restart",
+            br.update_needs_restart({"ok": True, "switched": False}) is False, "")
+    c.check("failed update does not restart",
+            br.update_needs_restart({"error": "x"}) is False, "")
+
     # ---- iso write guards (never actually writes) ----
     c.check("iso_write needs confirm", "confirm" in str(br.iso_write(r2["iso"], "/dev/null").get("error")), "")
     c.check("iso_write rejects a missing iso",

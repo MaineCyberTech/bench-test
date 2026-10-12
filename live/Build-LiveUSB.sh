@@ -166,6 +166,17 @@ for bad in "$PROFILE/airootfs/opt/bench-test/live/private" \
     fi
 done
 
+# stamp the toolkit identity so a flashed stick can report which build it runs
+# (the fleet view then shows "update available" against the latest main)
+if git -C "$REPO" rev-parse --short HEAD >/dev/null 2>&1; then
+    _c="$(git -C "$REPO" rev-parse --short HEAD)"
+    _b="$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || echo detached)"
+    printf '{"mode":"iso","ref":"%s","commit":"%s","built":"%s","sha256":null}\n' \
+        "$_b" "$_c" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        > "$PROFILE/airootfs/opt/bench-test/.bench-version"
+    echo "[build] stamped toolkit $_b@$_c"
+fi
+
 # FurMark 2 linux64 into tools/: repo copy -> tools release asset -> geeks3d
 FM_SRC="$REPO/tools/furmark/FurMark_linux64"
 if [ ! -x "$FM_SRC/furmark" ]; then

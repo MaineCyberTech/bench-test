@@ -885,11 +885,21 @@ def repoint_toolkit(toolkit_dir, target, force=False):
     return True
 
 
-def update_toolkit(ref="main", sha256=None, log=None):
-    """Fetch the toolkit at `ref` onto the stick and switch the runner onto it."""
+def update_toolkit(ref="main", sha256=None, log=None, root=None):
+    """Fetch the toolkit at `ref` onto the stick and switch the runner onto it.
+
+    Only meaningful for a live/external install: `root` is the toolkit in use
+    (a runner passes its own REPO). A git checkout updates with `update` instead.
+    """
     log = log or (lambda _m: None)
-    if os.path.isdir(os.path.join(TOOLKIT_DIR, ".git")) and not os.path.islink(TOOLKIT_DIR):
+    toolkit_dir = root or TOOLKIT_DIR
+    if os.path.isdir(os.path.join(toolkit_dir, ".git")) and not os.path.islink(toolkit_dir):
         return {"kind": "git", "error": "a git checkout updates with the 'update' command"}
+    if root and os.path.isdir(root) and not is_live() and \
+            os.environ.get("BENCH_ALLOW_TOOLKIT_SWITCH") != "1":
+        return {"kind": "install", "toolkit": toolkit_dir,
+                "error": "not a live runner - update the checkout with 'update' (git pull) "
+                         "or set BENCH_ALLOW_TOOLKIT_SWITCH=1"}
 
     root = os.path.join(persist_root(), "bench-toolkit")
     dest = os.path.join(root, str(ref).replace("/", "_"))
@@ -936,11 +946,25 @@ def update_toolkit(ref="main", sha256=None, log=None):
         os.symlink(dest, cur)
     except OSError:
         cur = dest
-    switched = repoint_toolkit(TOOLKIT_DIR, dest)
+    switched = repoint_toolkit(toolkit_dir, dest)
     log("[update] %s -> %s (switched=%s)" % (ref, dest, switched))
     return {"ok": True, "ref": ref, "bytes": n, "sha256": got, "dest": dest,
-            "current": cur, "switched": switched, "toolkit": TOOLKIT_DIR,
+            "current": cur, "switched": switched, "toolkit": toolkit_dir,
             "commit": commit, "restart_required": bool(switched)}
+
+
+def update_needs_restart(res):
+    """True when an update should be followed by a restart.
+
+    A git checkout restarts even when the pull was a no-op: the running process
+    reports the commit it started with, so a fresh registration is what clears
+    the "update available" badge.
+    """
+    if not isinstance(res, dict) or not res.get("ok"):
+        return False
+    if res.get("kind") == "git":
+        return True
+    return bool(res.get("switched"))
 
 
 def restart_self(delay=1.5, log=None):
@@ -962,7 +986,7 @@ def self_update(repo=None, log=None):
                            capture_output=True, text=True, timeout=180)
         out = ((r.stdout or "") + (r.stderr or "")).strip()
         return {"ok": r.returncode == 0, "kind": "git", "rc": r.returncode, "out": out[-2000:]}
-    return update_toolkit(log=log)
+    return update_toolkit(log=log, root=repo)
 
 
 def toolkit_boot_link(log=None):

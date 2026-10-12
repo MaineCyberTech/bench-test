@@ -47,7 +47,7 @@ from benchreport import (Reporter, PhaseTracker, TelemetryTail,  # noqa: E402
                          power_action, supported_groups,
                          update_toolkit, iso_fetch, iso_write, iso_write_slot,
                          self_update, restart_self,
-                         toolkit_version)
+                         toolkit_version, is_live, update_needs_restart)
 
 DEFAULT_GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc",
                   "llm", "fan", "sys", "gfx"]
@@ -64,7 +64,7 @@ def run_hidden(cmd, **kw):
 def probe_capabilities():
     caps = {"os": platform.system(), "groups": supported_groups(),
             "platform": platform.platform(), "python": platform.python_version(),
-            "toolkit": toolkit_version(REPO)}
+            "toolkit": toolkit_version(REPO), "live": is_live()}
     try:
         out = run_hidden(["nvidia-smi", "--query-gpu=name,driver_version,memory.total",
                           "--format=csv,noheader"], capture_output=True, text=True, timeout=10).stdout.strip()
@@ -286,7 +286,7 @@ class Agent:
         try:
             if kind == "update_toolkit":
                 res = update_toolkit(payload.get("ref") or "main", payload.get("sha256"),
-                                     log=self.log)
+                                     log=self.log, root=REPO)
             elif kind == "iso_fetch":
                 res = iso_fetch(payload.get("tag") or "", payload.get("gpu") or "nvidia-legacy",
                                 payload.get("dest"), log=self.log)
@@ -298,7 +298,7 @@ class Agent:
         except Exception as e:
             res = {"error": "%s: %s" % (type(e).__name__, e)}
         self.rep.ack(cid, "done" if res.get("ok") else "failed", res)
-        if res.get("switched"):
+        if update_needs_restart(res):
             threading.Thread(target=restart_self, args=(1.5, self.log), daemon=True).start()
 
     def _exec_and_ack(self, cid, payload):

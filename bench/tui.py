@@ -51,7 +51,7 @@ try:
                              supported_groups,
                              update_toolkit, iso_fetch, iso_write, iso_write_slot,
                              self_update, restart_self,
-                             toolkit_version)
+                             toolkit_version, is_live, update_needs_restart)
 except Exception:  # reporting is optional
     Reporter = None
 
@@ -152,6 +152,7 @@ class BenchTUI:
             self.sysinfo = system_info()
             caps = {"os": _p.system(), "platform": _p.platform(), "kind": "tui",
                     "groups": supported_groups(), "toolkit": toolkit_version(REPO),
+                    "live": is_live(),
                     "gpu": self.sysinfo.get("gpu"), "driver": self.sysinfo.get("driver"),
                     "cpu": self.sysinfo.get("cpu"), "ram_gib": self.sysinfo.get("ram_gib")}
             self._connect_reporting(caps)
@@ -210,13 +211,14 @@ class BenchTUI:
                 elif kind == "iso_write_slot":
                     res = iso_write_slot(payload.get("iso"), bool(payload.get("confirm")), log=log)
                 elif kind == "update_toolkit":
-                    res = update_toolkit(payload.get("ref") or "main", payload.get("sha256"), log=log)
+                    res = update_toolkit(payload.get("ref") or "main", payload.get("sha256"),
+                                         log=log, root=REPO)
                 else:
                     res = self_update(REPO, log=log)
             except Exception as e:
                 res = {"error": "%s: %s" % (type(e).__name__, e)}
             self.rep.ack(cid, "done" if res.get("ok") else "failed", res)
-            if res.get("switched"):
+            if update_needs_restart(res):
                 restart_self(1.5, log)
         threading.Thread(target=work, daemon=True).start()
 

@@ -25,6 +25,9 @@ sys.path.insert(0, BENCH)
 
 TOKEN = "test-token"
 
+# keep the suite offline: the server resolves "latest main" from GitHub otherwise
+os.environ.setdefault("BENCH_OFFLINE", "1")
+
 _TMPDIRS = []
 
 
