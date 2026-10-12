@@ -857,7 +857,8 @@ class Dashboard:
             self.status_right.configure(text="run %d:%02d · results: %s" % (
                 elapsed // 60, elapsed % 60, os.path.basename(self.results_dir)))
         self._draw_chart()
-        self.root.after(1000, self._tick)
+        # NB: re-arming is done by _tick()'s finally - do NOT schedule here too,
+        # or the pending-timer count doubles every second and swamps the loop.
 
     def _read_telemetry(self):
         files = glob.glob(os.path.join(self.results_dir, "*.telemetry.csv"))
