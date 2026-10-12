@@ -12,6 +12,11 @@ BENCH="${BENCH_DIR:-/opt/bench-test}"
 RUN="$BENCH/bench/Run-LinuxBench.sh"
 OUT="$BENCH/results"
 
+# control-plane config (optional): check in when BENCHD_SERVER/BENCHD_TOKEN are set
+for c in /etc/bench-agent.conf /mnt/benchdata/bench-agent.conf; do
+    if [ -f "$c" ]; then set -a; . "$c"; set +a; break; fi
+done
+
 ARGS=()
 WITH_GFX=0
 for arg in "$@"; do
@@ -49,5 +54,10 @@ if [ "$WITH_GFX" = 1 ]; then
 fi
 
 echo "[live] gpu: $(lspci -nn 2>/dev/null | grep -iE 'VGA|3D|Display' | head -1)"
-BENCH_PY=/usr/bin/python "$RUN" "${ARGS[@]}" -o "$OUT"
+if [ -n "${BENCHD_SERVER:-}" ] && [ -n "${BENCHD_TOKEN:-}" ]; then
+    echo "[live] checking in to $BENCHD_SERVER"
+    /usr/bin/python "$BENCH/bench/agent.py" --out "$OUT" --once -- "${ARGS[@]}"
+else
+    BENCH_PY=/usr/bin/python "$RUN" "${ARGS[@]}" -o "$OUT"
+fi
 echo "[live] battery exit=$?; results under $OUT (collecting...)"

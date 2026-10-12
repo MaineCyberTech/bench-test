@@ -106,8 +106,8 @@ class Agent:
             return [sys.executable, os.path.join(BENCH, "run_win.py")] + args + ["-o", self.out_dir]
         return ["bash", os.path.join(BENCH, "Run-LinuxBench.sh")] + args + ["-o", self.out_dir]
 
-    def run_battery(self, label, profile):
-        args = build_runner_args(profile)
+    def run_battery(self, label, profile, extra_args=None):
+        args = build_runner_args(profile) + list(extra_args or [])
         cmd = self.runner_cmd(args)
         self.log("run: %s" % " ".join(cmd))
         env = os.environ.copy()
@@ -311,12 +311,24 @@ def main():
     ap.add_argument("--out", default=os.path.join(REPO, "results"))
     ap.add_argument("--poll", type=float, default=2.0)
     ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--once", action="store_true",
+                    help="run the battery once and exit (args after -- go to the runner)")
+    ap.add_argument("extra", nargs=argparse.REMAINDER,
+                    help="runner flags after -- (with --once)")
     a = ap.parse_args()
     if not a.server or not a.token:
         print("agent: --server and --token are required (or BENCHD_SERVER/BENCHD_TOKEN)")
         return 2
     if a.self_test:
         return self_test(a)
+    if a.once:
+        extra = [x for x in a.extra if x != "--"]
+        ag = Agent(a)
+        while not ag.rep.register(ag.caps):
+            time.sleep(5)
+        ag.run_battery("live run", {}, extra_args=extra)
+        ag.rep.heartbeat(status="idle", current_run=None)
+        return 0
     Agent(a).loop()
     return 0
 

@@ -99,6 +99,7 @@ class Dashboard:
         self._curve_on = False
         self.run_t0 = None
         self.collected_ok = False
+        self._stopped = False
         self.rep = None
         self.pump = None
         self.tracker = None
@@ -496,6 +497,7 @@ class Dashboard:
         self.tele_path, self._cols, self._last_elapsed = None, {}, None
         self.tel = {"t": [], "temp": [], "fan": [], "power": [], "util": []}
         self.exited = False
+        self._stopped = False
         self.run_t0 = time.time()
         os.makedirs(self.results_dir, exist_ok=True)
         env = os.environ.copy()
@@ -527,6 +529,7 @@ class Dashboard:
 
     def stop(self):
         if self.proc and self.proc.poll() is None:
+            self._stopped = True
             try:
                 if os.name == "nt":
                     subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.proc.pid)],
@@ -593,7 +596,8 @@ class Dashboard:
                 summary = build_summary(report) if report else {}
             except Exception:
                 summary = {}
-            self.rep.finish("done" if rc == 0 else "failed", rc or 0, summary)
+            self.rep.finish("done" if rc == 0 else ("stopped" if self._stopped else "failed"),
+                            rc or 0, summary)
         self._load_results()
         self._auto_collect()
 

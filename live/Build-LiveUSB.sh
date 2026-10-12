@@ -114,6 +114,13 @@ if [ -f "$LIVE/private/bench-upload.conf" ]; then
     echo "[build] baked private bench-upload.conf -> /etc/bench-upload.conf"
 fi
 
+# optional control-plane config (server URL + token): the live dashboards check
+# in automatically when /etc/bench-agent.conf is present
+if [ -f "$LIVE/private/bench-agent.conf" ]; then
+    install -m 600 "$LIVE/private/bench-agent.conf" "$PROFILE/airootfs/etc/bench-agent.conf"
+    echo "[build] baked private bench-agent.conf -> /etc/bench-agent.conf"
+fi
+
 # NVIDIA console: fbdev gives the VT a framebuffer once nvidia-drm loads.
 # Without it the text console goes dark on real hardware (a live system has no
 # compositor to take over the display) - the dashboard would run invisibly.

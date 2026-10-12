@@ -69,6 +69,7 @@ class BenchTUI:
         self.proc = None
         self.running = False
         self.exited = False
+        self._stopped = False
         self.phases = []
         self.last_phase = {}
         self.log = deque(maxlen=2000)
@@ -195,6 +196,7 @@ class BenchTUI:
         self.tel = {k: deque(maxlen=1000) for k in ("t", "temp", "fan", "power", "util")}
         self.tel_path, self.tel_cols, self.csv_last = None, {}, None
         self.exited = False
+        self._stopped = False
         os.makedirs(self.results_dir, exist_ok=True)
         env = os.environ.copy()
         env.setdefault("BENCH_PY", sys.executable)
@@ -222,6 +224,7 @@ class BenchTUI:
 
     def stop(self):
         if self.proc and self.proc.poll() is None:
+            self._stopped = True
             try:
                 os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
                 self._set("stopping...", 3)
@@ -405,7 +408,8 @@ class BenchTUI:
                 summary = build_summary(report) if report else {}
             except Exception:
                 summary = {}
-            self.rep.finish("done" if rc == 0 else "failed", rc or 0, summary)
+            self.rep.finish("done" if rc == 0 else ("stopped" if self._stopped else "failed"),
+                            rc or 0, summary)
         self._set("finished (exit %s) - c collect · r report" % rc, 1 if rc == 0 else 4)
         if os.path.exists(RESULT_COLLECTOR):
             self.collect()

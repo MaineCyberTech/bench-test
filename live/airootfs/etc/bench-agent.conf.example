@@ -1,0 +1,11 @@
+# bench-agent.conf - connect this machine to a benchd control plane.
+#
+# The live-USB launchers (bench-tui, bench-gui, bench-live-run) read this file
+# and check in automatically. Copy it to ONE of:
+#   /etc/bench-agent.conf              (baked at build time)
+#   /mnt/benchdata/bench-agent.conf    (drop it on the stick's BENCHDATA partition)
+#
+# Same values are honoured as environment variables.
+
+BENCHD_SERVER=http://lab:8722
+BENCHD_TOKEN=change-me

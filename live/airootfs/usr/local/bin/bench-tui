@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
 # Launch the bench-test TUI (htop-style console dashboard).
+# Checks in to the control plane when a config is present:
+#   /etc/bench-agent.conf  or  /mnt/benchdata/bench-agent.conf
+#     BENCHD_SERVER=http://lab:8722
+#     BENCHD_TOKEN=...
 set -u
+for c in /etc/bench-agent.conf /mnt/benchdata/bench-agent.conf; do
+    if [ -f "$c" ]; then set -a; . "$c"; set +a; break; fi
+done
 exec /usr/bin/python /opt/bench-test/bench/tui.py "$@"
