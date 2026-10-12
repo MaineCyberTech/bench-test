@@ -68,6 +68,17 @@ CSV_ALIASES = {
     "disk_write_mbs": "disk_write_mbs",
     "net_rx_mbs": "net_rx_mbs",
     "net_tx_mbs": "net_tx_mbs",
+    # headroom / health (added)
+    "temp_limit_c": "temp_limit_c",
+    "power_default_w": "power_default_w",
+    "power_max_w": "power_max_w",
+    "video_mhz": "video_mhz",
+    "pcie_gen": "pcie_gen",
+    "pcie_width": "pcie_width",
+    "retired": "retired",
+    "throttle": "throttle",
+    "throttle_bits": "throttle_bits",
+    "clocks_throttle_reasons_active": "throttle_bits",
 }
 
 

@@ -52,7 +52,7 @@ bench/     runners (Run-*.{ps1,sh}, run_win.py), phases (*_bench.py), dashboards
 server/    benchd.py (API + web), web/ (dashboard), import_results.py, systemd units
 live/      Build-LiveUSB.sh + airootfs (launchers, units, conf examples)
 tests/     run_all.py + test_*.py (stdlib)
-docs/      METHODOLOGY.md, CONTROL_PLANE.md, FUTURE_WORK.md, PHASE_TIMINGS.md
+docs/      METHODOLOGY.md, CONTROL_PLANE.md, FUTURE_WORK.md, PHASE_TIMINGS.md, DATA.md
 packaging/ build_app.py — PyInstaller bundles (CI: .github/workflows/build-app.yml)
 examples/  real Windows + Linux result sets
 results/   output (mostly git-ignored; a few runs are tracked as history)
@@ -120,7 +120,9 @@ else; a local battery needs a toolkit checkout (`--repo` / `$BENCH_REPO`).
 gpu_fan_rpm, cpu_util, ram_used, sm_mhz, mem_used` plus extras (`mem_util,
 mem_mhz, vram_used_mib, cpu_temp_c, cpu_max_core_c, cpu_fan_rpm, load1,
 swap_used_gib, nvme_c, gpu_enc_pct, gpu_dec_pct, pstate, power_limit_w,
-disk_read_mbs, disk_write_mbs, net_rx_mbs, net_tx_mbs`). The mapping lives in
+disk_read_mbs, disk_write_mbs, net_rx_mbs, net_tx_mbs, temp_mem_c, gr_mhz,
+temp_limit_c, power_default_w, power_max_w, video_mhz, pcie_gen, pcie_width,
+retired, throttle, throttle_bits`). The mapping lives in
 `benchreport.CSV_ALIASES`; add new columns there **and** in `telemetry_log.py`
 (Linux) / `run_win.py` (Windows).
 

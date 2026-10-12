@@ -23,12 +23,33 @@ from datetime import datetime
 
 GPU_FIELDS = ("utilization.gpu,utilization.memory,temperature.gpu,fan.speed,power.draw,"
               "clocks.sm,clocks.mem,memory.used,pstate,utilization.encoder,utilization.decoder,"
-              "power.limit")
+              "power.limit,temperature.gpu.tlimit,power.default_limit,power.max_limit,clocks.video,"
+              "pcie.link.gen.current,pcie.link.width.current,retired_pages.pending,"
+              "clocks_throttle_reasons.active")
 HEADER = ("elapsed_s,time,gpu_util_pct,mem_util_pct,temp_c,fan_pct,power_w,"
           "sm_mhz,mem_mhz,vram_used_mib,pstate,cpu_package_c,ram_used_gib,load1,"
           "cpu_max_core_c,swap_used_gib,cpu_util_pct,nvme_c,gpu_enc_pct,gpu_dec_pct,"
           "cpu_fan_rpm,gpu_fan_rpm,power_limit_w,disk_read_mbs,disk_write_mbs,"
-          "net_rx_mbs,net_tx_mbs")
+          "net_rx_mbs,net_tx_mbs,temp_limit_c,power_default_w,power_max_w,video_mhz,"
+          "pcie_gen,pcie_width,retired,throttle,throttle_bits")
+
+
+def _bits(s):
+    """'0x0000000000000001' -> 1 (throttle/slowdown reason bitmask)."""
+    try:
+        return int(str(s).strip().replace("0x", ""), 16)
+    except Exception:
+        return ""
+
+
+def _flag(s):
+    v = str(s).strip().lower()
+    return 1 if v in ("yes", "true", "1") else (0 if v in ("no", "false", "0") else "")
+
+
+def _clean(v):
+    v = str(v).strip()
+    return "" if v in ("", "[N/A]", "N/A", "Not Supported", "[Not Supported]") else v
 
 
 def gpu_sample():
@@ -39,7 +60,7 @@ def gpu_sample():
             capture_output=True, text=True, timeout=5).stdout.strip()
         if out:
             vals = [v.strip() for v in out.splitlines()[0].split(",")]
-            if len(vals) == 12:
+            if len(vals) >= 12:
                 return vals
     except Exception:
         pass
@@ -240,12 +261,20 @@ def main():
                 enc = g[9] if g[9] not in ("[N/A]", "N/A") else ""
                 dec = g[10] if g[10] not in ("[N/A]", "N/A") else ""
                 plimit = g[11] if g[11] not in ("[N/A]", "N/A") else ""
+                if len(g) >= 20:
+                    bits = _bits(g[19])
+                    extra = [_clean(g[12]), _clean(g[13]), _clean(g[14]), _clean(g[15]),
+                             _clean(g[16]), _clean(g[17]), _flag(g[18]),
+                             (1 if (bits & ~1) else 0) if isinstance(bits, int) else "", bits]
+                else:
+                    extra = [""] * 9
             else:
                 gpu = [""] * 9
                 enc = dec = plimit = ""
+                extra = [""] * 9
             row = ([round(time.time() - t0, 1), datetime.now().strftime("%H:%M:%S")] + gpu
                    + [pkg, ram, load1, maxcore, swap, cpu_pct, nvme_temp(), enc, dec,
-                      maxfan, gpu_fan_rpm(), plimit, drd, dwr, nrx, ntx])
+                      maxfan, gpu_fan_rpm(), plimit, drd, dwr, nrx, ntx] + extra)
             fh.write(",".join(str(x) for x in row) + "\n")
             fh.flush()
             if a.duration and time.time() - t0 >= a.duration:

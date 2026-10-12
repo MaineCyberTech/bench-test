@@ -120,11 +120,14 @@ python3 bench/gui.py --server http://lab:8722 --token …    # GUI also checks i
 python3 bench/tui.py --server http://lab:8722 --token …    # TUI (live USB) too
 ```
 
-Open `http://<server>:8722/?token=<token>`. Tabs: **Live** (runner cards, gauges,
-charts, live console, remote terminal, controls), **History** (per-run system +
-preset + metrics), **Trends**, **Compare**, **Schedules**. Run detail shows the
-summary, remarks, full **system inventory**, per-field **telemetry min/avg/max**,
-phases, console, and downloads (report JSON, `telemetry.csv`).
+Open `http://<server>:8722/?token=<token>`. Tabs: **Live** (a fleet view —
+online runners first, stale ones behind a toggle, each with gauges, charts, live
+console, remote terminal and controls), **History** (sortable/filterable table of
+every run), **Trends**, **Compare**, **Schedules**. Run detail shows the summary,
+remarks, full **system inventory**, per-field **telemetry min/avg/max**, phases,
+console and downloads — plus derived **perf/watt, thermal headroom, time
+throttled** and a **Δ vs the previous run of the same preset on that host**.
+Charts have hover tooltips; `Esc` closes dialogs, `/` jumps to search.
 
 - **Auth:** shared join token for operators; per-runner API keys for runners.
 - **Runner identity:** stable per machine (`machine_id` + role) — a re-registration
@@ -202,7 +205,7 @@ bench/     PowerShell runners + Python phases + telemetry + dashboards + agent
 server/    benchd control plane (stdlib) + web dashboard + importer + systemd units
 live/      live-USB build + airootfs (launchers, units, conf)
 tests/     stdlib test suite (run_all.py)
-docs/      METHODOLOGY · CONTROL_PLANE · PHASE_TIMINGS · FUTURE_WORK
+docs/      METHODOLOGY · CONTROL_PLANE · PHASE_TIMINGS · FUTURE_WORK · DATA
 examples/  real Windows + Linux result sets
 results/   output (mostly git-ignored; a few runs tracked as history)
 ```

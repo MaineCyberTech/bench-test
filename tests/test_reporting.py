@@ -89,6 +89,24 @@ def run():
             and any("bench-exec-ok" in l["line"] for l in logs["lines"]), (res, logs))
     rep2.finish("done", 0, {})
 
+    # ---- sampler columns all map to canonical names (no silently dropped data) ----
+    import re
+    from benchreport import CSV_ALIASES
+    win_src = open(os.path.join(BENCH, "run_win.py"), encoding="utf-8").read()
+    win_cols = re.findall(r'"([^"]+)"', re.search(r"^COLUMNS = \[(.*?)\]", win_src, re.S | re.M).group(1))
+    ln_src = open(os.path.join(BENCH, "telemetry_log.py"), encoding="utf-8").read()
+    hdr = re.search(r"^HEADER = \((.*?)\)\n", ln_src, re.S | re.M).group(1)
+    ln_cols = "".join(re.findall(r'"([^"]+)"', hdr)).split(",")
+    allow = {"time"}
+    for name, cols in (("run_win", win_cols), ("telemetry_log", ln_cols)):
+        missing = [x for x in cols if x not in CSV_ALIASES and x not in allow]
+        c.check("%s columns mapped" % name, not missing, missing)
+    c.check("samplers collect headroom/health",
+            all(k in win_cols for k in ("throttle", "throttle_bits", "temp_limit_c", "video_mhz",
+                                        "pcie_gen", "pcie_width", "power_max_w"))
+            and all(k in ln_cols for k in ("throttle", "temp_limit_c", "video_mhz", "pcie_gen")),
+            (win_cols[-9:], ln_cols[-9:]))
+
     srv.stop()
     return c.fails
 

@@ -43,15 +43,36 @@ def parse_args():
 
 GPU_Q = ("utilization.gpu,utilization.memory,temperature.gpu,temperature.memory,fan.speed,"
          "power.draw,power.limit,clocks.sm,clocks.mem,clocks.gr,memory.used,pstate,"
-         "utilization.encoder,utilization.decoder")
+         "utilization.encoder,utilization.decoder,"
+         # headroom / health (added): thermal limit, power headroom, video clock,
+         # PCIe link state, retired pages, active throttle/slowdown reasons
+         "temperature.gpu.tlimit,power.default_limit,power.max_limit,clocks.video,"
+         "pcie.link.gen.current,pcie.link.width.current,retired_pages.pending,"
+         "clocks_throttle_reasons.active")
 
 COLUMNS = ["elapsed_s", "gpu_util_pct", "mem_util_pct", "temp_c", "temp_mem_c", "fan_pct",
            "power_w", "power_limit_w", "sm_mhz", "mem_mhz", "gr_mhz", "vram_used_mib",
            "pstate", "gpu_enc_pct", "gpu_dec_pct", "cpu_util_pct", "ram_used_gib",
            "ram_total_gib", "swap_used_gib", "cpu_temp_c", "disk_read_mbs", "disk_write_mbs",
-           "net_rx_mbs", "net_tx_mbs"]
+           "net_rx_mbs", "net_tx_mbs",
+           "temp_limit_c", "power_default_w", "power_max_w", "video_mhz", "pcie_gen",
+           "pcie_width", "retired", "throttle", "throttle_bits"]
 
 _CPU_TEMP = {"v": None}
+
+
+def _bits(s):
+    """'0x0000000000000001' -> 1 (throttle/slowdown reason bitmask)."""
+    try:
+        return int(str(s).strip().replace("0x", ""), 16)
+    except Exception:
+        return None
+
+
+def _flag(s):
+    """nvidia-smi yes/no -> 1/0."""
+    v = str(s).strip().lower()
+    return 1 if v in ("yes", "true", "1") else (0 if v in ("no", "false", "0") else None)
 
 
 def cpu_temp_thread(stop_evt):
@@ -109,6 +130,7 @@ def sampler(csv_path, stop_evt):
         while not stop_evt.is_set():
             row = [round(time.time() - t0, 1)]
             g = _gpu_row()
+            extra = [None] * 9
             if g:
                 # util, mem_util, temp, temp_mem, fan, power, power_limit, sm, mem, gr,
                 # vram_mib, pstate, enc, dec
@@ -116,6 +138,12 @@ def sampler(csv_path, stop_evt):
                         _num(g[5]), _num(g[6]), _num(g[7]), _num(g[8]), _num(g[9]),
                         _num(g[10]), (str(g[11]).strip().upper().lstrip("P") or None),
                         _num(g[12]), _num(g[13])]
+                if len(g) >= 22:
+                    bits = _bits(g[21])
+                    # headroom / health (appended after the psutil block; see COLUMNS)
+                    extra = [_num(g[14]), _num(g[15]), _num(g[16]), _num(g[17]), _num(g[18]),
+                             _num(g[19]), _flag(g[20]),
+                             (1 if (bits & ~1) else 0) if bits is not None else None, bits]
             else:
                 row += [None] * 14
             if psutil:
@@ -151,6 +179,7 @@ def sampler(csv_path, stop_evt):
                     row += [None, None, None, None]
             else:
                 row += [None] * 9
+            row += extra
             w.writerow(row)
             fh.flush()
             try:
