@@ -36,8 +36,12 @@ def main():
         print("RESULT: FAIL (%d)" % len(fails))
         for f in fails:
             print("  -", f)
+        import harness
+        harness.cleanup_tmpdirs()
         return 1
     print("RESULT: PASS")
+    import harness
+    harness.cleanup_tmpdirs()
     return 0
 
 

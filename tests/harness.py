@@ -8,6 +8,7 @@ USB alike.
 """
 import json
 import os
+import shutil
 import sys
 import tempfile
 import threading
@@ -24,25 +25,54 @@ sys.path.insert(0, BENCH)
 
 TOKEN = "test-token"
 
+_TMPDIRS = []
+
+
+def tmpdir(prefix="bench-test-"):
+    """mkdtemp that `run_all` cleans up at the end."""
+    d = tempfile.mkdtemp(prefix=prefix)
+    _TMPDIRS.append(d)
+    return d
+
+
+def cleanup_tmpdirs():
+    # the last Server's SQLite connection is held by the global Handler; on
+    # Windows an open file cannot be removed, so close it first
+    try:
+        import benchd
+        st = getattr(benchd.Handler, "store", None)
+        if st is not None and getattr(st, "conn", None) is not None:
+            st.conn.close()
+    except Exception:
+        pass
+    while _TMPDIRS:
+        shutil.rmtree(_TMPDIRS.pop(), ignore_errors=True)
+
 
 class Server:
     def __init__(self, token=TOKEN):
         import benchd
         self.benchd = benchd
-        self.db = os.path.join(tempfile.mkdtemp(), "benchd.sqlite")
+        self.db = os.path.join(tmpdir(), "benchd.sqlite")
         benchd.Handler.store = benchd.Store(self.db)
         benchd.Handler.bus = benchd.Bus()
         benchd.Handler.token = token
         benchd.Handler.web_dir = WEB
+        self.prev_token = token  # Handler.token is process-global; restored on stop()
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), benchd.Handler)
         self.httpd.quiet = True
         self.httpd.daemon_threads = True
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self._thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self._thread.start()
         self.base = "http://127.0.0.1:%d" % self.httpd.server_address[1]
         self.token = token
 
     def stop(self):
-        self.httpd.shutdown()
+        try:
+            self.httpd.shutdown()
+            self.httpd.server_close()
+        finally:
+            self._thread.join(timeout=5)
 
     def client(self):
         return Client(self.base, self.token)

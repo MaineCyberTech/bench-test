@@ -11,19 +11,22 @@ LINES = ["[sys] inventory", "[gpu] info", "[gpu] soak", "[cpu] matmul", "[net] b
 
 
 def _gui(c):
+    import os
+    prev_cwd = os.getcwd()
     try:
-        import os
         import tkinter as tk
         os.chdir(REPO)
         sys.path.insert(0, BENCH)
         import gui
     except Exception as e:
         print("  SKIP gui rows (%s)" % e)
+        os.chdir(prev_cwd)
         return
     try:
         root = tk.Tk(); root.withdraw()
     except Exception as e:
         print("  SKIP gui rows (no display: %s)" % e)
+        os.chdir(prev_cwd)
         return
     try:
         d = gui.Dashboard(root, os.path.join(REPO, "results"))
@@ -37,6 +40,8 @@ def _gui(c):
         root.destroy()
     except Exception as e:
         c.check("gui rows", False, e)
+    finally:
+        os.chdir(prev_cwd)
 
 
 def _tui(c):

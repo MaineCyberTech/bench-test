@@ -9,7 +9,7 @@ import os
 import sys
 import tempfile
 
-from harness import Checker
+from harness import Checker, tmpdir
 import import_results as imp
 
 
@@ -26,7 +26,7 @@ def run():
     c.check("epoch handles empty", imp.epoch(None) is None and imp.epoch("") is None, "")
 
     # ---- read_telemetry: named samples, extended columns, reconstructed ts ----
-    d = tempfile.mkdtemp()
+    d = tmpdir()
     csv_path = os.path.join(d, "h-win-20260101-000000.telemetry.csv")
     with open(csv_path, "w", encoding="utf-8") as fh:
         fh.write("elapsed_s,gpu_util_pct,temp_c,power_w,mem_util_pct,vram_used_mib,throttle\n")
@@ -78,7 +78,7 @@ def run():
             s2.get("fullsoak"))
 
     # ---- verdicts come from the shared builder ----
-    hv = tempfile.mkdtemp()
+    hv = tmpdir()
     with open(os.path.join(hv, "h-20260101-000000.health.json"), "w") as fh:
         json.dump({"summary": [{"provider": "nvlddmkm", "id": "4101", "count": 2}]}, fh)
     vs = imp._hardware_verdicts(hv)

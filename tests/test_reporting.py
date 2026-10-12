@@ -6,7 +6,7 @@ import sys
 import tempfile
 import time
 
-from harness import Checker, Server, REPO, BENCH
+from harness import Checker, Server, REPO, BENCH, tmpdir
 from benchreport import (Reporter, PhaseTracker, ReporterPump, build_summary_dir,
                          telemetry_summary, system_info, read_inventory, run_exec)
 
@@ -60,7 +60,7 @@ def run():
             si.get("cpu"))
 
     # ---- summary / telemetry / inventory builders ----
-    d = tempfile.mkdtemp()
+    d = tmpdir()
     with open(os.path.join(d, "host-20260101-000000.json"), "w") as fh:
         json.dump({"host": "h", "phases": [
             {"group": "gpu", "phase": "matmul", "result": {"results": {"fp16": {"tflops": 90.6}}}},
@@ -108,7 +108,7 @@ def run():
             (win_cols[-9:], ln_cols[-9:]))
 
     # ---- hardware verdicts from the health report + inventory ----
-    hv = tempfile.mkdtemp()
+    hv = tmpdir()
     with open(os.path.join(hv, "host-20260101-000000.health.json"), "w") as fh:
         json.dump({"summary": [{"provider": "Microsoft-Windows-WHEA-Logger", "id": "17", "count": 2},
                                {"provider": "nvlddmkm", "id": "4101", "count": 1},
@@ -135,7 +135,7 @@ def run():
             bool(vs) and all(v.get("level") in ("good", "info", "warn", "bad") for v in vs), vs)
 
     # ---- phase results that used to be dropped are merged into the summary ----
-    d2 = tempfile.mkdtemp()
+    d2 = tmpdir()
     for name, obj in {
         "h-gpu-x.json": {"phases": [{"group": "gpu", "phase": "pcie",
                                      "result": {"h2d_gbps": 12.3, "d2h_gbps": 13.1}}]},
