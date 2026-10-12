@@ -504,7 +504,7 @@ def read_inventory(results_dir):
         cands = [p for p in glob.glob(os.path.join(results_dir, "*-linux-*.json"))
                  if not p.endswith((".info.json", ".manifest.json"))]
         if cands:
-            with open(max(cands, key=os.path.getmtime)) as fh:
+            with open(max(cands, key=os.path.getmtime), encoding="utf-8-sig") as fh:
                 j = json.load(fh)
             for ph in j.get("phases", []):
                 if ph.get("group") == "sys" and isinstance(ph.get("result"), dict):
@@ -516,7 +516,7 @@ def read_inventory(results_dir):
         try:
             cands = glob.glob(os.path.join(results_dir, "*.sysinfo.json"))
             if cands:
-                with open(max(cands, key=os.path.getmtime)) as fh:
+                with open(max(cands, key=os.path.getmtime), encoding="utf-8-sig") as fh:
                     inv, osname = json.load(fh), "Windows"
         except Exception:
             pass
@@ -827,7 +827,7 @@ def read_runs_index(results_dir):
     if not os.path.isfile(path):
         return None
     try:
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             lines = [ln for ln in fh if ln.strip()]
         return json.loads(lines[-1]) if lines else None
     except Exception:

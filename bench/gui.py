@@ -74,8 +74,8 @@ PRESETS = {
     "Quick check (short soaks)": {"groups": _g("gpu", "cpu", "ram", "disk", "combined", "fullsoak",
                                                "net", "nvenc", "sys", "gfx"),
                                   "spin": {"gpu": 60, "combined": 60, "fullsoak": 60, "gfx": 30}},
-    "System info + 30s soak (all)": {"groups": _g("sys", "fullsoak"),
-                                     "spin": {**_DEF_DUR, "fullsoak": 30}},
+    "System info + 60s soak (all)": {"groups": _g("sys", "fullsoak"),
+                                     "spin": {**_DEF_DUR, "fullsoak": 60}},
     "Full run (defaults)": {"groups": _ALL_G, "spin": dict(_DEF_DUR)},
     "GPU compute": {"groups": _g("gpu", "sys"), "spin": {**_DEF_DUR, "gpu": 60}},
     "CPU + RAM + disk": {"groups": _g("cpu", "ram", "disk", "sys"), "spin": dict(_DEF_DUR)},
@@ -415,25 +415,17 @@ class Dashboard:
 
     def _detect_hardware(self):
         def work():
-            parts = []
             try:
-                info = subprocess.run([sys.executable, os.path.join(BENCH, "linux_info.py"), "info"],
-                                      capture_output=True, text=True, timeout=90).stdout
-                for line in info.splitlines():
-                    if line.startswith("RESULT_JSON:"):
-                        d = json.loads(line.split(":", 1)[1])
-                        cpu = (d.get("cpu") or {}).get("model", "")
-                        parts.append("%s · %s · %s GiB" % (d.get("distro"), cpu, d.get("memory_gib")))
+                si = system_info()
             except Exception:
-                pass
-            try:
-                import gpu_util
-                gpu_util.probe()
-                if gpu_util.NAME:
-                    parts.append(gpu_util.NAME)
-            except Exception:
-                pass
-            self.q.put(("hw", "  |  ".join(parts) if parts else "hardware detection unavailable"))
+                si = {}
+            bits = [si.get("os") or si.get("platform"), si.get("cpu")]
+            if si.get("ram_gib"):
+                bits.append("%s GiB" % si["ram_gib"])
+            if si.get("gpu"):
+                bits.append(str(si["gpu"]) + ((" · driver " + str(si["driver"])) if si.get("driver") else ""))
+            text = "  |  ".join(b for b in bits if b)
+            self.q.put(("hw", text or "hardware detection unavailable"))
         threading.Thread(target=work, daemon=True).start()
 
     # ------------------------------------------------------- reporting ------

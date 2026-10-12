@@ -12,7 +12,7 @@ DEF = {"gpu": 600, "combined": 300, "fullsoak": 300, "gfx": 60}
 CANON = {
     "Quick check (short soaks)": (set(GROUPS) - {"llm", "fan"},
                                   {"gpu": 60, "combined": 60, "fullsoak": 60, "gfx": 30}),
-    "System info + 30s soak (all)": ({"sys", "fullsoak"}, {**DEF, "fullsoak": 30}),
+    "System info + 60s soak (all)": ({"sys", "fullsoak"}, {**DEF, "fullsoak": 60}),
     "Full run (defaults)": (set(GROUPS), dict(DEF)),
     "GPU compute": ({"gpu", "sys"}, {**DEF, "gpu": 60}),
     "CPU + RAM + disk": ({"cpu", "ram", "disk", "sys"}, dict(DEF)),

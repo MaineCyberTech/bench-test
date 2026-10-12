@@ -46,7 +46,7 @@ cpu, ram, disk, nvenc, net, sys, llm, fan  # fixed (see above)
 
 | Preset | Estimate |
 |---|---|
-| System info + 30s soak (all) | ~2.5 min |
+| System info + 60s soak (all) | ~3 min |
 | Fan response | ~2.5 min (Linux) |
 | LLM inference (Ollama) | ~2–3 min |
 | Video / graphics | ~4.5 min |

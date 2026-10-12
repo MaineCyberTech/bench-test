@@ -117,7 +117,7 @@ Identical across GUI/TUI/web; each sets every group and duration.
 | Preset | Groups | Soaks |
 |---|---|---|
 | Quick check (short soaks) | all except llm/fan | gpu 60 · combined 60 · fullsoak 60 · gfx 30 |
-| System info + 30s soak (all) | sys, fullsoak | fullsoak 30 |
+| System info + 60s soak (all) | sys, fullsoak | fullsoak 60 |
 | Full run (defaults) | all 12 | gpu 600 · combined 300 · fullsoak 300 · gfx 60 |
 | GPU compute | gpu, sys | gpu 60 |
 | CPU + RAM + disk | cpu, ram, disk, sys | — |
