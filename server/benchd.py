@@ -37,6 +37,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -236,6 +237,35 @@ def server_git():
     return _SERVER_GIT["v"]
 
 
+REPO_SLUG = os.environ.get("BENCH_REPO_SLUG") or "MaineCyberTech/bench-test"
+GH_API = os.environ.get("BENCH_GH_API") or "https://api.github.com"
+_REF = {"v": None, "t": 0.0}
+REF_TTL = 600.0
+
+
+def latest_git(force=False):
+    """Newest commit on main (GitHub, cached) — what a runner should be running.
+
+    Falls back to this server's own commit when GitHub is unreachable. Set
+    BENCH_OFFLINE=1 to skip the lookup entirely (tests).
+    """
+    t = time.time()
+    if not force and _REF["v"] and (t - _REF["t"]) < REF_TTL:
+        return _REF["v"]
+    val = ""
+    if os.environ.get("BENCH_OFFLINE") != "1":
+        try:
+            url = "%s/repos/%s/commits/main" % (GH_API, REPO_SLUG)
+            req = urllib.request.Request(url, headers={"User-Agent": "benchd",
+                                                       "Accept": "application/vnd.github+json"})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                val = str(json.loads(r.read().decode()).get("sha") or "")[:7]
+        except Exception:
+            val = ""
+    _REF["v"], _REF["t"] = (val or server_git()), t
+    return _REF["v"]
+
+
 ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 
 
@@ -295,10 +325,11 @@ def runner_public(r):
     # is this runner's toolkit behind the deployed code?
     tk = r["capabilities"].get("toolkit") or {}
     rc = str(tk.get("commit") or r.get("git") or "").strip()
-    sg = server_git()
+    ref = latest_git()
     r["toolkit_commit"] = rc
     r["toolkit_mode"] = tk.get("mode") or ("git" if r.get("git") else "")
-    r["update_available"] = bool(sg and rc and rc != sg)
+    r["latest_commit"] = ref
+    r["update_available"] = bool(ref and rc and rc != ref)
     return r
 
 
@@ -466,6 +497,7 @@ class Handler(BaseHTTPRequestHandler):
         path, q = u.path, parse_qs(u.query)
         if path == "/health":
             return self._send(200, {"ok": True, "time": now(), "git": server_git(),
+                                    "latest": latest_git(),
                                     "runners": len(self.store.q("SELECT id FROM runners"))})
         if path.startswith("/api/"):
             if path == "/api/v1/stream":
@@ -547,7 +579,8 @@ class Handler(BaseHTTPRequestHandler):
                 "SELECT DISTINCT host FROM runs WHERE host IS NOT NULL ORDER BY host")]
             return self._send(200, {"runners": runners, "active": active, "recent": recent,
                                     "metrics": METRICS, "hosts": hosts,
-                                    "server_git": server_git(), "server_time": now()})
+                                    "server_git": server_git(), "latest_git": latest_git(),
+                                    "server_time": now()})
         if path == "/api/v1/metrics":
             return self._send(200, {"metrics": METRICS})
         if path == "/api/v1/runners":
@@ -1034,7 +1067,7 @@ class Handler(BaseHTTPRequestHandler):
         kind = b.get("kind")
         if kind not in ("start", "stop", "update", "fan_curve", "power_limit", "restart",
                         "shutdown", "reboot", "exec", "shell",
-                        "update_toolkit", "iso_fetch", "iso_write"):
+                        "update_toolkit", "iso_fetch", "iso_write", "iso_write_slot"):
             return self._err(400, "unknown command kind")
         cid = str(uuid.uuid4())
         S.ex("INSERT INTO commands(id,runner_id,kind,payload,status,created) VALUES(?,?,?,?,?,?)",

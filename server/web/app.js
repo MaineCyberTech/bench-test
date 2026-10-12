@@ -265,9 +265,9 @@ function runnerCard(r) {
       ? `<span class="badge" title="groups this runner implements">${caps.groups.length}/${ALL_GROUPS.length} groups</span>`
       : "",
     r.update_available
-      ? `<span class="badge stale" title="toolkit ${esc(r.toolkit_commit || "?")} vs control plane ${esc(STATE.server_git || "?")}">update available</span>`
+      ? `<span class="badge stale" title="toolkit ${esc(r.toolkit_commit || "?")} vs latest ${esc(r.latest_commit || STATE.latest_git || "?")} on ${esc(r.label || r.name)}">update available</span>`
       : (r.toolkit_commit
-        ? `<span class="badge" title="toolkit ${esc(r.toolkit_commit)}">${esc(r.toolkit_commit)}</span>` : ""),
+        ? `<span class="badge" title="toolkit ${esc(r.toolkit_commit)} (latest ${esc(r.latest_commit || STATE.latest_git || "?")})">${esc(r.toolkit_commit)}</span>` : ""),
   ].join("");
   const dev = [caps.gpu || "no GPU", caps.cpu, caps.ram_gib ? caps.ram_gib + " GiB" : "",
                caps.driver ? "driver " + caps.driver : ""].filter(Boolean).join(" · ");
@@ -733,8 +733,12 @@ async function startRun(runnerId) {
   $("#mCancel").onclick = closeModal;
   $("#mGo").onclick = async () => {
     const skip = $$("#mGroups input:not(:disabled)").filter((i) => !i.checked).map((i) => i.value);
+    // send the COMPLETE group map too: a runner may already have a different
+    // preset selected locally, and `skip` alone would be applied relative to it
+    const groups = {};
+    $$("#mGroups input").forEach((i) => { groups[i.value] = (i.disabled || !i.checked) ? 0 : 1; });
     const payload = {
-      label: $("#mPreset").value, preset: $("#mPreset").value, skip,
+      label: $("#mPreset").value, preset: $("#mPreset").value, skip, groups,
       gpu_soak: +$("#mGpu").value, combined: +$("#mComb").value,
       fullsoak: +$("#mFull").value, gfx: +$("#mGfx").value,
     };
@@ -777,27 +781,36 @@ async function powerRunner(id, kind) {
 function runnerUpdate(runnerId) {
   const r = STATE.runners.find((x) => x.id === runnerId) || {};
   const name = r.label || r.name || runnerId;
+  const caps = r.capabilities || {};
+  const live = !!caps.live;
+  const latest = r.latest_commit || STATE.latest_git || "?";
   openModal(`<h3>Update / reflash — ${esc(name)}</h3>
-    <p class="muted">A live runner fetches onto its own stick (BENCHDATA) and switches to it
-      immediately and again at boot — no reflash for toolkit changes. Kernel/driver changes
-      need a new ISO; fetch + verify it here, then write it to another device on that box.</p>
+    <p class="muted">toolkit <span class="mono">${esc(r.toolkit_commit || "unknown")}</span>
+      · latest <span class="mono">${esc(latest)}</span>
+      ${r.update_available ? '· <span class="delta down">update available</span>' : ""}
+      ${live ? "· live USB" : "· checkout"}</p>
     <div class="sechead">Toolkit — scripts, phases, dashboards</div>
+    ${live ? `<p class="muted">Fetch onto the stick (BENCHDATA); it switches now and again at boot.</p>` :
+      `<p class="muted">This runner runs a <b>git checkout</b>, so the toolkit fetch does not apply —
+        use <b>Update</b> on its card (git pull + restart)${r.update_available ? "" : " (already current)"}.</p>`}
     <div class="formrow"><label>ref</label>
-      <input id="uRef" value="main" style="width:190px" placeholder="main | tag | sha">
-      <input id="uSha" placeholder="(optional) expected tarball sha256" style="flex:1"></div>
+      <input id="uRef" value="main" style="width:190px" placeholder="main | tag | sha" ${live ? "" : "disabled"}>
+      <input id="uSha" placeholder="(optional) expected tarball sha256" style="flex:1" ${live ? "" : "disabled"}></div>
     <div class="formrow" style="justify-content:flex-end">
-      <button class="accent" id="uGo">update toolkit</button></div>
+      <button class="accent" id="uGo" ${live ? "" : "disabled"}>update toolkit</button>
+      <button id="uGit">update (git pull) + restart</button></div>
     <div class="sechead">ISO — kernel, drivers, packages</div>
     <div class="formrow"><label>release</label>
-      <input id="uTag" placeholder="iso-nvidia-legacy-38" style="width:200px">
+      <input id="uTag" placeholder="iso-nvidia-legacy-50" style="width:190px">
       <select id="uGpu"><option>nvidia-legacy</option><option>nvidia</option><option>amd</option></select>
       <button id="uFetch">fetch + verify</button></div>
     <div class="formrow"><label>iso path</label>
       <input id="uIso" placeholder="/mnt/benchdata/iso/bench-live-*.iso" style="flex:1"></div>
     <div class="formrow"><label>device</label>
-      <input id="uDev" placeholder="/dev/sdX" style="width:130px">
+      <input id="uDev" placeholder="/dev/sdX" style="width:120px">
       <label class="chk"><input type="checkbox" id="uOk"> confirm destructive write</label>
-      <button class="danger" id="uWrite">write ISO</button></div>
+      <button class="danger" id="uWrite">write ISO</button>
+      <button class="accent" id="uSlot" title="A/B: write the ISO into the inactive slot and flip the boot flag">write to inactive slot</button></div>
     <div class="formrow" style="justify-content:flex-end">
       <button class="ghost" onclick="closeModal()">close</button></div>`);
   const send = async (kind, payload) => {
@@ -809,11 +822,23 @@ function runnerUpdate(runnerId) {
   };
   $("#uGo").onclick = () => send("update_toolkit", {
     ref: $("#uRef").value.trim() || "main", sha256: $("#uSha").value.trim() || null });
+  $("#uGit").onclick = () => send("update", {});
   $("#uFetch").onclick = () => send("iso_fetch", {
     tag: $("#uTag").value.trim(), gpu: $("#uGpu").value });
+  const needIso = () => {
+    const iso = $("#uIso").value.trim();
+    if (!iso) toast("give the iso path first", "err");
+    return iso;
+  };
   $("#uWrite").onclick = () => {
     if (!$("#uOk").checked) return toast("tick the confirm box first", "err");
-    send("iso_write", { iso: $("#uIso").value.trim(), device: $("#uDev").value.trim(), confirm: true });
+    const iso = needIso();
+    if (iso) send("iso_write", { iso, device: $("#uDev").value.trim(), confirm: true });
+  };
+  $("#uSlot").onclick = () => {
+    if (!$("#uOk").checked) return toast("tick the confirm box first", "err");
+    const iso = needIso();
+    if (iso) send("iso_write_slot", { iso, confirm: true });
   };
 }
 
@@ -1001,6 +1026,7 @@ function newSchedule() {
     try {
       const p = PRESETS[$("#scPreset").value] || {};
       const profile = { label: $("#scPreset").value,
+        groups: p.groups || gset(...ALL_GROUPS),
         skip: p.groups ? GROUPS.filter((g) => !p.groups[g]) : [] };
       if (p.spin) Object.assign(profile, { gpu_soak: p.spin.gpu, combined: p.spin.combined,
         fullsoak: p.spin.fullsoak, gfx: p.spin.gfx });
