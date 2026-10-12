@@ -1972,7 +1972,7 @@ def _merge_into(s, j):
         if isinstance(res, list):
             res = {str(x.get("codec")): {k: v for k, v in x.items() if k != "codec"}
                    for x in res if isinstance(x, dict) and x.get("codec")}
-        if isinstance(res, dict) and any(isinstance(v, dict) and "fps" in v
+        if isinstance(res, dict) and any(isinstance(v, dict) and ("fps" in v or v.get("skipped"))
                                          for v in res.values()):
             s["nvenc"] = {"width": j.get("width"), "height": j.get("height"), "results": res}
     ph = j.get("phases")
@@ -2017,7 +2017,7 @@ def _merge_into(s, j):
             if isinstance(res, list):        # Windows NVENC: [{codec, fps, ...}]
                 res = {str(x.get("codec")): {k: v for k, v in x.items() if k != "codec"}
                        for x in res if isinstance(x, dict) and x.get("codec")}
-            if isinstance(res, dict) and any(isinstance(v, dict) and "fps" in v
+            if isinstance(res, dict) and any(isinstance(v, dict) and ("fps" in v or v.get("skipped"))
                                              for v in res.values()):
                 setd("nvenc", {"width": r.get("width"), "height": r.get("height"),
                                "results": res})
