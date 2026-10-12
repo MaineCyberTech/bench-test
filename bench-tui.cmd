@@ -16,4 +16,17 @@ if not exist "%VENV%\Scripts\python.exe" (
   "%VENV%\Scripts\python.exe" -m pip install --quiet --index-url https://download.pytorch.org/whl/cu128 torch
 )
 
+rem The venv is reused across updates, so check the deps are actually there: one
+rem created before psutil was added would record no CPU/RAM/disk/net telemetry.
+"%VENV%\Scripts\python.exe" -c "import numpy, psutil, curses" >nul 2>&1
+if errorlevel 1 (
+  echo [bench] installing missing dependencies: numpy psutil windows-curses ...
+  "%VENV%\Scripts\python.exe" -m pip install --quiet numpy psutil windows-curses
+)
+"%VENV%\Scripts\python.exe" -c "import torch" >nul 2>&1
+if errorlevel 1 (
+  echo [bench] PyTorch missing - the llm/gfx phases need it, a one-time ~2.5 GB download ...
+  "%VENV%\Scripts\python.exe" -m pip install --quiet --index-url https://download.pytorch.org/whl/cu128 torch
+)
+
 "%VENV%\Scripts\python.exe" "%REPO%\bench\tui.py" %*
