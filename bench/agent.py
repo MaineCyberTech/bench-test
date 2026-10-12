@@ -286,6 +286,10 @@ class Agent:
 
     def _update_and_ack(self, cid, kind, payload):
         """Long-running update/ISO work, off the poll loop, acked when done."""
+        if self.running:
+            self.rep.ack(cid, "failed", {
+                "error": "a run is in progress - update once it finishes"})
+            return
         try:
             if kind == "update_toolkit":
                 res = update_toolkit(payload.get("ref") or "main", payload.get("sha256"),

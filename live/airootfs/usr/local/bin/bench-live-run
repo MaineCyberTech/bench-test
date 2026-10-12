@@ -10,7 +10,7 @@ set -u
 
 BENCH="${BENCH_DIR:-/opt/bench-test}"
 RUN="$BENCH/bench/Run-LinuxBench.sh"
-OUT="$BENCH/results"
+OUT="${BENCH_PERSIST_DIR:-/mnt/benchdata}/results"
 
 # control-plane config: mount BENCHDATA on demand and export BENCHD_SERVER/TOKEN
 if [ -f /usr/local/bin/bench-agent-env ]; then

@@ -210,6 +210,12 @@ def run():
         src = open(os.path.join(BENCH, f), encoding="utf-8").read()
         c.check("%s pushes every telemetry column (incl. elapsed)" % f,
                 ("for k in self.tel_cols" in src) or ("for n in self._cols" in src), f)
+        c.check("%s keeps results off the toolkit copy on a live stick" % f,
+                "persist_root() if is_live()" in src, f)
+    for f in ("gui.py", "tui.py", "agent.py"):
+        src = open(os.path.join(BENCH, f), encoding="utf-8").read()
+        c.check("%s refuses a toolkit update while a run is in progress" % f,
+                "a run is in progress - update once it finishes" in src, f)
 
     # ---- the run's full CSV must reach the server when it ends ----
     class _FakeRep:

@@ -46,7 +46,7 @@ try:
                              self_update, restart_self,
                              toolkit_version, is_live, update_needs_restart, hardware_line,
                              DASH_FIELDS, auto_update, should_restart_after_update,
-                             venv_python, upload_telemetry_csv)
+                             venv_python, upload_telemetry_csv, persist_root)
 except Exception:  # reporting is optional
     Reporter = None
 
@@ -629,6 +629,13 @@ class Dashboard:
             pass
 
     def _update_remote(self, cid, kind, payload):
+        if self.running:
+            # the toolkit copy is what the running battery executes from (and
+            # where its results land), so switching it mid-run breaks the run
+            self.rep.ack(cid, "failed", {
+                "error": "a run is in progress - update once it finishes"})
+            return
+
         def work():
             try:
                 if kind == "iso_fetch":
@@ -1278,7 +1285,8 @@ class Dashboard:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--results-dir", default=os.path.join(REPO, "results"))
+    ap.add_argument("--results-dir",
+                    default=os.path.join(persist_root() if is_live() else REPO, "results"))
     ap.add_argument("--demo", action="store_true", help="populate with sample data")
     ap.add_argument("--self-test", action="store_true", help="open and exit after a few seconds")
     ap.add_argument("--tab", type=int, default=0, help="select notebook tab (0=Run,1=Telemetry,2=Results,3=Log)")

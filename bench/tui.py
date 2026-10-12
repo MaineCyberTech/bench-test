@@ -53,7 +53,7 @@ try:
                              self_update, restart_self,
                              toolkit_version, is_live, update_needs_restart, hardware_line,
                              DASH_FIELDS, auto_update, should_restart_after_update, venv_python,
-                         upload_telemetry_csv)
+                         upload_telemetry_csv, persist_root)
 except Exception:  # reporting is optional
     Reporter = None
 
@@ -233,6 +233,13 @@ class BenchTUI:
             self.rep.ack(cmd.get("id"), "failed", {"error": "unsupported: %s" % kind})
 
     def _update_remote(self, cid, kind, payload):
+        if self.running:
+            # the toolkit copy is what the running battery executes from (and
+            # where its results land), so switching it mid-run breaks the run
+            self.rep.ack(cid, "failed", {
+                "error": "a run is in progress - update once it finishes"})
+            return
+
         def work():
             log = lambda m: self.log.append(m)  # noqa: E731
             try:
@@ -1160,7 +1167,8 @@ class BenchTUI:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--results-dir", default=os.path.join(REPO, "results"))
+    ap.add_argument("--results-dir",
+                    default=os.path.join(persist_root() if is_live() else REPO, "results"))
     ap.add_argument("--demo", action="store_true")
     ap.add_argument("--exit-after", type=float, default=0)
     ap.add_argument("--server", default=load_conf()[0],
