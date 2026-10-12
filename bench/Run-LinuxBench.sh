@@ -183,9 +183,16 @@ fi
 
 if [ "$DO_GFX" = 1 ]; then
     echo "[gfx] FurMark 2 (furmark-gl, 1920x1080, ${GFX_SECONDS}s)"
-    FM="${FURMARK:-$ROOT/tools/furmark/FurMark_linux64/furmark}"
-    if [ ! -x "$FM" ]; then
-        echo "    furmark not found at $FM -- download FurMark 2 (linux64) from geeks3d.com into tools/, or set \$FURMARK"
+    FM="${FURMARK:-}"
+    if [ -z "$FM" ]; then
+        for c in "$ROOT/tools/furmark/FurMark_linux64/furmark" \
+                 "${BENCH_PERSIST_DIR:-/mnt/benchdata}/tools/FurMark_linux64/furmark" \
+                 /opt/bench-tools/furmark/FurMark_linux64/furmark; do
+            [ -x "$c" ] && FM="$c" && break
+        done
+    fi
+    if [ -z "$FM" ] || [ ! -x "$FM" ]; then
+        echo "    furmark not found (looked in the toolkit, \$BENCH_PERSIST_DIR/tools and /opt/bench-tools) -- download FurMark 2 (linux64) from geeks3d.com into tools/, or set \$FURMARK"
         printf '{"group":"gfx","phase":"furmark","result":{"skipped":true,"reason":"furmark not installed"}}\n' >> "$JSONL"
     else
         # live consoles have no X; start a headless one on :9 (nvidia

@@ -318,6 +318,19 @@ def run():
         src = open(os.path.join(BENCH, f), encoding="utf-8").read()
         c.check("%s attaches the run's files" % f, "upload_run_files(" in src, f)
 
+    # ---- FurMark must survive a toolkit re-point (like PyTorch) ----
+    root = os.path.dirname(BENCH)
+    envsh = open(os.path.join(root, "live", "airootfs", "usr", "local", "bin",
+                              "bench-agent-env"), encoding="utf-8").read()
+    c.check("the boot env exports FURMARK from the persisted copy",
+            "export FURMARK" in envsh, "")
+    runsh = open(os.path.join(BENCH, "Run-LinuxBench.sh"), encoding="utf-8").read()
+    c.check("the gfx phase looks outside the toolkit for furmark",
+            "BENCH_PERSIST_DIR:-/mnt/benchdata}/tools/FurMark_linux64/furmark" in runsh, "")
+    buildsh = open(os.path.join(root, "live", "Build-LiveUSB.sh"), encoding="utf-8").read()
+    c.check("the ISO bakes FurMark outside the toolkit dir",
+            "opt/bench-tools/furmark" in buildsh, "")
+
     srv.stop()
     return c.fails
 

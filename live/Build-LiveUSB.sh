@@ -201,8 +201,14 @@ fi
 if [ -n "${FM_SRC:-}" ] && [ -x "$FM_SRC/furmark" ]; then
     mkdir -p "$PROFILE/airootfs/opt/bench-test/tools/furmark"
     cp -r "$FM_SRC" "$PROFILE/airootfs/opt/bench-test/tools/furmark/"
+    # keep a copy OUTSIDE the toolkit dir too: a live stick re-points /opt/bench-test
+    # at a fetched copy, which hides a baked tools/ (FurMark) - the same reason the
+    # PyTorch packages live in /opt/bench-pypackages
+    mkdir -p "$PROFILE/airootfs/opt/bench-tools/furmark"
+    cp -r "$FM_SRC" "$PROFILE/airootfs/opt/bench-tools/furmark/"
     # some copy paths lose the exec bit (seen in CI); force it
-    chmod 755 "$PROFILE/airootfs/opt/bench-test/tools/furmark/FurMark_linux64/furmark" 2>/dev/null || true
+    chmod 755 "$PROFILE/airootfs/opt/bench-test/tools/furmark/FurMark_linux64/furmark" \
+              "$PROFILE/airootfs/opt/bench-tools/furmark/FurMark_linux64/furmark" 2>/dev/null || true
 else
     echo "[build] WARNING: FurMark not available - gfx phase will skip" >&2
 fi
