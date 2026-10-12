@@ -44,7 +44,8 @@ sys.path.insert(0, BENCH)
 from benchreport import (Reporter, PhaseTracker, TelemetryTail,  # noqa: E402
                          build_summary, build_summary_dir, telemetry_summary, read_runs_index,
                          load_identity, run_exec, system_info, read_inventory, load_conf,
-                         power_action, supported_groups)
+                         power_action, supported_groups,
+                         update_toolkit, iso_fetch, iso_write, self_update)
 
 DEFAULT_GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc",
                   "llm", "fan", "sys", "gfx"]
@@ -251,6 +252,10 @@ class Agent:
             elif kind in ("shutdown", "reboot"):
                 self.stop_battery()
                 result = power_action(reboot=(kind == "reboot"))
+            elif kind in ("update_toolkit", "iso_fetch", "iso_write"):
+                threading.Thread(target=self._update_and_ack, args=(cid, kind, payload),
+                                 daemon=True).start()
+                return
             elif kind in ("exec", "shell"):
                 threading.Thread(target=self._exec_and_ack, args=(cid, payload),
                                  daemon=True).start()
@@ -268,12 +273,26 @@ class Agent:
         self.rep.ack(cid, "done", result)
 
     def do_update(self):
-        if not os.path.isdir(os.path.join(REPO, ".git")):
-            return {"error": "not a git checkout"}
-        r = subprocess.run(["git", "-C", REPO, "pull", "--ff-only"],
-                           capture_output=True, text=True, timeout=120)
-        out = (r.stdout or "") + (r.stderr or "")
-        return {"rc": r.returncode, "commit": git_commit(), "out": out.strip()[-2000:]}
+        res = self_update(REPO, log=self.log)
+        if res.get("ok") and res.get("switched"):
+            res["note"] = "restart the dashboard/agent to run the new code"
+        return res
+
+    def _update_and_ack(self, cid, kind, payload):
+        """Long-running update/ISO work, off the poll loop, acked when done."""
+        try:
+            if kind == "update_toolkit":
+                res = update_toolkit(payload.get("ref") or "main", payload.get("sha256"),
+                                     log=self.log)
+            elif kind == "iso_fetch":
+                res = iso_fetch(payload.get("tag") or "", payload.get("gpu") or "nvidia-legacy",
+                                payload.get("dest"), log=self.log)
+            else:
+                res = iso_write(payload.get("iso"), payload.get("device"),
+                                bool(payload.get("confirm")), log=self.log)
+        except Exception as e:
+            res = {"error": "%s: %s" % (type(e).__name__, e)}
+        self.rep.ack(cid, "done" if res.get("ok") else "failed", res)
 
     def _exec_and_ack(self, cid, payload):
         cmd = payload.get("cmd") or ""

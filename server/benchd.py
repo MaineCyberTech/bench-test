@@ -987,7 +987,8 @@ class Handler(BaseHTTPRequestHandler):
         S = self.store
         kind = b.get("kind")
         if kind not in ("start", "stop", "update", "fan_curve", "power_limit", "restart",
-                        "shutdown", "reboot", "exec", "shell"):
+                        "shutdown", "reboot", "exec", "shell",
+                        "update_toolkit", "iso_fetch", "iso_write"):
             return self._err(400, "unknown command kind")
         cid = str(uuid.uuid4())
         S.ex("INSERT INTO commands(id,runner_id,kind,payload,status,created) VALUES(?,?,?,?,?,?)",

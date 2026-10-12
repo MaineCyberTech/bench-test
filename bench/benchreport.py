@@ -17,12 +17,17 @@ Everything fails soft: if the server is unreachable the run continues and the
 call is a no-op, so benchmarking never depends on the control plane.
 """
 import glob
+import hashlib
 import json
 import os
 import re
+import shutil
 import socket
+import stat
 import subprocess
 import sys
+import tarfile
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -721,6 +726,296 @@ def power_action(reboot=False):
         except Exception as e:
             return {"power": "failed", "error": str(e)}
     return {"power": "failed", "error": "no power command found"}
+
+
+# ------------------------------------------------------- remote update ------
+# Live-USB sticks boot a read-only ISO: the toolkit under /opt/bench-test comes
+# from the image and the root is a tmpfs overlay, so pointing /opt/bench-test at
+# a fresher copy on the stick's writable partition updates the runner without
+# reflashing. Kernel/driver changes still need a new ISO, which we can download,
+# verify and (optionally) flash to another device from the control plane.
+
+REPO_SLUG = os.environ.get("BENCH_REPO_SLUG") or "MaineCyberTech/bench-test"
+TOOLKIT_DIR = os.environ.get("BENCH_TOOLKIT_DIR") or "/opt/bench-test"
+PERSIST_DIR = os.environ.get("BENCH_PERSIST_DIR") or "/mnt/benchdata"
+GH_API = os.environ.get("BENCH_GH_API") or "https://api.github.com"
+UA = "bench-test-updater"
+
+
+def is_live():
+    """True on a booted live image (archiso) rather than a normal install."""
+    return os.path.isdir("/run/archiso") or os.path.exists("/etc/arch-release")
+
+
+def persist_root():
+    """A writable place that survives the session if possible (the stick)."""
+    for d in (PERSIST_DIR, "/var/tmp", tempfile.gettempdir()):
+        if d and os.path.isdir(d) and os.access(d, os.W_OK):
+            return d
+    return tempfile.gettempdir()
+
+
+def _download(url, dest, log=None, timeout=180, every=100 << 20):
+    """Stream a URL to a path or an open binary file object."""
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    n = 0
+    close = False
+    fh = dest
+    if isinstance(dest, str):
+        fh = open(dest, "wb")
+        close = True
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            while True:
+                b = r.read(1 << 20)
+                if not b:
+                    break
+                fh.write(b)
+                n += len(b)
+                if log and n % every < (1 << 20):
+                    log("[update] %d MiB" % (n >> 20))
+    finally:
+        if close:
+            fh.close()
+    return n
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for b in iter(lambda: fh.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
+def _safe_extract(tar_path, dest):
+    """Extract a tarball, stripping the top dir, ignoring links/escapes."""
+    root = os.path.realpath(dest)
+    with tarfile.open(tar_path, "r:gz") as tf:
+        for m in tf.getmembers():
+            rel = m.name.split("/", 1)[1] if "/" in m.name else ""
+            if not rel:
+                continue
+            target = os.path.realpath(os.path.join(dest, rel))
+            if target != root and not target.startswith(root + os.sep):
+                continue
+            if m.isdir():
+                os.makedirs(target, exist_ok=True)
+            elif m.isfile():
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                src = tf.extractfile(m)
+                if src is None:
+                    continue
+                with open(target, "wb") as out:
+                    shutil.copyfileobj(src, out)
+                try:
+                    os.chmod(target, m.mode & 0o777)
+                except OSError:
+                    pass
+
+
+def repoint_toolkit(toolkit_dir, target, force=False):
+    """Point the toolkit directory at `target`.
+
+    Only safe where the toolkit dir is disposable (the live overlay); elsewhere
+    the operator must pass force / set BENCH_ALLOW_TOOLKIT_SWITCH=1.
+    """
+    allow = force or os.environ.get("BENCH_ALLOW_TOOLKIT_SWITCH") == "1" or is_live()
+    if os.path.islink(toolkit_dir):
+        if os.path.realpath(toolkit_dir) == os.path.realpath(target):
+            return True
+        if not allow:
+            return False
+        os.remove(toolkit_dir)
+    elif os.path.isdir(toolkit_dir):
+        if not allow:
+            return False
+        shutil.rmtree(toolkit_dir, ignore_errors=True)
+    try:
+        os.makedirs(os.path.dirname(toolkit_dir.rstrip("/")), exist_ok=True)
+        os.symlink(target, toolkit_dir)
+    except OSError:
+        return False
+    return True
+
+
+def update_toolkit(ref="main", sha256=None, log=None):
+    """Fetch the toolkit at `ref` onto the stick and switch the runner onto it."""
+    log = log or (lambda _m: None)
+    if os.path.isdir(os.path.join(TOOLKIT_DIR, ".git")) and not os.path.islink(TOOLKIT_DIR):
+        return {"kind": "git", "error": "a git checkout updates with the 'update' command"}
+
+    root = os.path.join(persist_root(), "bench-toolkit")
+    dest = os.path.join(root, str(ref).replace("/", "_"))
+    tmp = dest + ".part"
+    tar_path = os.path.join(tempfile.gettempdir(), "bench-toolkit-%s.tar.gz" % uuid.uuid4().hex[:8])
+    url = os.environ.get("BENCH_TOOLKIT_URL") or \
+        "https://codeload.github.com/%s/tar.gz/%s" % (REPO_SLUG, ref)
+    log("[update] fetching %s" % url)
+    try:
+        n = _download(url, tar_path, log=log)
+    except Exception as e:
+        return {"error": "download failed: %s" % e, "url": url}
+    got = sha256_file(tar_path)
+    if sha256 and got.lower() != str(sha256).lower():
+        os.remove(tar_path)
+        return {"error": "sha256 mismatch", "expected": sha256, "got": got}
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp, exist_ok=True)
+    try:
+        _safe_extract(tar_path, tmp)
+    except Exception as e:
+        return {"error": "extract failed: %s" % e}
+    finally:
+        try:
+            os.remove(tar_path)
+        except OSError:
+            pass
+    if not os.path.isfile(os.path.join(tmp, "bench", "benchreport.py")):
+        return {"error": "archive did not contain the toolkit"}
+    shutil.rmtree(dest, ignore_errors=True)
+    os.replace(tmp, dest)
+    os.makedirs(root, exist_ok=True)
+    cur = os.path.join(root, "current")
+    try:
+        if os.path.islink(cur):
+            os.remove(cur)
+        os.symlink(dest, cur)
+    except OSError:
+        cur = dest
+    switched = repoint_toolkit(TOOLKIT_DIR, dest)
+    log("[update] %s -> %s (switched=%s)" % (ref, dest, switched))
+    return {"ok": True, "ref": ref, "bytes": n, "sha256": got, "dest": dest,
+            "current": cur, "switched": switched, "toolkit": TOOLKIT_DIR,
+            "restart_required": bool(switched)}
+
+
+def self_update(repo=None, log=None):
+    """Update a git checkout with `git pull`, or a live install with the toolkit copy."""
+    repo = repo or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if os.path.isdir(os.path.join(repo, ".git")):
+        r = subprocess.run(["git", "-C", repo, "pull", "--ff-only"],
+                           capture_output=True, text=True, timeout=180)
+        out = ((r.stdout or "") + (r.stderr or "")).strip()
+        return {"ok": r.returncode == 0, "kind": "git", "rc": r.returncode, "out": out[-2000:]}
+    return update_toolkit(log=log)
+
+
+def toolkit_boot_link(log=None):
+    """Re-point the toolkit at the persisted copy at boot (live USB)."""
+    log = log or (lambda _m: None)
+    cur = os.path.join(persist_root(), "bench-toolkit", "current")
+    if not os.path.isfile(os.path.join(cur, "bench", "benchreport.py")):
+        return False
+    if os.path.islink(TOOLKIT_DIR) and os.path.realpath(TOOLKIT_DIR) == os.path.realpath(cur):
+        return True
+    ok = repoint_toolkit(TOOLKIT_DIR, os.path.realpath(cur))
+    if ok:
+        log("[bench] toolkit -> %s" % os.path.realpath(cur))
+    return ok
+
+
+def gh_release(tag):
+    """Return {tag, assets: [{name, url, size}]} for a public release."""
+    url = "%s/repos/%s/releases/tags/%s" % (GH_API, REPO_SLUG, tag)
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": UA,
+                                                   "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            j = json.loads(r.read().decode())
+    except Exception as e:
+        return None, "release %s not found (%s)" % (tag, e)
+    assets = [{"name": a.get("name"), "url": a.get("browser_download_url"),
+               "size": a.get("size")} for a in (j.get("assets") or [])]
+    return {"tag": j.get("tag_name") or tag, "assets": assets}, None
+
+
+def iso_fetch(tag, gpu="nvidia-legacy", dest=None, log=None):
+    """Download + concatenate a release's ISO parts and verify SHA256SUMS."""
+    log = log or (lambda _m: None)
+    rel, err = gh_release(tag)
+    if err:
+        return {"error": err}
+    parts = sorted([a for a in rel["assets"] if re.match(r"^bench-live-.*\.iso\.part\.", a["name"] or "")],
+                   key=lambda a: a["name"])
+    if not parts:
+        return {"error": "no ISO parts on %s" % tag, "assets": [a["name"] for a in rel["assets"]]}
+    out_dir = dest or os.path.join(persist_root(), "iso")
+    os.makedirs(out_dir, exist_ok=True)
+    iso = os.path.join(out_dir, "bench-live-%s.iso" % gpu)
+    total = 0
+    try:
+        with open(iso, "wb") as fh:
+            for a in parts:
+                log("[iso] %s" % a["name"])
+                total += _download(a["url"], fh, log=None, timeout=900)
+    except Exception as e:
+        return {"error": "download failed: %s" % e, "iso": iso, "bytes": total}
+    got = sha256_file(iso)
+    ok = None
+    sums = [a for a in rel["assets"] if (a["name"] or "") == "SHA256SUMS"]
+    if sums:
+        try:
+            f = os.path.join(out_dir, "SHA256SUMS")
+            _download(sums[0]["url"], f, log=None, timeout=60)
+            want = None
+            for ln in open(f, encoding="utf-8"):
+                p = ln.split()
+                if len(p) >= 2 and p[-1].lstrip("*").endswith(".iso"):
+                    want = p[0].lower()
+            ok = (want is None) or (want == got)
+        except Exception:
+            ok = None
+    return {"ok": True, "iso": iso, "bytes": total, "sha256": got, "verified": ok,
+            "parts": len(parts), "tag": rel["tag"]}
+
+
+def _device_of_path(path):
+    """The block device backing a path (from /proc/mounts), or ''."""
+    best, dev = "", ""
+    try:
+        rp = os.path.realpath(path)
+        with open("/proc/mounts") as fh:
+            for ln in fh:
+                p = ln.split()
+                if len(p) < 2:
+                    continue
+                mnt = os.path.realpath(p[1].replace("\\040", " "))
+                if (rp == mnt or rp.startswith(mnt.rstrip("/") + "/")) and len(mnt) >= len(best):
+                    best, dev = mnt, p[0]
+    except OSError:
+        return ""
+    return os.path.realpath(dev) if dev else ""
+
+
+def iso_write(iso_path, device, confirm=False, log=None):
+    """Write a staged ISO to a block device (destructive; guarded)."""
+    log = log or (lambda _m: None)
+    if not confirm:
+        return {"error": "confirm=true required to write an ISO to a device"}
+    if not iso_path or not os.path.isfile(iso_path):
+        return {"error": "no such iso: %s" % iso_path}
+    if not str(device).startswith("/dev/"):
+        return {"error": "device must be a /dev/... path"}
+    try:
+        st = os.stat(device)
+    except OSError as e:
+        return {"error": "cannot stat %s (%s)" % (device, e)}
+    if not stat.S_ISBLK(st.st_mode):
+        return {"error": "%s is not a block device" % device}
+    for guard in ("/", "/mnt/benchdata", "/opt", PERSIST_DIR):
+        if _device_of_path(guard) and _device_of_path(guard) == os.path.realpath(device):
+            return {"error": "refusing to overwrite the device backing %s" % guard}
+    log("[iso] writing %s -> %s" % (iso_path, device))
+    try:
+        with open(iso_path, "rb") as src, open(device, "wb", buffering=0) as dst:
+            shutil.copyfileobj(src, dst, length=4 << 20)
+            dst.flush()
+            os.fsync(dst.fileno())
+    except Exception as e:
+        return {"error": "write failed: %s" % e, "device": device}
+    return {"ok": True, "device": device, "bytes": os.path.getsize(iso_path)}
+
 
 
 class TelemetryTail:

@@ -278,6 +278,8 @@ function runnerCard(r) {
         <button data-stop="${esc(r.id)}" ${run ? "" : "disabled"}>Stop</button>
         <button class="ghost" data-update="${esc(r.id)}" ${disabled}>Update</button>
         <button class="ghost" data-fan="${esc(r.id)}" ${disabled}>Fan curve</button>
+        <button class="ghost power" data-iso="${esc(r.id)}" ${disabled}
+                title="Update the toolkit / fetch + write a new ISO">update…</button>
         <button class="ghost power" data-power="${esc(r.id)}" data-powerkind="reboot" ${disabled}
                 title="Reboot this machine">reboot</button>
         <button class="ghost power" data-power="${esc(r.id)}" data-powerkind="shutdown" ${disabled}
@@ -753,6 +755,50 @@ async function powerRunner(id, kind) {
   } catch (e) { toast(kind + " failed: " + e.message, "err"); }
 }
 
+/* update a runner in place (live USB) instead of walking over to reflash it */
+function runnerUpdate(runnerId) {
+  const r = STATE.runners.find((x) => x.id === runnerId) || {};
+  const name = r.label || r.name || runnerId;
+  openModal(`<h3>Update / reflash — ${esc(name)}</h3>
+    <p class="muted">A live runner fetches onto its own stick (BENCHDATA) and switches to it
+      immediately and again at boot — no reflash for toolkit changes. Kernel/driver changes
+      need a new ISO; fetch + verify it here, then write it to another device on that box.</p>
+    <div class="sechead">Toolkit — scripts, phases, dashboards</div>
+    <div class="formrow"><label>ref</label>
+      <input id="uRef" value="main" style="width:190px" placeholder="main | tag | sha">
+      <input id="uSha" placeholder="(optional) expected tarball sha256" style="flex:1"></div>
+    <div class="formrow" style="justify-content:flex-end">
+      <button class="accent" id="uGo">update toolkit</button></div>
+    <div class="sechead">ISO — kernel, drivers, packages</div>
+    <div class="formrow"><label>release</label>
+      <input id="uTag" placeholder="iso-nvidia-legacy-38" style="width:200px">
+      <select id="uGpu"><option>nvidia-legacy</option><option>nvidia</option><option>amd</option></select>
+      <button id="uFetch">fetch + verify</button></div>
+    <div class="formrow"><label>iso path</label>
+      <input id="uIso" placeholder="/mnt/benchdata/iso/bench-live-*.iso" style="flex:1"></div>
+    <div class="formrow"><label>device</label>
+      <input id="uDev" placeholder="/dev/sdX" style="width:130px">
+      <label class="chk"><input type="checkbox" id="uOk"> confirm destructive write</label>
+      <button class="danger" id="uWrite">write ISO</button></div>
+    <div class="formrow" style="justify-content:flex-end">
+      <button class="ghost" onclick="closeModal()">close</button></div>`);
+  const send = async (kind, payload) => {
+    try {
+      await api("/runners/" + runnerId + "/commands", "POST", { kind, payload });
+      toast(kind + " queued for " + name + " (watch the runner's console)");
+      refresh();
+    } catch (e) { toast(kind + " failed: " + e.message, "err"); }
+  };
+  $("#uGo").onclick = () => send("update_toolkit", {
+    ref: $("#uRef").value.trim() || "main", sha256: $("#uSha").value.trim() || null });
+  $("#uFetch").onclick = () => send("iso_fetch", {
+    tag: $("#uTag").value.trim(), gpu: $("#uGpu").value });
+  $("#uWrite").onclick = () => {
+    if (!$("#uOk").checked) return toast("tick the confirm box first", "err");
+    send("iso_write", { iso: $("#uIso").value.trim(), device: $("#uDev").value.trim(), confirm: true });
+  };
+}
+
 async function showDetail(runId) {
   const r = await api("/runs/" + runId);
   const s = r.summary || {};
@@ -988,7 +1034,7 @@ document.addEventListener("click", (e) => {
     renderHistory();
     return;
   }
-  const t = e.target.closest("[data-tab],[data-start],[data-stop],[data-update],[data-fan],[data-detail],[data-sched-del],[data-toggle-off],[data-forget],[data-power]");
+  const t = e.target.closest("[data-tab],[data-start],[data-stop],[data-update],[data-fan],[data-detail],[data-sched-del],[data-toggle-off],[data-forget],[data-power],[data-iso]");
   if (!t) return;
   if (t.dataset.toggleOff !== undefined) {
     SHOW_OFFLINE = !SHOW_OFFLINE;
@@ -1013,6 +1059,7 @@ document.addEventListener("click", (e) => {
   if (t.dataset.schedDel) return deleteSchedule(t.dataset.schedDel);
   if (t.dataset.forget) return forgetRunner(t.dataset.forget);
   if (t.dataset.power) return powerRunner(t.dataset.power, t.dataset.powerkind);
+  if (t.dataset.iso) return runnerUpdate(t.dataset.iso);
 });
 
 $("#tokenBtn").onclick = askToken;

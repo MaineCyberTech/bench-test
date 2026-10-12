@@ -41,7 +41,8 @@ try:
     from benchreport import (Reporter, PhaseTracker, ReporterPump, build_summary, build_summary_dir,
                              telemetry_summary, newest_report, load_identity, run_exec, system_info,
                              read_inventory, load_conf, CSV_ALIASES, power_action,
-                             supported_groups)
+                             supported_groups,
+                             update_toolkit, iso_fetch, iso_write, self_update)
 except Exception:  # reporting is optional
     Reporter = None
 
@@ -501,10 +502,31 @@ class Dashboard:
             if self.running:
                 self.stop()
             self.rep.ack(cmd.get("id"), "done", power_action(reboot=(kind == "reboot")))
+        elif kind in ("update", "update_toolkit", "iso_fetch", "iso_write"):
+            self._update_remote(cmd.get("id"), kind, payload)
         elif kind in ("exec", "shell"):
             self._exec_remote(cmd.get("id"), payload)
         else:
             self.rep.ack(cmd.get("id"), "failed", {"error": "unsupported: %s" % kind})
+
+    def _update_remote(self, cid, kind, payload):
+        def work():
+            try:
+                if kind == "iso_fetch":
+                    res = iso_fetch(payload.get("tag") or "", payload.get("gpu") or "nvidia-legacy",
+                                    payload.get("dest"), log=self._log)
+                elif kind == "iso_write":
+                    res = iso_write(payload.get("iso"), payload.get("device"),
+                                    bool(payload.get("confirm")), log=self._log)
+                elif kind == "update_toolkit":
+                    res = update_toolkit(payload.get("ref") or "main", payload.get("sha256"),
+                                         log=self._log)
+                else:
+                    res = self_update(REPO, log=self._log)
+            except Exception as e:
+                res = {"error": "%s: %s" % (type(e).__name__, e)}
+            self.rep.ack(cid, "done" if res.get("ok") else "failed", res)
+        threading.Thread(target=work, daemon=True).start()
 
     def _exec_remote(self, cid, payload):
         def work():
