@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""Run the whole bench-test test suite (stdlib only).
+
+    python tests/run_all.py
+
+Covers the control-plane API, the reporting client, preset parity across the
+GUI/TUI/web, and the dashboard phase-table logic. Each module starts its own
+in-process benchd on an ephemeral port, so nothing external is needed.
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import test_control_plane  # noqa: E402
+import test_reporting  # noqa: E402
+import test_presets  # noqa: E402
+import test_dashboards  # noqa: E402
+
+MODULES = [test_control_plane, test_reporting, test_presets, test_dashboards]
+
+
+def main():
+    fails = []
+    for mod in MODULES:
+        print("== %s ==" % mod.__name__)
+        try:
+            fails += mod.run()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            fails.append("%s: crashed (%s)" % (mod.__name__, e))
+        print()
+    if fails:
+        print("RESULT: FAIL (%d)" % len(fails))
+        for f in fails:
+            print("  -", f)
+        return 1
+    print("RESULT: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -202,6 +202,23 @@ pct exec 108 -- systemctl mask tmp.mount run-lock.mount dev-mqueue.mount
   `restart` re-execs the agent so a fresh checkout takes effect.
 - SQLite uses WAL; the DB grows ~1 row/second per active run (fine for a lab).
 
+## Tests
+
+```bash
+python tests/run_all.py          # RESULT: PASS expected
+```
+
+Stdlib only; each module starts an in-process `benchd` on an ephemeral port. It
+covers the API (auth, per-runner keys, runs/phases/telemetry/logs/artifacts/stats,
+commands, schedules, delete, reaper, SSE), the reporting client (Reporter,
+PhaseTracker, ReporterPump, exec, inventory/summary builders), preset parity
+across GUI/TUI/web, and the dashboard phase-table logic.
+
+## Measured phase durations
+
+See [`PHASE_TIMINGS.md`](PHASE_TIMINGS.md) for per-phase durations measured on a
+reference workstation (used to estimate how long each preset takes).
+
 ## Roadmap
 
 - Operator logins (per-user accounts) instead of the shared join token.

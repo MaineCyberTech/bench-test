@@ -1,0 +1,97 @@
+"""Reporting-client tests: Reporter, PhaseTracker, ReporterPump, system info,
+summary/inventory builders, and the remote-exec helper."""
+import json
+import os
+import sys
+import tempfile
+import time
+
+from harness import Checker, Server, REPO, BENCH
+from benchreport import (Reporter, PhaseTracker, ReporterPump, build_summary_dir,
+                         telemetry_summary, system_info, read_inventory, run_exec)
+
+
+def run():
+    c = Checker("reporting")
+    srv = Server()
+    cl = srv.client()
+
+    # ---- Reporter + PhaseTracker ----
+    rep = Reporter(srv.base, srv.token, name="unit", kind="agent")
+    c.check("register", rep.register({"os": "test"}))
+    c.check("start_run", rep.start_run("unit run", {"gpu_soak": 5}) is not None)
+    tr = PhaseTracker(rep)
+    for ln in ["[sys] inventory", "[gpu] info", "[gpu] soak", "[cpu] soak"]:
+        tr.feed(ln)
+    _, detail = cl.call("GET", "/api/v1/runs/" + rep.run_id)
+    st = {p["grp"]: p["status"] for p in detail["phases"]}
+    c.check("4 phases recorded", len(detail["phases"]) == 4, detail["phases"])
+    c.check("prior phases closed on group change",
+            st.get("sys") == "done" and st.get("gpu") == "done" and st.get("cpu") == "running", st)
+
+    # ---- ReporterPump: telemetry + logs + commands ----
+    got = []
+    pump = ReporterPump(rep, on_command=lambda cmd: (got.append(cmd["kind"]),
+                                                     rep.ack(cmd["id"], "done", {"ok": True})),
+                        interval=0.3)
+    for i in range(3):
+        pump.push_sample({"elapsed": float(i), "temp_c": 50 + i, "gpu_util": 90})
+    pump.push_log("[gpu] hello")
+    pump.start()
+    time.sleep(0.9)
+    _, tel = cl.call("GET", "/api/v1/runs/%s/telemetry" % rep.run_id)
+    c.check("pump flushed telemetry", len(tel["rows"]) == 3, len(tel["rows"]))
+    _, logs = cl.call("GET", "/api/v1/runs/%s/logs" % rep.run_id)
+    c.check("pump flushed logs", any("hello" in l["line"] for l in logs["lines"]), logs)
+    cl.call("POST", "/api/v1/runners/%s/commands" % rep.runner_id, {"kind": "stop"})
+    time.sleep(0.9)
+    c.check("pump received command", got == ["stop"], got)
+
+    tr.close()
+    rep.finish("done", 0, {"gpu_soak_tflops": 42.0})
+    time.sleep(0.2)
+    _, runs = cl.call("GET", "/api/v1/runs")
+    c.check("run finished", runs["runs"][0]["status"] == "done", runs["runs"][0])
+    pump.stop()
+
+    # ---- system_info ----
+    si = system_info()
+    c.check("system_info cpu is a real name", bool(si.get("cpu")) and "Family" not in si.get("cpu", ""),
+            si.get("cpu"))
+
+    # ---- summary / telemetry / inventory builders ----
+    d = tempfile.mkdtemp()
+    with open(os.path.join(d, "host-20260101-000000.json"), "w") as fh:
+        json.dump({"host": "h", "phases": [
+            {"group": "gpu", "phase": "matmul", "result": {"results": {"fp16": {"tflops": 90.6}}}},
+            {"group": "gpu", "phase": "soak", "result": {"matmul_tflops": 81.1,
+                                                         "telemetry": {"temp_c": [60, 65, 67]}}}], }, fh)
+    with open(os.path.join(d, "host-cpu-20260101-000010.json"), "w") as fh:
+        json.dump({"host": "h", "phases": {"soak": {"phase": "soak", "gflops": 152.0}}}, fh)
+    with open(os.path.join(d, "host-win-20260101-000000.telemetry.csv"), "w") as fh:
+        fh.write("elapsed_s,temp_c,fan_pct,power_w,gpu_util_pct\n")
+        for i in range(5):
+            fh.write("%d,%d,%d,%d,%d\n" % (i, 50 + i, 40, 200 + i, 99))
+    summ = build_summary_dir(d)
+    c.check("build_summary_dir matmul", summ.get("gpu_matmul_tflops", {}).get("fp16") == 90.6, summ)
+    c.check("build_summary_dir soak", summ.get("gpu_soak_tflops") == 81.1, summ)
+    c.check("build_summary_dir cpu soak", summ.get("cpu_soak_gflops") == 152.0, summ)
+    ts = telemetry_summary(os.path.join(d, "host-win-20260101-000000.telemetry.csv"))
+    c.check("telemetry_summary", ts and ts["samples"] == 5 and ts["temp_c"] == [50, 52, 54], ts)
+
+    # ---- run_exec ----
+    rep2 = Reporter(srv.base, srv.token, name="exec", kind="test")
+    rep2.register({})
+    rep2.start_run("exec", {})
+    res = run_exec(rep2, "echo bench-exec-ok")
+    _, logs = cl.call("GET", "/api/v1/runs/%s/logs" % rep2.run_id)
+    c.check("run_exec streams output", res.get("rc") == 0
+            and any("bench-exec-ok" in l["line"] for l in logs["lines"]), (res, logs))
+    rep2.finish("done", 0, {})
+
+    srv.stop()
+    return c.fails
+
+
+if __name__ == "__main__":
+    sys.exit(1 if run() else 0)

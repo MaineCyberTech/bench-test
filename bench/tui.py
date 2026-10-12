@@ -48,7 +48,8 @@ def _g(*on):
 _DEF_DUR = {"gpu": "600", "combined": "300", "fullsoak": "300", "gfx": "60"}
 
 PRESETS = [
-    ("Quick check (short soaks)", {"groups": list(GROUPS),
+    ("Quick check (short soaks)", {"groups": _g("gpu", "cpu", "ram", "disk", "combined", "fullsoak",
+                                                "net", "nvenc", "sys", "gfx"),
                                    "dur": {"gpu": "60", "combined": "60", "fullsoak": "60", "gfx": "30"}}),
     ("System info + 30s soak (all)", {"groups": _g("sys", "fullsoak"),
                                       "dur": {**_DEF_DUR, "fullsoak": "30"}}),
@@ -57,6 +58,8 @@ PRESETS = [
     ("CPU + RAM + disk", {"groups": _g("cpu", "ram", "disk", "sys"), "dur": dict(_DEF_DUR)}),
     ("Storage + network", {"groups": _g("disk", "net", "sys"), "dur": dict(_DEF_DUR)}),
     ("Video / graphics", {"groups": _g("nvenc", "gfx", "sys"), "dur": dict(_DEF_DUR)}),
+    ("LLM inference (Ollama)", {"groups": _g("llm", "sys"), "dur": dict(_DEF_DUR)}),
+    ("Fan response", {"groups": _g("fan", "sys"), "dur": dict(_DEF_DUR)}),
     ("Soak only (long)", {"groups": _g("gpu", "fullsoak", "sys"),
                           "dur": {**_DEF_DUR, "gpu": "1800", "fullsoak": "1800"}}),
     ("Full-system soak (long)", {"groups": _g("fullsoak", "sys"),

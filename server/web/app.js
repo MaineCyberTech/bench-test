@@ -6,13 +6,15 @@ const ALL_GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", 
 const gset = (...on) => Object.fromEntries(ALL_GROUPS.map((g) => [g, on.includes(g) ? 1 : 0]));
 const DEF_SPIN = { gpu: 600, combined: 300, fullsoak: 300, gfx: 60 };
 const PRESETS = {
-  "Quick check (short soaks)": { groups: gset(...ALL_GROUPS), spin: { gpu: 60, combined: 60, fullsoak: 60, gfx: 30 } },
+  "Quick check (short soaks)": { groups: gset("gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "sys", "gfx"), spin: { gpu: 60, combined: 60, fullsoak: 60, gfx: 30 } },
   "System info + 30s soak (all)": { groups: gset("sys", "fullsoak"), spin: { ...DEF_SPIN, fullsoak: 30 } },
   "Full run (defaults)": { groups: gset(...ALL_GROUPS), spin: { ...DEF_SPIN } },
   "GPU compute": { groups: gset("gpu", "sys"), spin: { ...DEF_SPIN, gpu: 60 } },
   "CPU + RAM + disk": { groups: gset("cpu", "ram", "disk", "sys"), spin: { ...DEF_SPIN } },
   "Storage + network": { groups: gset("disk", "net", "sys"), spin: { ...DEF_SPIN } },
   "Video / graphics": { groups: gset("nvenc", "gfx", "sys"), spin: { ...DEF_SPIN } },
+  "LLM inference (Ollama)": { groups: gset("llm", "sys"), spin: { ...DEF_SPIN } },
+  "Fan response": { groups: gset("fan", "sys"), spin: { ...DEF_SPIN } },
   "Soak only (long)": { groups: gset("gpu", "fullsoak", "sys"), spin: { ...DEF_SPIN, gpu: 1800, fullsoak: 1800 } },
   "Full-system soak (long)": { groups: gset("fullsoak", "sys"), spin: { ...DEF_SPIN, fullsoak: 1800 } },
 };
