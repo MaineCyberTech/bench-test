@@ -57,11 +57,23 @@ jobs:
 
       - name: Package
         shell: bash
+        env:
+          LABEL: ${{ matrix.label }}
         run: |
           set -euo pipefail
-          cd dist
-          zip -qr "../bench-app-${{ matrix.label }}.zip" bench-gui bench-tui bench-agent
-          cd ..
+          # zip(1) is absent on the Windows runners, so archive with stdlib Python
+          python - <<'PY'
+          import os, zipfile
+          label = os.environ["LABEL"]
+          zpath = "bench-app-%s.zip" % label
+          with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
+              for d in ("bench-gui", "bench-tui", "bench-agent"):
+                  for root, _dirs, files in os.walk(os.path.join("dist", d)):
+                      for f in files:
+                          p = os.path.join(root, f)
+                          z.write(p, os.path.relpath(p, "dist"))
+          print("wrote", zpath, os.path.getsize(zpath), "bytes")
+          PY
           ls -lh bench-app-${{ matrix.label }}.zip
 
       - uses: actions/upload-artifact@v4
