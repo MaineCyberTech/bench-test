@@ -873,9 +873,9 @@ class BenchTUI:
                 continue  # input timeout: keep showing the report
             if k == curses.KEY_RESIZE:
                 continue
-            if k == curses.KEY_PGUP:
+            if k == curses.KEY_PPAGE:
                 offset = max(0, offset - 5)
-            elif k == curses.KEY_PGDN:
+            elif k == curses.KEY_NPAGE:
                 offset = min(max(0, len(lines) - 1), offset + 5)
             elif k == curses.KEY_UP:
                 offset = max(0, offset - 1)
@@ -936,10 +936,10 @@ class BenchTUI:
             g = GROUPS[idx]
             self.groups[g] = not self.groups[g]
             self._set("%s: %s" % (g, "on" if self.groups[g] else "off"), 2)
-        elif ch == curses.KEY_PGUP:
+        elif ch == curses.KEY_PPAGE:
             self.follow = False
             self.scroll = min(max(0, len(self.log) - 1), self.scroll + 5)
-        elif ch == curses.KEY_PGDN:
+        elif ch == curses.KEY_NPAGE:
             self.scroll = max(0, self.scroll - 5)
             self.follow = self.scroll == 0
         elif ch == ord("G"):
