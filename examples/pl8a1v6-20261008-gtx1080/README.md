@@ -123,3 +123,7 @@ RTX 4070 Ti SUPER (or another known-good GPU) to run the full suite cleanly.
 - `DESKTOP-PL8A1V6-disk-20261008-120318.{md,json}` — disk (C:)
 - `DESKTOP-PL8A1V6-net-20261008-120727.{md,json}` — network
 - `valley-DESKTOP-PL8A1V6-20261008-score4292.png` — Valley result dialog
+- `furmark-1080p-gl.log` — raw FurMark 2 output for the 1080p OpenGL pass (the source of
+  the temperature/fps figures in the table above)
+- `superposition-1080p-medium-score14709.png` · `superposition-1080p-medium-fanprofile-score14922.png`
+  — Superposition dialogs (stock vs fan-profile)
