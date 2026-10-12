@@ -9,7 +9,7 @@ import time
 from harness import Checker, Server, REPO, BENCH, tmpdir
 from benchreport import (Reporter, PhaseTracker, ReporterPump, build_summary_dir,
                          telemetry_summary, system_info, read_inventory, run_exec,
-                         upload_telemetry_csv)
+                         upload_telemetry_csv, upload_run_files, build_summary)
 
 
 def run():
@@ -263,6 +263,60 @@ def run():
             "@($DownMB, 50, 25, 10)" in netps, "")
     c.check("the Python net phase chunks its download",
             "chunk_mb" in open(os.path.join(BENCH, "net_bench.py"), encoding="utf-8").read(), "")
+
+    # ---- nvenc/gfx results must reach the summary, and the run's files the server ----
+    ndir = tmpdir()
+    with open(os.path.join(ndir, "HOST-20260101-000000.nvenc.json"), "w") as fh:
+        json.dump({"ffmpeg": "ffmpeg.exe",
+                   "results": [{"codec": "h264_nvenc", "fps": 273, "enc_util_max": 48},
+                               {"codec": "hevc_nvenc", "fps": 394, "enc_util_max": 47}]}, fh)
+    with open(os.path.join(ndir, "valley-HOST-20260101-000000-f01.png"), "wb") as fh:
+        fh.write(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+    s = build_summary(os.path.join(ndir, "HOST-20260101-000000.nvenc.json"))
+    c.check("nvenc list shape reaches the summary",
+            (s.get("nvenc") or {}).get("fps") == {"h264_nvenc": 273, "hevc_nvenc": 394}, s.get("nvenc"))
+    c.check("nvenc encoder utilisation is kept",
+            (s.get("nvenc") or {}).get("enc_util_max") == {"h264_nvenc": 48, "hevc_nvenc": 47},
+            s.get("nvenc"))
+    c.check("the gfx screenshot is recorded", (s.get("gfx") or {}).get("screenshot", "").endswith(".png"),
+            s.get("gfx"))
+    ldir = tmpdir()
+    with open(os.path.join(ldir, "HOST-linux-20260101-000000.json"), "w") as fh:
+        json.dump({"host": "HOST", "phases": [
+            {"phase": "bench", "group": "nvenc",
+             "result": {"phase": "bench", "results": {"h264_nvenc": {"fps": 210.0},
+                                                      "av1_nvenc": {"skipped": True,
+                                                                    "reason": "no av1 support"}}}}]}, fh)
+    s2 = build_summary(os.path.join(ldir, "HOST-linux-20260101-000000.json"))
+    c.check("nvenc dict shape reaches the summary",
+            (s2.get("nvenc") or {}).get("fps") == {"h264_nvenc": 210.0}, s2.get("nvenc"))
+    c.check("a skipped codec is recorded with its reason",
+            "no av1 support" in json.dumps(s2.get("nvenc")), s2.get("nvenc"))
+
+    class _FakeRep2:
+        run_id = "run-y"
+
+        def __init__(self):
+            self.arts = []
+
+        def artifact(self, name, text, kind="json"):
+            self.arts.append((name, kind, len(text)))
+
+    fdir = tmpdir()
+    open(os.path.join(fdir, "HOST-net-1.json"), "w").write("{}")
+    open(os.path.join(fdir, "HOST-net-1.md"), "w").write("# x")
+    open(os.path.join(fdir, "big.json"), "w").write("x" * (600 * 1024))
+    fr2 = _FakeRep2()
+    n2 = upload_run_files(fr2, fdir)
+    c.check("upload_run_files attaches the run's reports",
+            n2 == 2 and sorted(a[0] for a in fr2.arts) == ["HOST-net-1.json", "HOST-net-1.md"],
+            fr2.arts)
+    c.check("upload_run_files skips oversized files",
+            all("big.json" not in a[0] for a in fr2.arts), fr2.arts)
+    c.check("upload_run_files is a no-op without a run", upload_run_files(None, fdir) == 0, "")
+    for f in ("gui.py", "tui.py", "agent.py"):
+        src = open(os.path.join(BENCH, f), encoding="utf-8").read()
+        c.check("%s attaches the run's files" % f, "upload_run_files(" in src, f)
 
     srv.stop()
     return c.fails

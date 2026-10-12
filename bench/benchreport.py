@@ -1843,6 +1843,46 @@ class TelemetryTail:
 
 
 # --------------------------------------------------------------- summaries ---
+def _nvenc_row(obj):
+    """{codec: fps} from either nvenc report shape (list or codec-keyed dict).
+
+    Windows writes {results: [{codec, fps, enc_util_max}, ...]}, the Linux phase
+    writes {phase: bench, results: {h264_nvenc: {fps} | {skipped, reason}}}.
+    Neither has a 'phases' array, which is why this never reached the summary.
+    """
+    if not isinstance(obj, dict):
+        return None
+    res = obj.get("results")
+    fps, util, skipped = {}, {}, {}
+    if isinstance(res, dict):
+        for codec, v in res.items():
+            if not isinstance(v, dict):
+                continue
+            if v.get("skipped"):
+                skipped[codec] = str(v.get("reason") or "skipped")[:160]
+            elif v.get("fps") is not None:
+                fps[codec] = v["fps"]
+    elif isinstance(res, list):
+        for v in res:
+            if not isinstance(v, dict) or not v.get("codec"):
+                continue
+            codec = v["codec"]
+            if v.get("skipped"):
+                skipped[codec] = str(v.get("reason") or "skipped")[:160]
+            elif v.get("fps") is not None:
+                fps[codec] = v["fps"]
+            if v.get("enc_util_max") is not None:
+                util[codec] = v["enc_util_max"]
+    if not (fps or skipped):
+        return None
+    row = {"fps": fps}
+    if util:
+        row["enc_util_max"] = util
+    if skipped:
+        row["skipped"] = skipped
+    return row
+
+
 def build_summary(report_path):
     """Extract a runs-index-style summary row from a report JSON (any platform)."""
     out = {"report": report_path}
@@ -1882,6 +1922,21 @@ def build_summary(report_path):
             out["net"] = r
         elif phase in ("stress", "fullsoak") and isinstance(r.get("verdict"), dict):
             out["fullsoak"] = {"group": group or "fullsoak", "phase": phase, "result": r}
+        nv = _nvenc_row(r)
+        if nv:
+            out["nvenc"] = nv
+        if group == "gfx" and isinstance(r, dict):
+            out["gfx"] = r
+    # nvenc also writes a flat report with no phases array (Windows), and the
+    # Windows gfx phase leaves a Unigine Valley screenshot instead of a result
+    nv = _nvenc_row(data)
+    if nv:
+        out["nvenc"] = nv
+    if "gfx" not in out:
+        shots = sorted(glob.glob(os.path.join(os.path.dirname(report_path), "valley-*.png")),
+                       key=os.path.getmtime)
+        if shots:
+            out["gfx"] = {"screenshot": os.path.basename(shots[-1])}
     return out
 
 
@@ -2118,6 +2173,42 @@ def build_summary_dir(results_dir, window_h=8):
     if verdicts:
         out["verdicts"] = verdicts
     return out
+
+
+def upload_run_files(rep, results_dir, log=None, limit=40, max_bytes=512 * 1024):
+    """Attach the run's own report files (JSON/MD) and its gfx screenshot.
+
+    Everything a phase writes otherwise stays on the machine that ran it: the
+    per-phase reports, the inventory, the nvenc report and the Valley frame.
+    They are small, so they go up as artifacts next to the telemetry CSV.
+    """
+    log = log or (lambda _m: None)
+    if rep is None or not getattr(rep, "run_id", None):
+        return 0
+    keep = []
+    for pat in ("*.json", "*.md"):
+        for p in glob.glob(os.path.join(results_dir, pat)):
+            try:
+                if os.path.getsize(p) <= max_bytes:
+                    keep.append(p)
+            except OSError:
+                continue
+    keep.sort(key=os.path.getmtime, reverse=True)
+    keep = keep[:limit]
+    shots = sorted(glob.glob(os.path.join(results_dir, "valley-*.png")),
+                   key=os.path.getmtime)
+    if shots:
+        keep.append(shots[-1])
+    n = 0
+    for p in keep:
+        try:
+            with open(p, "rb") as fh:
+                rep.artifact(os.path.basename(p), fh.read(), kind="file")
+        except OSError:
+            continue
+        n += 1
+    log("[report] attached %d run files" % n)
+    return n
 
 
 def upload_telemetry_csv(rep, results_dir, log=None, cap=20000):
