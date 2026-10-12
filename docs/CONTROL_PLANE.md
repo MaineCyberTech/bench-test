@@ -17,8 +17,8 @@ telemetry, and can be started / stopped / updated from a web dashboard.
                               │          telemetry/commands   │
                               └───────────────┬───────────────┘
                                               ▼
-                              web dashboard (live · history ·
-                               trends · compare · controls)
+                              web dashboard (live · history · trends ·
+                               compare · fleet · schedules · controls)
 ```
 
 Nothing outside the Python standard library is required — no pip, no Node, no
@@ -102,7 +102,7 @@ Runner-facing:
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/register` | register a runner (adopts an existing row by `machine_id`+`kind`) → `runner_id` + per-runner `api_key` |
+| POST | `/register` | register a runner (adopts an existing row by `machine_id`+`kind`+`instance`) → `runner_id` + per-runner `api_key` |
 | POST | `/runners/<id>/heartbeat` | liveness + status + capabilities |
 | GET | `/runners/<id>/commands` | poll queued commands (drains the queue) |
 | POST | `/runners/<id>/commands/<cid>/ack` | acknowledge a command |
@@ -118,17 +118,27 @@ UI-facing:
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/state` | snapshot: runners, active runs (+latest telemetry, phases), recent |
-| GET | `/stream?token=` | SSE: `snapshot`/`runner`/`run`/`phase`/`telemetry`/`command` |
+| GET | `/stream?token=` | SSE: `snapshot`/`runner`/`run`/`phase`/`telemetry`/`command`/`log`/`schedule`/`event` |
 | GET | `/runners` · `/runs` · `/runs/<id>` | fleet / history / detail |
 | GET | `/runs/<id>/telemetry?max=N` | downsampled series (named fields) |
 | GET | `/runs/<id>/logs?after=&limit=` | the run's live console lines |
-| GET | `/runs/<id>/stats` | per-field min / avg / max over the run |
+| GET | `/runs/<id>/stats` | per-field n / min / avg / max / std / p50 / p95 / p99 (+ derived: energy, clock residency, throttled %, headroom) |
 | GET | `/runs/<id>/telemetry.csv?token=` | full 1 Hz telemetry as CSV (download) |
-| GET | `/runs/<id>/artifact/<name>?token=` | download an attached artifact |
-| GET | `/trends?host=&metric=` | metric-over-time series |
-| GET/POST/DELETE | `/schedules` · `/schedules/<id>` | list / create / remove recurring runs |
-| DELETE | `/runs/<id>` | delete a run and its data |
-| POST | `/runners/<id>/commands` | issue `start`/`stop`/`update`/`fan_curve`/`power_limit`/`restart`/`exec` |
+| GET | `/runs/<id>/artifact/<name>?token=` | download an attached artifact (binary-safe) |
+| GET | `/trends?host=&metric=` | metric-over-time series + per-series median/p95/p99 |
+| GET | `/metrics` | the metric catalogue (key → label) |
+| GET/POST/DELETE | `/schedules` · `/schedules/<id>` | list / create / remove recurring runs (operator only) |
+| DELETE | `/runs/<id>` · `/runners/<id>` | delete a run (+data) / a runner (+its commands & schedules) |
+| POST | `/runners/<id>/commands` | issue `start`/`stop`/`update`/`fan_curve`/`power_limit`/`restart`/`shutdown`/`reboot`/`exec`/`shell` (operator only) |
+
+Runner-scoped routes (`/register`, heartbeat, `/runners/<id>/commands`, command
+`ack`, and run writes) require a **per-runner API key** and are scoped to the
+caller's own runner/run; the shared operator token may act on anything.
+
+**Who handles which command:** the headless agent implements every kind; the
+GUI/TUI dashboards implement `start`/`stop`/`fan_curve`/`shutdown`/`reboot` and
+the remote terminal (`exec`/`shell`), and fail `update`/`power_limit`/`restart`
+(it acks them as unsupported rather than pretending).
 
 Telemetry sample order (10 floats): `elapsed, temp_c, fan_pct, power_w, gpu_util,
 gpu_fan_rpm, cpu_util, ram_used, sm_mhz, mem_used`.

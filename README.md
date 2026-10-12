@@ -49,9 +49,13 @@ reproducible numbers, and to catch instability under sustained load.
 Canonical fields: `elapsed, temp_c, fan_pct, power_w, gpu_util, gpu_fan_rpm,
 cpu_util, ram_used, sm_mhz, mem_used`, plus extras: `mem_util, mem_mhz,
 vram_used_mib, cpu_temp_c, cpu_max_core_c, cpu_fan_rpm, load1, swap_used_gib,
-nvme_c, gpu_enc_pct, gpu_dec_pct, pstate, power_limit_w, disk_read_mbs,
-disk_write_mbs, net_rx_mbs, net_tx_mbs`. The runner only logs what the hardware
-exposes; blanks are recorded rather than guessed.
+nvme_c, gpu_enc_pct, gpu_dec_pct, pstate, power_limit_w, temp_mem_c, gr_mhz,
+temp_limit_c, power_default_w, power_max_w, video_mhz, pcie_gen, pcie_width,
+retired, throttle, throttle_bits, disk_read_mbs, disk_write_mbs, net_rx_mbs,
+net_tx_mbs, ram_total_gib, cpu_pkg_w, cpu_mhz, psi_io, gpu_3d_pct,
+gpu_copy_pct`. The runner only logs what the hardware exposes; blanks are
+recorded rather than guessed. `server/benchd` derives std/p95/p99 per metric
+plus energy, clock residency, throttled %, and thermal/power headroom.
 
 ## Quick start
 
@@ -74,8 +78,11 @@ BENCH_PY=.venv/bin/python ./bench/gui.py     # or ./bench/tui.py
 ```
 
 Common flags: `--gpu-soak S`, `--combined-seconds S`, `--fullsoak-seconds S`,
-`--gfx-seconds S`, `--skip-<group>` for any of the 12 groups (`--skip-llm` and
-`--skip-fan` are accepted by both runners).
+`--skip-<group>` for the groups the platform implements — all of them except
+`fan` (Linux-only) on Windows and `llm` (Windows-only) on Linux; `--skip-fan`
+and `--skip-llm` are accepted everywhere so the same profile can be sent to any
+runner. `--gfx-seconds S` applies to the Linux graphics phase (Unigine Valley's
+length is fixed by its preset on Windows).
 
 ## Dashboards
 
@@ -84,6 +91,10 @@ groups, set soak durations, watch the live phase table + telemetry, and collect
 results. Both show **control-plane link status** and, when connected, stream
 phases/telemetry/logs and accept remote start/stop. **Closing a dashboard cancels
 its run.**
+
+Other flags: `gui.py --tab N --self-test`, `tui.py --demo --exit-after S`, and
+`--instance NAME` on both (a label used when several dashboards share a host,e.g.
+`tty1`); `agent.py --once` runs a single battery and exits.
 
 ## Packaged app (no Python install)
 
@@ -100,8 +111,8 @@ unzip bench-app-windows.zip                        # -> bench-gui/ bench-tui/ be
 Each bundle carries its own interpreter (PyInstaller) and the dashboards/agent
 are stdlib-only, so **viewing/controlling runs and connecting to a control plane
 need nothing else.** Running a *local* battery additionally needs a toolkit
-checkout (for numpy/PyTorch) — point the app at it with `--repo DIR` or
-`$BENCH_REPO`, or unzip the bundle next to a `bench/` directory. Build the
+checkout (for numpy/PyTorch) — point the app at it with `$BENCH_REPO`, or unzip
+the bundle next to a `bench/` directory. Build the
 bundles yourself with `python packaging/build_app.py`; CI builds them for
 Windows + Linux (`.github/workflows/build-app.yml`).
 
@@ -222,12 +233,14 @@ results/   output (mostly git-ignored; a few runs tracked as history)
 | `gpu_bench.py` · `cpu_bench.py` · `ram_bench.py` · `disk_bench.py` · `net_bench.py` · `nvenc_bench.py` | phases |
 | `telemetry_log.py` | 1 Hz telemetry CSV (Linux) |
 | `gui.py` · `tui.py` | Tk / curses dashboards (report + accept remote control) |
+| `fan_curve.py` · `gpu_util.py` · `rawlog.py` | GPU fan-curve tool, AMD/Intel gpu telemetry, raw-slot result writer |
 | `benchreport.py` | control-plane client (Reporter, PhaseTracker, Pump, exec, inventory) |
-| `agent.py` | headless agent: register, run on command, stream, update |
+| `agent.py` | headless agent: register, run on command, stream, update (`--once` for a single run) |
 | `server/benchd.py` | control plane: REST + SSE + SQLite + web dashboard |
 | `server/import_results.py` | backfill existing results into the server |
 | `upload.py` | upload a results dir to GitHub |
 | `linux_info.py` · `Get-*.ps1` | inventory / sensors / PCIe / health / env |
+| `packaging/build_app.py` | build the standalone GUI/TUI/agent bundles (PyInstaller) |
 | `tests/run_all.py` | the test suite |
 
 ## Security

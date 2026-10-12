@@ -71,10 +71,10 @@ mandatory third-party dependency.
   tokens/s (now surfaced) but not TTFT / prefill.
 - **Windows battery / lid** state.
 
-### Cheap next additions- **Linux**: `dmidecode` (true DIMM speed/part), `ethtool -S` (drops/errors),
+### Cheap next additions
+- **Linux**: `dmidecode` (true DIMM speed/part), `ethtool -S` (drops/errors),
   per-core frequency residency.
-- **Windows**: `Win32_Processor` current clock, `Get-WinEvent` Kernel-Power 41
-  (unexpected shutdown) → verdict.
+- **Windows**: `Win32_Processor` current clock; per-fan RPM.
 - **Sensors**: promote `Get-Sensors.ps1` / `sensors -j` voltage + VRM rails into
   the summary so rails can be trended.
 

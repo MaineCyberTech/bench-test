@@ -24,7 +24,7 @@ measured, and so a machine can be stress-tested for stability and thermals.
 (`nvidia-smi -q -d PERFORMANCE`). Stability is checked against System events
 (4101 TDR, `nvlddmkm`, WHEA, BugCheck).
 
-## Reference points (RTX 4070 Ti SUPER, 285 W, driver 617.14 / CUDA 13.4, Xeon W-2123)
+## Reference points (RTX 4070 Ti SUPER, 285 W, driver 617.42 / CUDA 13.x, i7-6800K)
 | Metric | Observed |
 |---|---|
 | fp16 / bf16 matmul | ~89 TFLOPS |

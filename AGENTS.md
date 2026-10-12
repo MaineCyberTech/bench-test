@@ -86,7 +86,7 @@ pip install pyinstaller && python packaging/build_app.py --out dist
 ```
 CI builds Windows + Linux bundles and attaches them to an `app-<n>` release.
 The bundles are stdlib-only, so connecting to a control plane needs nothing
-else; a local battery needs a toolkit checkout (`--repo` / `$BENCH_REPO`).
+else; a local battery needs a toolkit checkout (`$BENCH_REPO`).
 
 ## Control plane (benchd)
 

@@ -42,12 +42,12 @@ htop/nvtop-style: live bars + sparklines, phase table, log, one-key start):
 bench-tui                      # htop-style console dashboard (auto-starts on tty1)
 bench-gui                      # graphical dashboard (X + mouse), same features
 bench-live-run                 # plain console run, no dashboard
-bench-live-run --with-gfx      # + FurMark / vkmark / glmark2 under X
+bench-live-run --with-gfx      # + FurMark (glmark2 fallback) under X
 ```
 
-TUI keys: `s` start · `x` stop · `c` collect · `f` fan-curve · `p` cycle profile ·
-`1-0` toggle groups · `r` report viewer · `G` graphical dashboard · `t` shell ·
-`PgUp/PgDn` log · `q` quit.
+TUI keys: `s` start · `x` stop · `c` collect · `u` upload · `f` fan-curve ·
+`p` cycle profile · `1-0` toggle groups · `r` report viewer · `G` graphical
+dashboard · `t` shell · `PgUp/PgDn` log · `q` quit.
 
 The boot dashboard runs as a systemd template, `bench-tui@.service`, which exports
 its instance (`tty1` / `ttyS0`) as `BENCH_AGENT_INSTANCE` — that becomes the
@@ -101,7 +101,9 @@ The GPU phases call `nvidia-smi` or `rocm-smi`/amdgpu sysfs through
 live/Build-LiveUSB.sh         build + write tool
 live/packages.x86_64          common packages (appended to the archiso releng list)
 live/packages-{nvidia,nvidia-legacy,amd}.x86_64
-live/airootfs/                overlay: bench-tui, bench-gui, bench-live-run, bench-collect, motd, dkms unit
+live/airootfs/                overlay: bench-tui, bench-gui, bench-live-run, bench-collect,
+                              bench-agent-env, bench-fan-curve, bench-fan-auto, bench-upload,
+                              motd, bench-tui@.service, dkms/fan units, X config
 ```
 
 ## Results & collection
@@ -116,9 +118,11 @@ save includes a `collect-diag.txt` with the full device picture, and the
 dashboard reports the true outcome ("saved to USB: ..." or a red
 "USB save FAILED - ...").
 
-If no writable stick partition can be found, results are kept in
-`/root/bench-results` (**RAM**) - the collector says so loudly and exits with
-code 4. Copy them off before rebooting.
+If no writable stick partition can be found, the collector falls back to a raw
+(unformatted) log slot — a partition labelled `BENCHLOG1` is written directly
+with `bench/rawlog.py` (exits 5) — and if that is unavailable it keeps results in
+`/root/bench-results` (**RAM**), says so loudly, and exits 4. Copy them off
+before rebooting.
 
 ### Disk tests on the internal SSD (live session)
 

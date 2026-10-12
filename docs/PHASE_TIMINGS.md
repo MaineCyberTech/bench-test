@@ -60,7 +60,7 @@ cpu, ram, disk, nvenc, net, sys, llm, fan  # fixed (see above)
 
 > **Quick check is ~31 min** despite "short soaks" — the fixed GPU streams, disk,
 > CPU and RAM phases dominate, not the soaks. For a genuinely quick check use
-> *System info + 30s soak* or *GPU compute*.
+> *System info + 60s soak (all)* or *GPU compute*.
 
 ## Caveats
 

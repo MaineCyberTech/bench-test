@@ -6,18 +6,31 @@ events and environment. Remaining ideas, roughly in priority order:
 ## Implemented since first drafted
 - **`cpu_simd`** — done: `cpu_bench.py` now has `hash` (SHA-256), `compress` (zlib/lzma),
   `aes` (AES-256-GCM, needs `cryptography`), and `flops` (fp32).
-- **Disk `steadywrite` + `latency`** — done (`disk_bench.py`); `smartctl` full SMART dump still pending.
+- **Disk `steadywrite` + `latency`** — done (`disk_bench.py`).
 - **`Invoke-FullSystemSoak.ps1`** — done (GPU+CPU+RAM+disk concurrently, `-FullSystemSeconds`).
+- **SMART** — done: Linux `nvme smart-log` + `smartctl -A -j`; Windows
+  `Get-StorageReliabilityCounter` when elevated, plus WMI predictive-failure (always).
+- **CPU package power (RAPL)** — done on Linux (`telemetry_log.py`); not available on Windows.
+- **NVENC quality** — done: SSIM + PSNR per codec (`nvenc_bench.py`); VMAF needs libvmaf.
+- **Disk latency percentiles** (p50/p90/p99/p99.9) and **random IOPS** — done.
+- **RAM latency** (approx ns/access) — done (`ram_bench.py`).
+- **ECC counters** — done via EDAC on Linux.
+- **Per-engine GPU utilisation** (3D/Copy) — done on Windows (PDH counters).
+- **Hardware verdicts** — done: WHEA, TDR, Kernel-Power 41, bugcheck, storage/thermal,
+  ECC and SMART feed `summary.verdicts`.
+- **Cross-host comparison** — done in the web UI: the **Compare** and **Fleet** tabs
+  (medians per machine / GPU model) cover what `tools/compare.py` was going to emit.
+- **Per-runner keys are in place**; operator logins (per-user accounts) are the next
+  auth step.
 
 ## Planned test modules (remaining)
 - **`Invoke-IperfBench.ps1`** — LAN throughput via a bundled `iperf3` (client/server `-J`),
   latency-under-load and link-error counters.
-- **`smartctl`** — bundle smartmontools for a full SMART attribute dump (installer-based; needs unpacking).
 - **Disk queue-depth scaling** (QD1/8/32/128) for 4 KiB random.
 
 ## Hardware / sensors
-- **CPU package power (RAPL)** — read Intel/AMD energy counters via MSR (needs a signed
-  driver or vendor tool; not exposed via ACPI on workstation boards like the HP Z4 G4).
+- **CPU package power (RAPL)** — Linux only (energy counters via sysfs); Windows
+  boards like the HP Z4 G4 don't expose it via ACPI.
 - **CPU core temperatures where the board hides them** — fall back to Intel Power Gadget /
   OpenHardwareMonitor MSR path when LHM's core-temp sensors are blank.
 - **NVMe SMART via passthrough** — vendor-specific `Get-StorageReliabilityCounter` often
@@ -33,8 +46,9 @@ events and environment. Remaining ideas, roughly in priority order:
 - **Boot/POST timing** — repeated cold/warm boot timing (needs a reboot harness).
 
 ## Stress / endurance
-- **Simultaneous full-system soak** — GPU + CPU + RAM + disk all at once for hours, with
-  per-subsystem telemetry and a stability verdict.
+- ~~**Simultaneous full-system soak** — GPU + CPU + RAM + disk all at once for hours, with
+  per-subsystem telemetry and a stability verdict.~~ **Done** (`Invoke-FullSystemSoak.ps1`
+  / the `fullsoak` group, with a clean/throttle verdict).
 - **GPU VRAM error soak with ECC** — for datacenter GPUs (ECC error counters via nvidia-smi).
 - **Power-fluctuation / brownout resilience** — not automatable without controllable power.
 
@@ -45,8 +59,8 @@ events and environment. Remaining ideas, roughly in priority order:
 ## Software / fleet
 - **Driver signing / WHQL status** and out-of-box driver baseline.
 - **Windows Update compliance** against a target patch level.
-- **Automatic cross-host comparison** — a `tools/compare.py` that ingests several
-  `results/<host>-*.json` and emits the `COMPARISON.md`/`.json` we build by hand.
+- **Automatic cross-host comparison** — done in the web UI (**Compare** + **Fleet**
+  tabs); a CLI `tools/compare.py` is not needed.
 
 ## Nice-to-haves
 - ~~A single `results/report.html` dashboard aggregating a run.~~ **Done** — the
@@ -69,20 +83,20 @@ events and environment. Remaining ideas, roughly in priority order:
 - **Ray tracing / mesh shaders** (DX12 RT benchmark, e.g. 3DMark Speed Way / Port Royal).
 - **DLSS/FSR upscaling** test.
 - **Video decode (NVDEC)** throughput — 4K/8K, H.264/HEVC/AV1.
-- **NVENC quality** (VMAF/SSIM) vs x264, not just fps.
+- ~~**NVENC quality** (VMAF/SSIM) vs x264, not just fps.~~ **Done** (SSIM + PSNR per codec; VMAF needs libvmaf).
 - **CUDA memory latency** via a compiled pointer-chase kernel.
 
 ### Storage
-- **Steady-state / SLC-cache-exhaustion write** — write 50-100 GiB and chart the throughput drop.
+- ~~**Steady-state / SLC-cache-exhaustion write** — write 50-100 GiB and chart the throughput drop.~~ **Done** (`disk_bench.py --steady-gb`).
 - **Queue-depth scaling** (QD1/8/32/128) for 4 KiB random.
-- **Latency percentiles** (p50/p99/p99.9).
-- **Full SMART attribute dump** (`smartctl -a`) — richer than `Get-StorageReliabilityCounter`.
+- ~~**Latency percentiles** (p50/p99/p99.9).~~ **Done** (`disk_bench.py` latency phase).
+- ~~**Full SMART attribute dump** (`smartctl -a`).~~ **Done on Linux** (`nvme smart-log` + `smartctl -A -j`); Windows uses the storage reliability counters.
 - **NVMe temperature under load**; RAID/array throughput.
 
 ### Memory
-- **True latency** (compiled dependent-load pointer chase).
+- ~~**True latency** (compiled dependent-load pointer chase).~~ **Done** (approx ns/access, `ram_bench.py`).
 - **Multi-threaded STREAM** (numpy is single-threaded).
-- **ECC error counters** (server platforms).
+- ~~**ECC error counters** (server platforms).~~ **Done** (EDAC, surfaced as a verdict).
 
 ### Network
 - **LAN throughput** via `iperf3` client/server.
