@@ -109,11 +109,11 @@ function connect() {
   es.onopen = () => setConn(true);
   es.onerror = () => setConn(false);
   es.addEventListener("snapshot", () => { setConn(true); refresh(); });
-  es.addEventListener("runner", () => refresh());
-  es.addEventListener("run", () => refresh());
+  es.addEventListener("runner", () => queueRefresh());
+  es.addEventListener("run", () => queueRefresh());
   es.addEventListener("phase", (e) => onPhase(JSON.parse(e.data)));
   es.addEventListener("telemetry", (e) => onTelemetry(JSON.parse(e.data)));
-  es.addEventListener("command", () => refresh());
+  es.addEventListener("command", () => queueRefresh());
   es.addEventListener("log", (e) => onLog(JSON.parse(e.data)));
   es.addEventListener("schedule", () => renderSchedules());
   es.addEventListener("event", () => {});
@@ -131,6 +131,29 @@ function setConn(on) {
 }
 
 /* --------------------------------------------------------------- state -- */
+function _scrollState() {
+  const consoles = {};
+  document.querySelectorAll("[data-active]").forEach((el) => {
+    const pre = el.querySelector(".console");
+    if (pre) consoles[el.dataset.active] = pre.scrollTop;
+  });
+  const tc = document.querySelector(".tablecard");
+  return { y: window.scrollY, consoles, table: tc ? tc.scrollTop : 0 };
+}
+function _restoreScroll(st) {
+  window.scrollTo(0, st.y);
+  document.querySelectorAll("[data-active]").forEach((el) => {
+    const pre = el.querySelector(".console");
+    if (pre && st.consoles[el.dataset.active] != null) pre.scrollTop = st.consoles[el.dataset.active];
+  });
+  const tc = document.querySelector(".tablecard");
+  if (tc) tc.scrollTop = st.table;
+}
+let _refreshTimer = null;
+function queueRefresh(delay) {
+  if (_refreshTimer) return;
+  _refreshTimer = setTimeout(() => { _refreshTimer = null; refresh(); }, delay || 1200);
+}
 async function refresh() {
   try {
     const s = await api("/state");
@@ -140,7 +163,9 @@ async function refresh() {
       ensureTel(a.id);
       if (!LOGS[a.id] && a.logs_tail) LOGS[a.id] = a.logs_tail.map((l) => l.line);
     }
+    const st = _scrollState();
     renderAll();
+    _restoreScroll(st);
   } catch (e) { /* offline */ }
 }
 
@@ -165,7 +190,7 @@ function onTelemetry(d) {
 
 function onPhase(p) {
   const card = document.querySelector(`[data-active="${p.run_id}"]`);
-  if (card) refresh();
+  if (card) queueRefresh(300);
 }
 
 /* -------------------------------------------------------------- render -- */
@@ -646,4 +671,6 @@ window.addEventListener("resize", () => { renderActive(); });
 
 /* ---------------------------------------------------------------- boot -- */
 if (!TOKEN) askToken(); else { connect(); refresh(); }
-setInterval(() => { if (STATE.active.length) renderActive(); }, 5000);
+setInterval(() => {
+  if (STATE.active.length) { const st = _scrollState(); renderActive(); _restoreScroll(st); }
+}, 5000);

@@ -48,8 +48,28 @@ GPU_Q = ("utilization.gpu,utilization.memory,temperature.gpu,temperature.memory,
 COLUMNS = ["elapsed_s", "gpu_util_pct", "mem_util_pct", "temp_c", "temp_mem_c", "fan_pct",
            "power_w", "power_limit_w", "sm_mhz", "mem_mhz", "gr_mhz", "vram_used_mib",
            "pstate", "gpu_enc_pct", "gpu_dec_pct", "cpu_util_pct", "ram_used_gib",
-           "ram_total_gib", "swap_used_gib", "disk_read_mbs", "disk_write_mbs",
+           "ram_total_gib", "swap_used_gib", "cpu_temp_c", "disk_read_mbs", "disk_write_mbs",
            "net_rx_mbs", "net_tx_mbs"]
+
+_CPU_TEMP = {"v": None}
+
+
+def cpu_temp_thread(stop_evt):
+    """Best-effort Windows CPU temp via ACPI (root/wmi), off the 1 Hz path."""
+    if os.name != "nt":
+        return
+    ps = ("(Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature "
+          "-ErrorAction SilentlyContinue | Measure-Object -Property CurrentTemperature -Maximum).Maximum")
+    while not stop_evt.is_set():
+        try:
+            out = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                                 capture_output=True, text=True, timeout=8,
+                                 creationflags=subprocess.CREATE_NO_WINDOW).stdout.strip()
+            v = float(out)
+            _CPU_TEMP["v"] = round(v / 10.0 - 273.15, 1) if 2732 < v < 3832 else None
+        except Exception:
+            _CPU_TEMP["v"] = None
+        stop_evt.wait(3.0)
 
 
 def _num(s):
@@ -108,7 +128,8 @@ def sampler(csv_path, stop_evt):
                 row += [cpu,
                         round(vm.used / 1024 ** 3, 2) if vm else None,
                         round(vm.total / 1024 ** 3, 2) if vm else None,
-                        round(sm.used / 1024 ** 3, 2) if sm else None]
+                        round(sm.used / 1024 ** 3, 2) if sm else None,
+                        _CPU_TEMP["v"]]
                 try:
                     dio = psutil.disk_io_counters()
                     nio = psutil.net_io_counters()
@@ -129,7 +150,7 @@ def sampler(csv_path, stop_evt):
                 except Exception:
                     row += [None, None, None, None]
             else:
-                row += [None] * 8
+                row += [None] * 9
             w.writerow(row)
             fh.flush()
             try:
@@ -148,6 +169,7 @@ def main():
 
     stop_evt = threading.Event()
     threading.Thread(target=sampler, args=(csv_path, stop_evt), daemon=True).start()
+    threading.Thread(target=cpu_temp_thread, args=(stop_evt,), daemon=True).start()
 
     ps = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", BATTERY,
           "-OutDir", a.out_dir,

@@ -49,8 +49,12 @@ events and environment. Remaining ideas, roughly in priority order:
   `results/<host>-*.json` and emits the `COMPARISON.md`/`.json` we build by hand.
 
 ## Nice-to-haves
-- A single `results/report.html` dashboard aggregating a run.
+- ~~A single `results/report.html` dashboard aggregating a run.~~ **Done** — the
+  `benchd` control plane (`server/`) serves a live web dashboard with history,
+  trends, compare and per-run detail (`docs/CONTROL_PLANE.md`).
 - Signed/timestamped run manifests for tamper evidence.
+- Per-runner keys are in place; operator logins (per-user accounts) are the next
+  auth step.
 
 ## Additional tests to add (beyond the current battery)
 

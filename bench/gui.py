@@ -28,7 +28,7 @@ sys.path.insert(0, BENCH)
 try:
     from benchreport import (Reporter, PhaseTracker, ReporterPump, build_summary, build_summary_dir,
                              telemetry_summary, newest_report, load_identity, run_exec, system_info,
-                             read_inventory, load_conf)
+                             read_inventory, load_conf, CSV_ALIASES)
 except Exception:  # reporting is optional
     Reporter = None
 
@@ -725,7 +725,10 @@ class Dashboard:
         temp, fan = get("temp_c"), get("fan_pct")
         power, util = get("power_w"), get("gpu_util_pct")
         rpm, cpu, ram = get("gpu_fan_rpm"), get("cpu_util_pct"), get("ram_used_gib")
-        vram, ctemp = get("mem_util_pct"), get("cpu_package_c")
+        vram = get("mem_util_pct")
+        ctemp = get("cpu_package_c")
+        if ctemp is None:
+            ctemp = get("cpu_temp_c")
         for key, val in (("temp", temp), ("fan", fan), ("power", power), ("util", util),
                          ("vram", vram), ("ctemp", ctemp), ("cpu", cpu), ("ram", ram)):
             if val is None:
@@ -744,7 +747,15 @@ class Dashboard:
                 if val is not None:
                     self.tel[key].append(val)
             if self.pump:
-                self.pump.push_sample([elapsed, temp, fan, power, util, rpm, cpu, ram, None, None])
+                sample = {}
+                for name in self._cols:
+                    canon = CSV_ALIASES.get(name.strip().lower())
+                    if canon:
+                        v = get(name)
+                        if v is not None:
+                            sample[canon] = v
+                if sample:
+                    self.pump.push_sample(sample)
             for key in self.tel:
                 if len(self.tel[key]) > 900:
                     self.tel[key] = self.tel[key][-900:]

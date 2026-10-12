@@ -35,7 +35,7 @@ sys.path.insert(0, BENCH)
 try:
     from benchreport import (Reporter, PhaseTracker, ReporterPump, build_summary, build_summary_dir,
                              telemetry_summary, newest_report, load_identity, run_exec, system_info,
-                             read_inventory, load_conf)
+                             read_inventory, load_conf, CSV_ALIASES)
 except Exception:  # reporting is optional
     Reporter = None
 
@@ -504,10 +504,15 @@ class BenchTUI:
                 if v is not None:
                     self.tel[key].append(v)
             if self.pump:
-                self.pump.push_sample([elapsed, self.csv_now.get("temp_c"),
-                                       self.csv_now.get("fan_pct"), self.csv_now.get("power_w"),
-                                       self.csv_now.get("gpu_util_pct"), self.csv_now.get("gpu_fan_rpm"),
-                                       None, None, self.csv_now.get("sm_mhz"), None])
+                sample = {}
+                for name in self.tel_cols:
+                    canon = CSV_ALIASES.get(name.strip().lower())
+                    if canon:
+                        v = get(name)
+                        if v is not None:
+                            sample[canon] = v
+                if sample:
+                    self.pump.push_sample(sample)
 
     def _sample_system(self):
         try:
