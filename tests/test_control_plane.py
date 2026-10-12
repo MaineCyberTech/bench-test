@@ -48,6 +48,25 @@ def run():
     c.check("runners expose a short uid", any(x.get("uid") == "abc123" for x in rl["runners"]),
             [x.get("uid") for x in rl["runners"]])
 
+    # ---- instance keeps same-host dashboards apart (live USB tty1 / ttyS0) ----
+    st, i1 = cl.call("POST", "/api/v1/register",
+                     {"name": "live", "os": "Linux", "kind": "tui", "machine_id": "dmi-live1",
+                      "instance": "tty1"})
+    st, i2 = cl.call("POST", "/api/v1/register",
+                     {"name": "live", "os": "Linux", "kind": "tui", "machine_id": "dmi-live1",
+                      "instance": "ttyS0"})
+    c.check("instance keeps same-host dashboards distinct",
+            i1.get("runner_id") != i2.get("runner_id"), (i1, i2))
+    st, i1b = cl.call("POST", "/api/v1/register",
+                      {"name": "live", "os": "Linux", "kind": "tui", "machine_id": "dmi-live1",
+                       "instance": "tty1"})
+    c.check("instance still dedupes a re-register",
+            i1b.get("runner_id") == i1.get("runner_id"), (i1, i1b))
+    st, rl2 = cl.call("GET", "/api/v1/runners")
+    c.check("runner label carries the instance",
+            any(x.get("label") == "live (tty1)" for x in rl2["runners"]),
+            [x.get("label") for x in rl2["runners"]])
+
     # ---- run lifecycle ----
     st, rr = cl.call("POST", "/api/v1/runs", {"runner_id": rid, "host": "lab-1", "label": "Quick",
                                               "preset": "Quick check", "system": {"cpu": "X"}}, token=key)

@@ -96,10 +96,15 @@ else; a local battery needs a toolkit checkout (`--repo` / `$BENCH_REPO`).
 - **Runner identity:** a runner also sends a `machine_id` (`machine_id()` in
   `benchreport.py` — Windows `MachineGuid`, Linux DMI uuid / `/etc/machine-id`,
   else a random id persisted next to the config) and the server **adopts the row
-  that machine already owns for its `kind`**, so a re-registering runner or an
-  ephemeral live-USB boot (whose `~/.config` does not persist) reuses one row
-  instead of minting duplicates. The UI shows `name #short-uid`; `--self-test`
-  runners are `ephemeral` and reaped once quiet.
+  that machine already owns for its `kind` + `instance`**, so a re-registering
+  runner or an ephemeral live-USB boot (whose `~/.config` does not persist)
+  reuses one row instead of minting duplicates. The UI shows `label #short-uid`.
+  The live USB runs a TUI on **both** tty1 and ttyS0: `bench-tui@.service` sets
+  `BENCH_AGENT_INSTANCE=%i`, so they check in as `bench-live (tty1)` /
+  `bench-live (ttyS0)` — genuinely distinct rows (a shared id would make a
+  command run twice). The ttyS0 unit now only starts when `console=ttyS0` is on
+  the kernel cmdline, so a normal boot has one dashboard/runner.
+  `--self-test` runners are `ephemeral` and reaped once quiet.
 - **Endpoints** (all `/api/v1`): `register`, `heartbeat`, `runs` (create/phase/
   telemetry/log/event/artifact/finish), `runners/<id>/commands` (+`/ack`),
   `schedules`, and the UI side `state`, `stream` (SSE), `runs`, `runs/<id>`,

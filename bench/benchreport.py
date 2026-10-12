@@ -291,7 +291,7 @@ def machine_id():
 class Reporter:
     def __init__(self, server, token, name=None, kind="agent", version=None,
                  os_name=None, timeout=6, log=None, git=None, runner_id=None,
-                 api_key=None, persist=False, ephemeral=False):
+                 api_key=None, persist=False, ephemeral=False, instance=None):
         self.server = (server or "").rstrip("/")
         self.join_token = token or ""
         self.token = api_key or token or ""
@@ -301,6 +301,11 @@ class Reporter:
         self.ephemeral = ephemeral
         self.name = name or socket.gethostname()
         self.kind = kind
+        # Lets several dashboards share a host without colliding: the live USB
+        # runs a TUI on tty1 *and* ttyS0, so 'bench-live' alone is ambiguous.
+        # Defaults to $BENCH_AGENT_INSTANCE, which bench-tui@.service sets to %i.
+        self.instance = (instance if instance is not None
+                         else os.environ.get("BENCH_AGENT_INSTANCE") or "").strip()
         self.machine_id = machine_id()
         self.os_name = os_name or sys.platform
         self.version = version
@@ -352,7 +357,7 @@ class Reporter:
             "name": self.name, "os": self.os_name, "kind": self.kind, "version": self.version,
             "git": self.git, "capabilities": capabilities or {}, "status": status,
             "current_run": self.run_id, "machine_id": self.machine_id,
-            "ephemeral": self.ephemeral})
+            "ephemeral": self.ephemeral, "instance": self.instance})
         if s == 200 and r.get("runner_id"):
             self.runner_id = r["runner_id"]
             if r.get("api_key"):

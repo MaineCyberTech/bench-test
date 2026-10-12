@@ -8,6 +8,9 @@ Type=simple
 ExecStartPre=/bin/sh -c 'dmesg -n 1; sleep 2; for t in /dev/tty1 /dev/ttyS0; do clear > $t 2>/dev/null; done; true'
 ExecStart=/usr/local/bin/bench-tui
 Environment=TERM=linux
+# %i (tty1 / ttyS0) becomes the runner's instance label, so the two dashboards
+# check in as distinct runners instead of two interchangeable 'bench-live' rows.
+Environment=BENCH_AGENT_INSTANCE=%i
 StandardInput=tty
 TTYPath=/dev/%i
 TTYReset=yes

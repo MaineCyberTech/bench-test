@@ -118,6 +118,7 @@ class BenchTUI:
         self.server = opts.get("server", "")
         self.token = opts.get("token", "")
         self.name = opts.get("name", "")
+        self.instance = opts.get("instance") or os.environ.get("BENCH_AGENT_INSTANCE", "")
 
         # live system sampling (htop-style)
         self.sys_cpu = 0.0
@@ -142,7 +143,8 @@ class BenchTUI:
             self.rep = Reporter(self.server, self.token, name=self.name or _p.node(),
                                 kind="tui", os_name=_p.system(),
                                 runner_id=ident.get("runner_id"), api_key=ident.get("api_key"),
-                                persist=True, log=lambda m: self.log.append(m))
+                                persist=True, instance=self.instance,
+                                log=lambda m: self.log.append(m))
             self.sysinfo = system_info()
             caps = {"os": _p.system(), "platform": _p.platform(), "kind": "tui",
                     "gpu": self.sysinfo.get("gpu"), "driver": self.sysinfo.get("driver"),
@@ -1033,6 +1035,8 @@ def main():
                     help="benchd control-plane URL (report + remote control)")
     ap.add_argument("--token", default=load_conf()[1], help="control-plane token")
     ap.add_argument("--name", default="", help="runner name reported to the control plane")
+    ap.add_argument("--instance", default="",
+                    help="instance label (e.g. tty1) when several dashboards share a host")
     a = ap.parse_args()
 
     def wrapped(scr):
@@ -1047,7 +1051,8 @@ def main():
         curses.init_pair(7, curses.COLOR_BLUE, -1)
         curses.init_pair(8, curses.COLOR_WHITE, -1)
         app = BenchTUI(scr, {"results_dir": a.results_dir, "demo": a.demo, "exit_after": a.exit_after,
-                             "server": a.server, "token": a.token, "name": a.name})
+                             "server": a.server, "token": a.token, "name": a.name,
+                             "instance": a.instance})
         try:
             app.run()
         except KeyboardInterrupt:

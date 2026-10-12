@@ -225,7 +225,7 @@ function renderRunners() {
       <div class="rhead">
         <span class="statusp ${cls}"></span>
         <div style="flex:1">
-          <div class="rname">${esc(r.name)}${r.uid ? ` <span class="muted mono">#${esc(r.uid)}</span>` : ""}</div>
+          <div class="rname">${esc(r.label || r.name)}${r.uid ? ` <span class="muted mono">#${esc(r.uid)}</span>` : ""}</div>
           <div class="rmeta">${esc(caps.gpu || "no GPU")} · ${esc(caps.os || r.os || "")} ${caps.driver ? "· driver " + esc(caps.driver) : ""}</div>
         </div>
         <span class="rtag">${esc(r.kind)}</span>
@@ -595,7 +595,7 @@ async function renderSchedules() {
     const d = await api("/schedules");
     SCHEDULES = d.schedules || [];
   } catch (e) { return; }
-  const rname = (id) => { const r = STATE.runners.find((x) => x.id === id); return r ? r.name + (r.uid ? " #" + r.uid : "") : String(id).slice(0, 8); };
+  const rname = (id) => { const r = STATE.runners.find((x) => x.id === id); return r ? (r.label || r.name) + (r.uid ? " #" + r.uid : "") : String(id).slice(0, 8); };
   $("#schedTable tbody").innerHTML = SCHEDULES.map((s) => {
     const when = s.kind === "daily" ? "daily " + esc(s.at_time) : "every " + dur(s.every_s);
     return `<tr>
@@ -607,7 +607,7 @@ async function renderSchedules() {
 }
 
 function newSchedule() {
-  const opts = STATE.runners.map((r) => `<option value="${r.id}">${esc(r.name)}</option>`).join("");
+  const opts = STATE.runners.map((r) => `<option value="${r.id}">${esc(r.label || r.name)}</option>`).join("");
   openModal(`<h3>New schedule</h3>
     <div class="formrow"><label>runner</label><select id="scRunner" style="flex:1">${opts}</select></div>
     <div class="formrow"><label>label</label><input id="scLabel" style="flex:1" value="scheduled run"></div>

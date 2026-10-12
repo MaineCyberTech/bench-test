@@ -117,7 +117,7 @@ def pick_font(candidates, fallback, size, weight="normal"):
 
 class Dashboard:
     def __init__(self, root, results_dir, demo=False, self_test=False, tab=0,
-                 server="", token="", name=""):
+                 server="", token="", name="", instance=None):
         self.root = root
         self.results_dir = results_dir
         self.proc = None
@@ -138,6 +138,7 @@ class Dashboard:
         self.pump = None
         self.tracker = None
         self.server, self.token, self.name = server, token, name
+        self.instance = instance if instance is not None else os.environ.get("BENCH_AGENT_INSTANCE", "")
 
         self._fonts()
         self._styles()
@@ -450,7 +451,7 @@ class Dashboard:
             self.rep = Reporter(self.server, self.token, name=self.name or _p.node(),
                                 kind="gui", os_name=_p.system(), log=self._log,
                                 runner_id=ident.get("runner_id"), api_key=ident.get("api_key"),
-                                persist=True)
+                                persist=True, instance=self.instance)
             self.sysinfo = system_info()
             caps = {"os": _p.system(), "platform": _p.platform(), "kind": "gui",
                     "gpu": self.sysinfo.get("gpu"), "driver": self.sysinfo.get("driver"),
@@ -1022,10 +1023,12 @@ def main():
                     help="benchd control-plane URL (report + remote control)")
     ap.add_argument("--token", default=load_conf()[1], help="control-plane token")
     ap.add_argument("--name", default="", help="runner name reported to the control plane")
+    ap.add_argument("--instance", default="",
+                    help="instance label (e.g. tty1) when several dashboards share a host")
     a = ap.parse_args()
     root = tk.Tk()
     Dashboard(root, a.results_dir, demo=a.demo, self_test=a.self_test, tab=a.tab,
-              server=a.server, token=a.token, name=a.name)
+              server=a.server, token=a.token, name=a.name, instance=a.instance)
     root.mainloop()
     return 0
 
