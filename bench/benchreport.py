@@ -641,6 +641,13 @@ def read_inventory(results_dir):
         nv = inv.get("nvidia")
         if isinstance(nv, dict):
             out["driver"] = nv.get("driver") or nv.get("DriverVersion") or nv.get("version")
+        elif isinstance(nv, (list, str)):
+            # Get-SystemInfo.ps1 stores the raw nvidia-smi line ("name, driver, ...")
+            txt = (nv[0] if nv else "") if isinstance(nv, list) else nv
+            parts = [p.strip() for p in str(txt or "").split(",")]
+            if len(parts) > 1 and parts[1]:
+                out.setdefault("gpu", parts[0])
+                out["driver"] = parts[1]
         gpus = inv.get("GPUs")
         if isinstance(gpus, list) and gpus and isinstance(gpus[0], dict):
             out["gpu"] = gpus[0].get("name") or gpus[0].get("Name")
@@ -860,6 +867,11 @@ def _merge_into(s, j):
                 setd("gpu_matmul_tflops", {k: v.get("tflops") for k, v in sub.items()})
             elif isinstance(first, dict) and "gflops" in first:
                 setd("cpu_matmul_gflops", {k: v.get("gflops") for k, v in sub.items()})
+        elif grp == "combined" and phase in ("stress", "soak", "combined"):
+            setd("combined", r)                       # Linux shape
+        elif grp == "fullsoak" and phase in ("soak", "stress", "fullsoak"):
+            if isinstance(r.get("verdict"), dict):
+                setd("fullsoak", {"group": grp, "phase": phase, "result": r})
         elif phase == "soak":
             if r.get("matmul_tflops") is not None:
                 setd("gpu_soak_tflops", r["matmul_tflops"])
@@ -875,23 +887,45 @@ def _merge_into(s, j):
             setd("pcie", {"h2d_gbps": r.get("h2d_gbps"), "d2h_gbps": r.get("d2h_gbps")})
         elif phase == "membw" and isinstance(r.get("results"), dict):
             setd("gpu_membw", r["results"])
-        elif phase == "bench" and isinstance(r.get("results"), dict) and \
-                any(isinstance(v, dict) and "fps" in v for v in r["results"].values()):
-            setd("nvenc", {"width": r.get("width"), "height": r.get("height"),
-                           "results": r["results"]})
+        elif phase == "bench":
+            res = r.get("results")
+            if isinstance(res, list):        # Windows NVENC: [{codec, fps, ...}]
+                res = {str(x.get("codec")): {k: v for k, v in x.items() if k != "codec"}
+                       for x in res if isinstance(x, dict) and x.get("codec")}
+            if isinstance(res, dict) and any(isinstance(v, dict) and "fps" in v
+                                             for v in res.values()):
+                setd("nvenc", {"width": r.get("width"), "height": r.get("height"),
+                               "results": res})
+            elif r.get("download_mbps") is not None or r.get("ping_ms") is not None:
+                setd("net", {k: r[k] for k in
+                             ("download_mbps", "upload_mbps", "download_bytes", "target",
+                              "ping_ms", "ping_avg_ms", "ping_mdev_ms", "ping_loss_pct",
+                              "ping_target", "ping_target_ms", "ping_gateway_ms")
+                             if r.get(k) is not None})
         elif grp == "disk" and phase in ("seqwrite", "seqread", "randread", "randwrite",
                                          "latency", "steadywrite"):
-            s.setdefault("disk", {})[phase] = {
-                k: r[k] for k in ("mbps", "iops", "p50", "p90", "p99", "p999",
-                                  "size_mb", "seconds") if r.get(k) is not None}
+            d = {k: r[k] for k in ("mbps", "iops", "p50", "p90", "p99", "p999",
+                                   "us_p50", "us_p90", "us_p99", "us_p999",
+                                   "size_mb", "seconds") if r.get(k) is not None}
+            for a, b in (("us_p50", "p50"), ("us_p90", "p90"),
+                         ("us_p99", "p99"), ("us_p999", "p999")):
+                if a in d and b not in d:
+                    d[b] = d[a]
+            s.setdefault("disk", {})[phase] = d
         elif grp == "ram" and phase == "bandwidth":
             s.setdefault("ram", {})["bandwidth"] = r.get("results")
         elif grp == "ram" and phase == "latency":
             s.setdefault("ram", {})["latency"] = {
                 k: r[k] for k in ("ns_per_access_approx", "accesses") if r.get(k) is not None}
-        elif grp == "gfx" and any(r.get(k) is not None for k in ("score", "avg_fps", "fps")):
-            setd("gfx", {k: r[k] for k in ("score", "fps", "min_fps", "max_fps", "avg_fps",
-                                           "resolution", "preset") if r.get(k) is not None})
+        elif grp == "gfx" and any(r.get(k) is not None
+                                  for k in ("score", "fps", "avg_fps", "fps_avg")):
+            g = {k: r[k] for k in ("score", "fps", "min_fps", "max_fps", "avg_fps",
+                                   "fps_min", "fps_max", "fps_avg", "resolution", "preset")
+                 if r.get(k) is not None}
+            for a, b in (("fps_min", "min_fps"), ("fps_max", "max_fps"), ("fps_avg", "avg_fps")):
+                if a in g and b not in g:
+                    g[b] = g[a]
+            setd("gfx", g)
     if isinstance(j.get("results"), list) and \
             any(isinstance(x, dict) and "tok_per_s" in x for x in j["results"]):
         setd("llm", {"results": j["results"]})

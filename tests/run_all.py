@@ -14,10 +14,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import test_control_plane  # noqa: E402
 import test_reporting  # noqa: E402
+import test_import  # noqa: E402
 import test_presets  # noqa: E402
 import test_dashboards  # noqa: E402
 
-MODULES = [test_control_plane, test_reporting, test_presets, test_dashboards]
+MODULES = [test_control_plane, test_reporting, test_import, test_presets, test_dashboards]
 
 
 def main():
