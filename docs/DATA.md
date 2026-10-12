@@ -55,12 +55,21 @@ mandatory third-party dependency.
 - **Fleet analytics**: `/trends` carries median/p95/p99 per series; the **Fleet**
   tab shows medians per machine and per **GPU model**; History flags a run whose
   throughput is ≥3% below the previous run of the same preset on that host.
+- **Results that were measured but dropped**: `_merge_into` now carries through
+  NVENC (**fps + SSIM/PSNR**), LLM (**tokens/s** per model), PCIe **H2D/D2H**,
+  per-phase disk (seq/rand/**latency p50/p90/p99**) and RAM
+  bandwidth/latency — previously only a handful of phases reached the summary.
+- **Windows events → verdicts**: Kernel-Power **41** (unexpected shutdown),
+  bugcheck/BSOD, storage and thermal events, alongside WHEA/TDR.
+- **Windows per-engine GPU**: 3D + Copy engine utilisation (`Get-Counter`) at
+  5 s, so Copy/Encode saturation isn't hidden by `utilization.gpu`.
 
 ### Still open
-- **Windows per-engine GPU** (`Get-Counter '\GPU Engine(*)\Utilization Percentage'`)
-  and battery/lid state.
-- **NVENC quality** (VMAF/SSIM needs ffmpeg) and **LLM** tokens/s · prompt-eval ·
-  model-load time.
+- **VMAF** for encode quality (needs ffmpeg built with libvmaf) — SSIM + PSNR are
+  collected instead, per codec.
+- **LLM prompt-eval and model-load time** — `Invoke-LlmBench.ps1` records eval
+  tokens/s (now surfaced) but not TTFT / prefill.
+- **Windows battery / lid** state.
 
 ### Cheap next additions- **Linux**: `dmidecode` (true DIMM speed/part), `ethtool -S` (drops/errors),
   per-core frequency residency.

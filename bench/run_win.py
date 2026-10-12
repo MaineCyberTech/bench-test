@@ -56,9 +56,11 @@ COLUMNS = ["elapsed_s", "gpu_util_pct", "mem_util_pct", "temp_c", "temp_mem_c", 
            "ram_total_gib", "swap_used_gib", "cpu_temp_c", "disk_read_mbs", "disk_write_mbs",
            "net_rx_mbs", "net_tx_mbs",
            "temp_limit_c", "power_default_w", "power_max_w", "video_mhz", "pcie_gen",
-           "pcie_width", "retired", "throttle", "throttle_bits"]
+           "pcie_width", "retired", "throttle", "throttle_bits",
+           "gpu_3d_pct", "gpu_copy_pct"]
 
 _CPU_TEMP = {"v": None}
+_GPU_ENGINE = {"3d": None, "copy": None}
 
 
 def _bits(s):
@@ -103,6 +105,32 @@ def _num(s):
         return None
 
 
+def gpu_engine_thread(stop_evt):
+    """Per-engine GPU utilisation (PDH counters), Windows only.
+
+    nvidia-smi's `utilization.gpu` is coarse; the engine counters expose Copy /
+    VideoEncode load (e.g. saturation during PCIe H2D/D2H or NVENC).
+    """
+    if os.name != "nt":
+        return
+    ps = ("$c = Get-Counter '\\GPU Engine(*)\\Utilization Percentage' -ErrorAction SilentlyContinue; "
+          "$d = 0.0; $p = 0.0; "
+          "foreach ($s in $c.CounterSamples) { if ($s.InstanceName -match 'engtype_3D') { $d += $s.CookedValue } "
+          "elseif ($s.InstanceName -match 'engtype_Copy') { $p += $s.CookedValue } }; "
+          "'{0} {1}' -f [math]::Min(100, [math]::Round($d)), [math]::Min(100, [math]::Round($p))")
+    while not stop_evt.is_set():
+        try:
+            out = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                                 capture_output=True, text=True, timeout=12,
+                                 creationflags=subprocess.CREATE_NO_WINDOW).stdout.strip()
+            d, p = out.split()
+            _GPU_ENGINE["3d"] = float(d)
+            _GPU_ENGINE["copy"] = float(p)
+        except Exception:
+            pass
+        stop_evt.wait(5.0)
+
+
 def _gpu_row():
     try:
         out = subprocess.run(["nvidia-smi", "--query-gpu=" + GPU_Q, "--format=csv,noheader,nounits"],
@@ -130,7 +158,9 @@ def sampler(csv_path, stop_evt):
         while not stop_evt.is_set():
             row = [round(time.time() - t0, 1)]
             g = _gpu_row()
-            extra = [None] * 9
+            extra = [None] * 11
+            extra[9] = _GPU_ENGINE["3d"]
+            extra[10] = _GPU_ENGINE["copy"]
             if g:
                 # util, mem_util, temp, temp_mem, fan, power, power_limit, sm, mem, gr,
                 # vram_mib, pstate, enc, dec
@@ -141,9 +171,9 @@ def sampler(csv_path, stop_evt):
                 if len(g) >= 22:
                     bits = _bits(g[21])
                     # headroom / health (appended after the psutil block; see COLUMNS)
-                    extra = [_num(g[14]), _num(g[15]), _num(g[16]), _num(g[17]), _num(g[18]),
-                             _num(g[19]), _flag(g[20]),
-                             (1 if (bits & ~1) else 0) if bits is not None else None, bits]
+                    extra[:9] = [_num(g[14]), _num(g[15]), _num(g[16]), _num(g[17]),
+                                 _num(g[18]), _num(g[19]), _flag(g[20]),
+                                 (1 if (bits & ~1) else 0) if bits is not None else None, bits]
             else:
                 row += [None] * 14
             if psutil:
@@ -199,6 +229,7 @@ def main():
     stop_evt = threading.Event()
     threading.Thread(target=sampler, args=(csv_path, stop_evt), daemon=True).start()
     threading.Thread(target=cpu_temp_thread, args=(stop_evt,), daemon=True).start()
+    threading.Thread(target=gpu_engine_thread, args=(stop_evt,), daemon=True).start()
 
     ps = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", BATTERY,
           "-OutDir", a.out_dir,

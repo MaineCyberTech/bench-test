@@ -83,6 +83,9 @@ CSV_ALIASES = {
     "cpu_pkg_w": "cpu_pkg_w",
     "cpu_mhz": "cpu_mhz",
     "psi_io": "psi_io",
+    # per-engine GPU (Windows PDH counters)
+    "gpu_3d_pct": "gpu_3d_pct",
+    "gpu_copy_pct": "gpu_copy_pct",
 }
 
 
@@ -849,6 +852,7 @@ def _merge_into(s, j):
             continue
         r = p.get("result") if isinstance(p.get("result"), dict) else p
         phase = p.get("phase") or r.get("phase")
+        grp = p.get("group") or r.get("group")
         if phase == "matmul" and isinstance(r.get("results"), dict):
             sub = r["results"]
             first = next(iter(sub.values()), {})
@@ -866,6 +870,31 @@ def _merge_into(s, j):
                 setd("ram_soak_gbps", r["gbps"])
         elif phase == "seqwrite":
             setd("disk_seqwrite_mbps", r.get("mbps"))
+        # -- results that were measured but previously dropped ------------------
+        elif phase == "pcie" and r.get("h2d_gbps") is not None:
+            setd("pcie", {"h2d_gbps": r.get("h2d_gbps"), "d2h_gbps": r.get("d2h_gbps")})
+        elif phase == "membw" and isinstance(r.get("results"), dict):
+            setd("gpu_membw", r["results"])
+        elif phase == "bench" and isinstance(r.get("results"), dict) and \
+                any(isinstance(v, dict) and "fps" in v for v in r["results"].values()):
+            setd("nvenc", {"width": r.get("width"), "height": r.get("height"),
+                           "results": r["results"]})
+        elif grp == "disk" and phase in ("seqwrite", "seqread", "randread", "randwrite",
+                                         "latency", "steadywrite"):
+            s.setdefault("disk", {})[phase] = {
+                k: r[k] for k in ("mbps", "iops", "p50", "p90", "p99", "p999",
+                                  "size_mb", "seconds") if r.get(k) is not None}
+        elif grp == "ram" and phase == "bandwidth":
+            s.setdefault("ram", {})["bandwidth"] = r.get("results")
+        elif grp == "ram" and phase == "latency":
+            s.setdefault("ram", {})["latency"] = {
+                k: r[k] for k in ("ns_per_access_approx", "accesses") if r.get(k) is not None}
+        elif grp == "gfx" and any(r.get(k) is not None for k in ("score", "avg_fps", "fps")):
+            setd("gfx", {k: r[k] for k in ("score", "fps", "min_fps", "max_fps", "avg_fps",
+                                           "resolution", "preset") if r.get(k) is not None})
+    if isinstance(j.get("results"), list) and \
+            any(isinstance(x, dict) and "tok_per_s" in x for x in j["results"]):
+        setd("llm", {"results": j["results"]})
     if ("throttle" in j or "errors" in j) and isinstance(j.get("results"), dict) and "fullsoak" not in s:
         active = _throttle_active(j.get("throttle"))
         clean = (not j.get("errors")) and (not active)
@@ -889,12 +918,31 @@ def _hardware_verdicts(results_dir):
         whea = sum(int(s.get("count") or 0) for s in summ if "WHEA" in str(s.get("provider", "")))
         tdr = sum(int(s.get("count") or 0) for s in summ
                   if "nvlddmkm" in str(s.get("provider", "")) or str(s.get("id")) == "4101")
+        kp = sum(int(s.get("count") or 0) for s in summ
+                 if str(s.get("id")) == "41" and "Power" in str(s.get("provider", "")))
+        bc = sum(int(s.get("count") or 0) for s in summ
+                 if "BugCheck" in str(s.get("provider", "")) or str(s.get("id")) == "1001")
+        stor = sum(int(s.get("count") or 0) for s in summ
+                   if any(k in str(s.get("provider", "")).lower()
+                          for k in ("disk", "storahci", "stornvme", "ntfs", "volmgr")))
+        therm = sum(int(s.get("count") or 0) for s in summ
+                    if "Thermal" in str(s.get("provider", "")))
+        if kp:
+            v.append({"level": "bad", "text": "unexpected shutdown (Kernel-Power 41): %d" % kp})
+        if bc:
+            v.append({"level": "bad", "text": "bugcheck / BSOD: %d" % bc})
+        if stor:
+            v.append({"level": "warn", "text": "storage events: %d" % stor})
+        if therm:
+            v.append({"level": "warn", "text": "thermal events: %d" % therm})
         if whea:
             v.append({"level": "bad", "text": "WHEA hardware errors: %d event(s)" % whea})
         if tdr:
             v.append({"level": "bad", "text": "display driver resets (TDR): %d" % tdr})
         if not whea and not tdr:
             v.append({"level": "good", "text": "no WHEA / TDR events in the window"})
+        if not kp and not bc:
+            v.append({"level": "good", "text": "no unexpected shutdowns or bugchecks"})
         for d in (h.get("disks") or []):
             if d.get("read_errors") or d.get("write_errors"):
                 v.append({"level": "bad", "text": "disk %s I/O errors r/w=%s/%s"

@@ -111,7 +111,8 @@ def run():
     hv = tempfile.mkdtemp()
     with open(os.path.join(hv, "host-20260101-000000.health.json"), "w") as fh:
         json.dump({"summary": [{"provider": "Microsoft-Windows-WHEA-Logger", "id": "17", "count": 2},
-                               {"provider": "nvlddmkm", "id": "4101", "count": 1}],
+                               {"provider": "nvlddmkm", "id": "4101", "count": 1},
+                               {"provider": "Microsoft-Windows-Kernel-Power", "id": "41", "count": 1}],
                    "disks": [{"name": "X", "wear": 85}]}, fh)
     with open(os.path.join(hv, "host-info-20260101-000000.info.json"), "w") as fh:
         json.dump({"hardware_errors": ["Xid 31 ..."], "ecc": {"ce": 4},
@@ -126,11 +127,40 @@ def run():
     c.check("verdict: WHEA reported", "WHEA" in txt, vs)
     c.check("verdict: TDR reported", "TDR" in txt, vs)
     c.check("verdict: ECC reported", "ECC" in txt, vs)
+    c.check("verdict: unexpected shutdown reported", "Kernel-Power 41" in txt, vs)
     c.check("verdict: disk wear reported", "wear" in txt, vs)
     c.check("verdict: predictive failure reported", "predictive failure" in txt, vs)
     c.check("verdict: elevation gap reported", "not elevated" in txt, vs)
     c.check("verdicts carry a level",
             bool(vs) and all(v.get("level") in ("good", "info", "warn", "bad") for v in vs), vs)
+
+    # ---- phase results that used to be dropped are merged into the summary ----
+    d2 = tempfile.mkdtemp()
+    for name, obj in {
+        "h-gpu-x.json": {"phases": [{"group": "gpu", "phase": "pcie",
+                                     "result": {"h2d_gbps": 12.3, "d2h_gbps": 13.1}}]},
+        "h-nvenc.json": {"phases": [{"group": "nvenc", "phase": "bench",
+                                     "result": {"results": {"h264_nvenc": {"fps": 150, "ssim": 0.98}}}}]},
+        "h-llm.json": {"results": [{"model": "qwen3:8b", "tok_per_s": 42.0, "eval_tokens": 128}]},
+        "h-disk.json": {"phases": [{"group": "disk", "phase": "latency",
+                                    "result": {"iops": 1200, "p50": 0.3, "p99": 1.2}}]},
+        "h-ram.json": {"phases": [{"group": "ram", "phase": "bandwidth",
+                                   "result": {"results": {"copy": {"gbps": 12.3}}}}]},
+    }.items():
+        with open(os.path.join(d2, name), "w") as fh:
+            json.dump(obj, fh)
+    s2 = build_summary_dir(d2)
+    c.check("summary: pcie merged", (s2.get("pcie") or {}).get("h2d_gbps") == 12.3, s2.get("pcie"))
+    c.check("summary: nvenc fps merged",
+            (((s2.get("nvenc") or {}).get("results") or {}).get("h264_nvenc") or {}).get("fps") == 150,
+            s2.get("nvenc"))
+    c.check("summary: llm tok/s merged",
+            (s2.get("llm") or {}).get("results", [{}])[0].get("tok_per_s") == 42.0, s2.get("llm"))
+    c.check("summary: disk latency merged",
+            (s2.get("disk") or {}).get("latency", {}).get("p99") == 1.2, s2.get("disk"))
+    c.check("summary: ram bandwidth merged",
+            (((s2.get("ram") or {}).get("bandwidth") or {}).get("copy") or {}).get("gbps") == 12.3,
+            s2.get("ram"))
 
     # ---- power command helper exists (never invoked in tests) ----
     from benchreport import power_action

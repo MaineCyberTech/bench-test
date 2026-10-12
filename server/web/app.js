@@ -33,6 +33,7 @@ const SERIES = {
   disk_read_mbs: ["disk R MB/s", "#68d391"], disk_write_mbs: ["disk W MB/s", "#f6ad55"],
   net_rx_mbs: ["net rx MB/s", "#63b3ed"], net_tx_mbs: ["net tx MB/s", "#4fd1c5"],
   cpu_pkg_w: ["CPU W", "#f687b3"], cpu_mhz: ["CPU MHz", "#9ae6b4"], psi_io: ["io stall", "#faf089"],
+  gpu_3d_pct: ["3D engine %", "#68d391"], gpu_copy_pct: ["copy engine %", "#f6ad55"],
 };
 const CHART_PRESETS = {
   "temp · power · util": ["temp_c", "power_w", "gpu_util"],
@@ -44,6 +45,7 @@ const CHART_PRESETS = {
   "clocks · video": ["sm_mhz", "gr_mhz", "video_mhz"],
   "disk · net": ["disk_read_mbs", "disk_write_mbs", "net_rx_mbs"],
   "CPU power · clocks": ["cpu_pkg_w", "cpu_util", "cpu_temp_c"],
+  "3D · copy engines": ["gpu_util", "gpu_3d_pct", "gpu_copy_pct"],
 };
 const GAUGES = [["temp_c", "temp °C"], ["power_w", "power W"], ["gpu_util", "GPU %"],
                 ["fan_pct", "fan %"], ["mem_util", "VRAM %"], ["cpu_temp_c", "CPU °C"]];
@@ -403,6 +405,21 @@ function peakTemp(r) {
   const t = (s.gpu_soak_telemetry && s.gpu_soak_telemetry.temp_c) || (s.telemetry && s.telemetry.temp_c);
   return Array.isArray(t) ? t[t.length - 1] : null;
 }
+function nvFps(nv) {
+  if (!nv || !nv.results) return null;
+  const v = Object.values(nv.results).map((x) => +x.fps).filter((x) => !isNaN(x));
+  return v.length ? Math.max(...v) : null;
+}
+function nvSsim(nv) {
+  if (!nv || !nv.results) return null;
+  const v = Object.values(nv.results).map((x) => +x.ssim).filter((x) => !isNaN(x));
+  return v.length ? Math.min(...v) : null;
+}
+function llmTok(llm) {
+  if (!llm || !Array.isArray(llm.results)) return null;
+  const v = llm.results.map((x) => +x.tok_per_s).filter((x) => !isNaN(x) && x);
+  return v.length ? Math.max(...v) : null;
+}
 function sortArrow(key) {
   if (SORT.key !== key) return "";
   return `<span class="arw">${SORT.dir < 0 ? "▼" : "▲"}</span>`;
@@ -755,6 +772,10 @@ async function showDetail(runId) {
     ["Disk write", fmt(s.disk_seqwrite_mbps, 0) + " MB/s", dltOf("disk_seqwrite_mbps")],
     ["Network", fmt(s.net && s.net.download_mbps, 0) + " Mb/s", dltOf("net.download_mbps")],
     ["peak temp", fmt(peak, 0) + " °C", ""],
+    ["NVENC fps", fmt(nvFps(s.nvenc), 0) + " fps", ""],
+    ["NVENC ssim", fmt(nvSsim(s.nvenc), 3), ""],
+    ["LLM tok/s", fmt(llmTok(s.llm), 1), ""],
+    ["PCIe H2D", s.pcie && s.pcie.h2d_gbps != null ? fmt(s.pcie.h2d_gbps, 1) + " GB/s" : "—", ""],
   ];
   const derived = [
     ["perf/watt", perfW],
