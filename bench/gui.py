@@ -142,6 +142,7 @@ class Dashboard:
         self.run_t0 = None
         self.collected_ok = False
         self._stopped = False
+        self._in_tk_error = False
         self.vram_total = None
         self.rep = None
         self.pump = None
@@ -427,24 +428,47 @@ class Dashboard:
 
     # ----------------------------------------------------------- helpers ----
     def _log(self, line):
-        tag = ()
-        if "[warn]" in line or "WARN" in line:
-            tag = ("warn",)
-        elif "error" in line.lower() or "traceback" in line.lower():
-            tag = ("err",)
-        elif line.startswith("["):
-            tag = ("head",)
-        self.log.insert("end", line + "\n", tag)
-        if int(self.log.index("end-1c").split(".")[0]) > 800:
-            self.log.delete("1.0", "100.0")
-        self.log.see("end")
+        try:
+            tag = ()
+            if "[warn]" in line or "WARN" in line:
+                tag = ("warn",)
+            elif "error" in line.lower() or "traceback" in line.lower():
+                tag = ("err",)
+            elif line.startswith("["):
+                tag = ("head",)
+            self.log.insert("end", line + "\n", tag)
+            if int(self.log.index("end-1c").split(".")[0]) > 800:
+                self.log.delete("1.0", "100.0")
+            self.log.see("end")
+        except Exception:
+            pass            # never let logging raise (it runs inside Tk callbacks)
 
     def _tk_error(self, etype, value, tb):
-        """Tk callback exceptions: report them instead of dying silently."""
-        import traceback
-        last = traceback.format_exception(etype, value, tb)[-1].strip()
-        self._diag("[gui] %s: %s" % (etype.__name__, value))
-        self._diag("[gui] %s" % last)
+        """Tk callback exceptions: report them instead of dying silently.
+
+        Must be safe to call from within Tk itself: it may not touch widgets
+        (that can raise and re-enter this handler -> a busy loop), so the message
+        only goes to the pump / stderr.
+        """
+        if self._in_tk_error:
+            return
+        self._in_tk_error = True
+        try:
+            import traceback
+            last = traceback.format_exception(etype, value, tb)[-1].strip()
+            msg = "[gui] callback error: %s: %s" % (etype.__name__, value)
+            try:
+                if self.pump:
+                    self.pump.push_log(msg)
+                    self.pump.push_log("[gui] %s" % last)
+            except Exception:
+                pass
+            try:
+                sys.stderr.write(msg + "\n" + last + "\n")
+            except Exception:
+                pass
+        finally:
+            self._in_tk_error = False
 
     def _diag(self, line):
         """Our own diagnostics: show locally *and* stream to the control plane,
@@ -555,11 +579,47 @@ class Dashboard:
             self._update_remote(cmd.get("id"), kind, payload)
         elif kind == "restart":
             self.rep.ack(cmd.get("id"), "done", {"restart": "scheduled"})
-            threading.Thread(target=restart_self, args=(0.5,), daemon=True).start()
+            self.root.after(0, self._restart_runner)
         elif kind in ("exec", "shell"):
             self._exec_remote(cmd.get("id"), payload)
         else:
             self.rep.ack(cmd.get("id"), "failed", {"error": "unsupported: %s" % kind})
+
+    def _restart_runner(self):
+        """Restart cleanly: start the successor, then close this window.
+
+        Must run on the Tk thread (widgets), and must not use os._exit from a
+        worker thread (that leaves a ghost window and can strand the successor).
+        """
+        if self.running:
+            self._diag("[gui] restart deferred: a run is in progress")
+            return
+        try:
+            subprocess.Popen([sys.executable] + list(sys.argv), cwd=REPO, close_fds=True)
+        except Exception as exc:
+            self._diag("[gui] restart failed: %r" % exc)
+            return
+        self._set_status("restarting…", ACCENT)
+        self.root.after(400, self._quit_clean)
+
+    def _quit_clean(self):
+        try:
+            self._stop_soft()
+        except Exception:
+            pass
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+        os._exit(0)
+
+    def _stop_soft(self):
+        """Best-effort shutdown: stop the pump/threads without touching a run."""
+        try:
+            if self.pump:
+                self.pump.stop()
+        except Exception:
+            pass
 
     def _update_remote(self, cid, kind, payload):
         def work():
@@ -581,8 +641,8 @@ class Dashboard:
             except Exception as e:
                 res = {"error": "%s: %s" % (type(e).__name__, e)}
             self.rep.ack(cid, "done" if res.get("ok") else "failed", res)
-            if update_needs_restart(res):
-                restart_self(1.5, self._log)
+            if payload.get("restart") and update_needs_restart(res):
+                self.root.after(0, self._restart_runner)
         threading.Thread(target=work, daemon=True).start()
 
     def _exec_remote(self, cid, payload):

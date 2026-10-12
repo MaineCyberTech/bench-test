@@ -842,8 +842,9 @@ function runnerUpdate(runnerId) {
     } catch (e) { toast(kind + " failed: " + e.message, "err"); }
   };
   $("#uGo").onclick = () => send("update_toolkit", {
-    ref: $("#uRef").value.trim() || "main", sha256: $("#uSha").value.trim() || null });
-  $("#uGit").onclick = () => send("update", {});
+    ref: $("#uRef").value.trim() || "main", sha256: $("#uSha").value.trim() || null,
+    restart: true });
+  $("#uGit").onclick = () => send("update", { restart: true });
   $("#uRestart").onclick = () => send("restart", {});
   $("#uFetch").onclick = () => send("iso_fetch", {
     tag: $("#uTag").value.trim(), gpu: $("#uGpu").value });

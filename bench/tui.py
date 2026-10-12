@@ -232,7 +232,7 @@ class BenchTUI:
             except Exception as e:
                 res = {"error": "%s: %s" % (type(e).__name__, e)}
             self.rep.ack(cid, "done" if res.get("ok") else "failed", res)
-            if update_needs_restart(res):
+            if payload.get("restart") and update_needs_restart(res):
                 restart_self(1.5, log)
         threading.Thread(target=work, daemon=True).start()
 
