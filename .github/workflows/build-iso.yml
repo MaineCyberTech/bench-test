@@ -8,7 +8,9 @@ name: Build live ISO
 #   - python 3.14 with venv + pip, network access (pacman + PyTorch wheels)
 #   - >= 40 GiB free on /var/tmp
 #
-# Trigger: Actions tab -> "Build live ISO" -> Run workflow (pick the variant).
+# Trigger: Actions tab -> "Build live ISO" -> Run workflow (pick the variant),
+# or automatically on pushes to main touching bench/** or live/** (defaults:
+# nvidia-legacy + zstd + ubuntu-latest).
 # Download afterwards:  gh release download iso-<gpu>-<run> -p '*.iso'
 # or via the API/UI; the SHA256SUMS asset verifies the transfer.
 
@@ -33,16 +35,22 @@ on:
         type: boolean
         default: true
 
+  push:
+    branches: [main]
+    paths:
+      - "bench/**"
+      - "live/**"
+
 permissions:
   contents: write
 
 concurrency:
-  group: build-iso-${{ inputs.gpu }}
+  group: build-iso-${{ inputs.gpu || 'nvidia-legacy' }}
   cancel-in-progress: false
 
 jobs:
   build:
-    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    runs-on: ${{ fromJSON(inputs.runner_labels || '["ubuntu-latest"]') }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -80,18 +88,18 @@ jobs:
       - name: Build ISO (${{ inputs.gpu }})
         run: |
           set -euo pipefail
-          bash live/ci-build.sh ${{ inputs.gpu }} ${{ inputs.compression }}
+          bash live/ci-build.sh ${{ inputs.gpu || 'nvidia-legacy' }} ${{ inputs.compression || 'zstd' }}
 
       - name: Collect artifacts
         run: |
           set -euo pipefail
           mkdir -p dist
-          cp "$ISO_PATH" "dist/bench-live-${{ inputs.gpu }}.iso"
+          cp "$ISO_PATH" "dist/bench-live-${{ inputs.gpu || 'nvidia-legacy' }}.iso"
           sha256sum dist/*.iso | tee dist/SHA256SUMS
           du -h dist/*.iso
           # GitHub release assets are capped at 2 GiB; ship <2GiB parts
-          split -b 1900M "dist/bench-live-${{ inputs.gpu }}.iso" "dist/bench-live-${{ inputs.gpu }}.iso.part."
-          rm "dist/bench-live-${{ inputs.gpu }}.iso"
+          split -b 1900M "dist/bench-live-${{ inputs.gpu || 'nvidia-legacy' }}.iso" "dist/bench-live-${{ inputs.gpu || 'nvidia-legacy' }}.iso.part."
+          rm "dist/bench-live-${{ inputs.gpu || 'nvidia-legacy' }}.iso"
           cat > dist/README-ASSEMBLE.txt <<'EOF'
           Reassemble and verify:
             cat bench-live-<gpu>.iso.part.* > bench-live-<gpu>.iso
@@ -99,18 +107,18 @@ jobs:
           EOF
 
       - name: Attach to release
-        if: ${{ inputs.upload_release }}
+        if: ${{ inputs.upload_release == '' || inputs.upload_release }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: iso-${{ inputs.gpu }}-${{ github.run_number }}
-          name: "ISO ${{ inputs.gpu }} #${{ github.run_number }}"
+          tag_name: iso-${{ inputs.gpu || 'nvidia-legacy' }}-${{ github.run_number }}
+          name: "ISO ${{ inputs.gpu || 'nvidia-legacy' }} #${{ github.run_number }}"
           files: |
-            dist/bench-live-${{ inputs.gpu }}.iso.part.*
+            dist/bench-live-${{ inputs.gpu || 'nvidia-legacy' }}.iso.part.*
             dist/SHA256SUMS
             dist/README-ASSEMBLE.txt
           make_latest: false
           body: |
-            Self-hosted build of the `${{ inputs.gpu }}` live ISO (run ${{ github.run_number }}, ${{ inputs.compression }} squashfs).
+            Self-hosted build of the `${{ inputs.gpu || 'nvidia-legacy' }}` live ISO (run ${{ github.run_number }}, ${{ inputs.compression || 'zstd' }} squashfs).
             Assets are <2 GiB parts (GitHub's release asset cap):
             `cat bench-live-${{ inputs.gpu }}.iso.part.* > bench-live-${{ inputs.gpu }}.iso && sha256sum -c SHA256SUMS`
             then flash with `sudo dd if=bench-live-${{ inputs.gpu }}.iso of=/dev/sdX bs=4M conv=fsync status=progress`.
