@@ -50,14 +50,25 @@ if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
     $info.nvidia = $gq
 }
 
-# Storage: disks, volumes, partitions
+# Storage: disks, volumes, partitions. Reliability counters (temp/wear/errors)
+# require elevation; without it fall back to WMI status and SMART predictive
+# failure, and record why, so the control plane can flag the gap instead of
+# silently reporting nothing.
+$elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+$info.Elevated = $elevated
+$win32dd = @(Get-CimInstance Win32_DiskDrive -ErrorAction SilentlyContinue)
+$info.SmartPredict = @(Get-CimInstance -Namespace root\wmi -ClassName MSStorageDriver_FailurePredictStatus -ErrorAction SilentlyContinue |
+    ForEach-Object { [ordered]@{ instance = $_.InstanceName; predict_failure = [bool]$_.PredictFailure; reason = $_.Reason } })
 $info.Disks = @()
 foreach ($pd in Get-PhysicalDisk -ErrorAction SilentlyContinue) {
-    $rc = $pd | Get-StorageReliabilityCounter -ErrorAction SilentlyContinue
+    $rc = if ($elevated) { $pd | Get-StorageReliabilityCounter -ErrorAction SilentlyContinue } else { $null }
+    $wd = @($win32dd | Where-Object { "$($_.Index)" -eq "$($pd.DeviceId)" }) | Select-Object -First 1
     $info.Disks += [ordered]@{
         name = $pd.FriendlyName; media = "$($pd.MediaType)"; bus = "$($pd.BusType)"
         size_gib = [math]::Round($pd.Size / 1GB, 0); health = "$($pd.HealthStatus)"
         operational = "$($pd.OperationalStatus)"; firmware = "$($pd.FirmwareVersion)"
+        wmi_status = if ($wd) { "$($wd.Status)" } else { $null }
+        smart = if ($elevated) { "reliability-counters" } else { "unavailable (not elevated)" }
         temp_c = if ($rc) { $rc.Temperature } else { $null }
         wear = if ($rc) { $rc.Wear } else { $null }
         read_errors = if ($rc) { $rc.ReadErrorsTotal } else { $null }
@@ -99,7 +110,7 @@ if ($Json) { $info | ConvertTo-Json -Depth 8 } else {
     foreach ($d in $info.RAM.dimms) { "   DIMM $($d.slot): $($d.size_gib) GiB @ $($d.configured_mts) MT/s  $($d.mfg) $($d.part.Trim())" }
     foreach ($g in $info.GPUs) { "GPU      $($g.name)  driver $($g.driver)  $($g.resolution)@$($g.refresh)Hz" }
     if ($info.nvidia) { "NVIDIA   $($info.nvidia)" }
-    foreach ($d in $info.Disks) { "Disk     $($d.name)  $($d.media) $($d.bus)  $($d.size_gib) GiB  $($d.health)  fw $($d.firmware)  temp=$($d.temp_c)C wear=$($d.wear)" }
+    foreach ($d in $info.Disks) { "Disk     $($d.name)  $($d.media) $($d.bus)  $($d.size_gib) GiB  $($d.health)  fw $($d.firmware)  temp=$($d.temp_c)C wear=$($d.wear)  [$($d.smart)]" }
     foreach ($v in $info.Volumes) { "Volume   $($v.drive): $($v.fs) $($v.size_gib) GiB ($($v.free_gib) free) $($v.label)" }
     foreach ($n in $info.NICs) { "NIC      $($n.name) $($n.speed_mbps)  $($n.mac)  $($n.ip)" }
     foreach ($m in $info.Monitors) { "Monitor  $($m.manufacturer) $($m.name) ($($m.year))" }

@@ -720,7 +720,7 @@ async function showDetail(runId) {
   openModal(`<h3>${esc(r.host)} · ${esc(r.label || "run")} <span class="pill ${esc(r.status)}">${esc(r.status)}</span></h3>
     <div class="muted">${ts(r.started)} · ${runDur(r)} · ${esc(sy.gpu || r.gpu || "")} ${sy.driver || r.driver ? "· driver " + esc(sy.driver || r.driver) : ""}${prev ? ` · <span class="delta flat">vs ${ts(prev.started)}</span>` : ""}</div>
     ${(s.verdicts || []).length ? `<div class="remarks verdicts">${s.verdicts.map((x) =>
-      `<div class="v-${esc(x.level)}"><b>${x.level === "good" ? "✓" : x.level === "warn" ? "!" : "✕"}</b> ${esc(x.text)}</div>`).join("")}</div>` : ""}
+      `<div class="v-${esc(x.level)}"><b>${x.level === "good" ? "✓" : x.level === "warn" ? "!" : x.level === "info" ? "i" : "✕"}</b> ${esc(x.text)}</div>`).join("")}</div>` : ""}
     ${remarks.length ? `<div class="remarks">${remarks.map((x) => `<div>${esc(x)}</div>`).join("")}</div>` : ""}
     <div class="kv" style="margin:14px 0">
       ${tiles.map(([k, val, d]) => `<div class="kvitem"><div class="k">${esc(k)}</div><div class="v">${esc(val)}${d || ""}</div></div>`).join("")}

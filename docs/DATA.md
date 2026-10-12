@@ -43,17 +43,17 @@ mandatory third-party dependency.
   `summary.verdicts[]`, shown as pass/warn/fail in run detail.
 - **Linux telemetry**: RAPL package watts, average core MHz, PSI I/O stall.
 - **Disk SMART**: `nvme smart-log` + `smartctl -A -j` on Linux (used %, media
-  errors, unsafe shutdowns, temps) and `Get-StorageReliabilityCounter` on
-  Windows (needs elevation — see below).
+  errors, unsafe shutdowns, temps). On Windows, `Win32_DiskDrive.Status`
+  (`OK`/`Pred Fail`) + `MSStorageDriver_FailurePredictStatus` are read **without
+  elevation**, and the reliability counters (temp/wear/error totals/power-on
+  hours) are read when elevated; the inventory records `smart` and `Elevated`
+  so the verdict layer can report predictive failure and note when SMART was not
+  collected (an *info* row, not a warning).
 - **Analytics**: p95/p99/stddev, energy (J), clock residency, throttled %,
   thermal/power headroom; Δ vs the previous run of the same preset.
 - **Benchmarks**: GPU **fp64**; net **jitter (mdev)** + **packet loss**.
 
 ### Still open
-- **Windows disk SMART needs elevation** — `Get-StorageReliabilityCounter`
-  returns nothing unelevated, so `wear/read_errors/write_errors/power_on_hours`
-  stay null unless the battery runs as admin. Add a non-elevated fallback or
-  flag it in the verdicts.
 - **Windows per-engine GPU** (`Get-Counter '\GPU Engine(*)\Utilization Percentage'`)
   and battery/lid state.
 - **NVENC quality** (VMAF/SSIM needs ffmpeg) and **LLM** tokens/s · prompt-eval ·

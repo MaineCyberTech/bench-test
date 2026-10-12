@@ -912,6 +912,20 @@ def _hardware_verdicts(results_dir):
         except Exception:
             continue
         inv = inv.get("inventory", inv) if isinstance(inv, dict) else {}
+        # Windows inventory: predictive failure + the elevation gap
+        for d in (inv.get("Disks") or []):
+            if "Pred Fail" in str(d.get("wmi_status") or ""):
+                v.append({"level": "bad", "text": "disk %s reports predictive failure" % d.get("name")})
+            if str(d.get("health") or "").lower() not in ("healthy", "", "none"):
+                v.append({"level": "warn", "text": "disk %s health: %s" % (d.get("name"), d.get("health"))})
+        for sp in (inv.get("SmartPredict") or []):
+            if sp.get("predict_failure"):
+                v.append({"level": "bad", "text": "SMART predictive failure: %s" % sp.get("instance")})
+        disks = inv.get("Disks") or []
+        if disks and inv.get("Elevated") is False and \
+                all(d.get("wear") is None and d.get("temp_c") is None for d in disks):
+            v.append({"level": "info",
+                      "text": "disk SMART not collected (battery not elevated)"})
         hw = inv.get("hardware_errors") or []
         if hw:
             v.append({"level": "warn", "text": "hardware error lines since boot: %d" % len(hw)})

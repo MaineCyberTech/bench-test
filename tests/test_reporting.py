@@ -116,14 +116,21 @@ def run():
     with open(os.path.join(hv, "host-info-20260101-000000.info.json"), "w") as fh:
         json.dump({"hardware_errors": ["Xid 31 ..."], "ecc": {"ce": 4},
                    "disk_health": {"/dev/nvme0n1": {"used_pct": 90, "media_errors": 0}}}, fh)
+    with open(os.path.join(hv, "host-win-20260101-000001.sysinfo.json"), "w") as fh:
+        json.dump({"Host": "W", "Elevated": False,
+                   "SmartPredict": [{"instance": "SCSI\\Disk", "predict_failure": True}],
+                   "Disks": [{"name": "D0", "health": "Healthy", "wmi_status": "Pred Fail",
+                              "temp_c": None, "wear": None}]}, fh)
     vs = build_summary_dir(hv).get("verdicts") or []
     txt = " ".join(v.get("text", "") for v in vs)
     c.check("verdict: WHEA reported", "WHEA" in txt, vs)
     c.check("verdict: TDR reported", "TDR" in txt, vs)
     c.check("verdict: ECC reported", "ECC" in txt, vs)
     c.check("verdict: disk wear reported", "wear" in txt, vs)
+    c.check("verdict: predictive failure reported", "predictive failure" in txt, vs)
+    c.check("verdict: elevation gap reported", "not elevated" in txt, vs)
     c.check("verdicts carry a level",
-            bool(vs) and all(v.get("level") in ("good", "warn", "bad") for v in vs), vs)
+            bool(vs) and all(v.get("level") in ("good", "info", "warn", "bad") for v in vs), vs)
 
     # ---- power command helper exists (never invoked in tests) ----
     from benchreport import power_action

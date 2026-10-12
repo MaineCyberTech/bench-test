@@ -145,6 +145,7 @@ tbody tr:hover{background:#1a2029}
 .remarks div{padding:1px 0}
 .remarks.verdicts{border-left-color:#2b3442}
 .remarks .v-good{color:var(--good)}
+.remarks .v-info{color:var(--muted)}
 .remarks .v-warn{color:var(--warn)}
 .remarks .v-bad{color:var(--bad)}
 .sechead{margin:16px 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted)}
