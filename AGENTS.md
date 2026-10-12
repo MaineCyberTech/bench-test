@@ -130,6 +130,11 @@ retired, throttle, throttle_bits`). The mapping lives in
 `benchreport.CSV_ALIASES`; add new columns there **and** in `telemetry_log.py`
 (Linux) / `run_win.py` (Windows).
 
+The dashboards render the same fields from one shared list
+(`benchreport.DASH_FIELDS`) and one hardware line (`benchreport.hardware_line()`),
+so the GUI and TUI cannot drift — add a column there and both surface it (a test
+asserts every `DASH_FIELDS` key is a real telemetry field).
+
 ## Testing — required before every commit
 
 ```bash
