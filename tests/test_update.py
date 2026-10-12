@@ -239,6 +239,19 @@ def run():
         src = open(os.path.join(BENCH, f), encoding="utf-8").read()
         c.check("auto-update wired into %s" % f, "auto_update(" in src, f)
 
+    # ---- A/B slot write guards (never touches a device here) ----
+    c.check("iso_write_slot needs confirm",
+            "confirm" in str(br.iso_write_slot(r2["iso"], confirm=False).get("error")), "")
+    c.check("iso_write_slot rejects a missing iso",
+            "no such iso" in str(br.iso_write_slot("/nope.iso", confirm=True).get("error")), "")
+    if os.path.exists("/dev/disk/by-label/BENCH_ESP"):
+        c.check("iso_write_slot not exercised on a real A/B stick (destructive)", True, "")
+    else:
+        c.check("iso_write_slot refuses a non-A/B machine",
+                "BENCH_ESP" in str(br.iso_write_slot(r2["iso"], confirm=True).get("error")), "")
+    c.check("_mounts_of tolerates an unknown device",
+            br._mounts_of("/dev/definitely-not-a-disk") == [], "")
+
     # ---- iso write guards (never actually writes) ----
     c.check("iso_write needs confirm", "confirm" in str(br.iso_write(r2["iso"], "/dev/null").get("error")), "")
     c.check("iso_write rejects a missing iso",

@@ -1211,6 +1211,24 @@ def _device_of_path(path):
     return os.path.realpath(dev) if dev else ""
 
 
+def _mounts_of(device):
+    """[(source, mountpoint)] for the partitions of `device` (from /proc/mounts)."""
+    base = os.path.basename(os.path.realpath(device))
+    out = []
+    try:
+        with open("/proc/mounts") as fh:
+            for ln in fh:
+                p = ln.split()
+                if len(p) < 2:
+                    continue
+                src = os.path.basename(p[0])
+                if src == base or (src.startswith(base) and src[len(base):].isdigit()):
+                    out.append((p[0], p[1].replace("\\040", " ")))
+    except OSError:
+        return []
+    return out
+
+
 def _unmount_all(device):
     """Unmount every partition of the device (needed before write/re-read)."""
     base = os.path.basename(os.path.realpath(device))
@@ -1360,8 +1378,11 @@ def _finish_stick(device, iso_bytes, confs, log=None):
 
 def _esp_device():
     """The BENCH_ESP partition device, or '' when this is not an A/B stick."""
-    out = subprocess.run(["blkid", "-o", "device", "-t", "LABEL=BENCH_ESP"],
-                         capture_output=True, text=True, timeout=10).stdout.split()
+    try:
+        out = subprocess.run(["blkid", "-o", "device", "-t", "LABEL=BENCH_ESP"],
+                             capture_output=True, text=True, timeout=10).stdout.split()
+    except Exception:
+        return ""
     return out[0] if out else ""
 
 
@@ -1451,31 +1472,55 @@ def iso_write_slot(iso_path, confirm=False, log=None):
     active = (env.get("active") or "A").upper()
     target = "B" if active == "A" else "A"
     part = "%s%d" % (disk, 2 if target == "A" else 3)
+    cfg = os.path.join(mnt, "boot/grub/grub.cfg")
+    if not os.path.isdir(os.path.dirname(cfg)):
+        return {"error": "the ESP (%s) has no boot/grub - refusing to write a boot config the "
+                         "firmware would not read" % esp}
     log("[ab] active=%s -> writing slot %s (%s)" % (active, target, part))
+    # The raw write needs every partition of the disk released - the ESP we just
+    # mounted included - so remember what to put back: the runner keeps running
+    # from RAM (copytoram), but BENCHDATA (toolkit copy + results) is on that disk.
+    saved = [(s, m) for s, m in _mounts_of(disk) if m != mnt]
     _unmount_all(disk)
     iso_bytes = os.path.getsize(iso_path)
     try:
-        with open(iso_path, "rb") as src, open(part, "wb", buffering=0) as dst:
-            shutil.copyfileobj(src, dst, length=4 << 20)
-            dst.flush()
-            os.fsync(dst.fileno())
-    except Exception as e:
-        return {"error": "write failed: %s" % e, "slot": target}
-    subprocess.run(["sync"], timeout=60)
-    subprocess.run(["blockdev", "--rereadpt", disk], capture_output=True, timeout=30)
-    time.sleep(1)
-    ua, ub = _slot_uuids(disk)
-    if not ua or not ub:
-        return {"error": "slot UUIDs unreadable after write", "slot": target}
-    _write_ab_grub_cfg(os.path.join(mnt, "boot/grub/grub.cfg"), ua, ub)
-    env["active"] = target
-    env["attempts"] = "0"
-    _grubenv_write(os.path.join(mnt, "boot/grub/grubenv"), env)
-    subprocess.run(["sync"], timeout=60)
-    subprocess.run(["umount", mnt], capture_output=True, timeout=30)
+        try:
+            with open(iso_path, "rb") as src, open(part, "wb", buffering=0) as dst:
+                shutil.copyfileobj(src, dst, length=4 << 20)
+                dst.flush()
+                os.fsync(dst.fileno())
+        except Exception as e:
+            return {"error": "write failed: %s" % e, "slot": target}
+        subprocess.run(["sync"], timeout=60)
+        # the boot config lives on the ESP, which _unmount_all() just released
+        if not os.path.ismount(mnt):
+            if subprocess.run(["mount", esp, mnt], capture_output=True, timeout=30).returncode != 0:
+                return {"error": "cannot remount the ESP (%s) to update the boot config" % esp,
+                        "slot": target}
+        subprocess.run(["blockdev", "--rereadpt", disk], capture_output=True, timeout=30)
+        time.sleep(1)
+        ua, ub = _slot_uuids(disk)
+        if not ua or not ub:
+            return {"error": "slot UUIDs unreadable after write", "slot": target}
+        _write_ab_grub_cfg(cfg, ua, ub)
+        env["active"] = target
+        env["attempts"] = "0"
+        _grubenv_write(os.path.join(mnt, "boot/grub/grubenv"), env)
+        subprocess.run(["sync"], timeout=60)
+    finally:
+        subprocess.run(["umount", mnt], capture_output=True, timeout=30)
+        restored = []
+        for src_dev, mnt_pt in saved:
+            if os.path.ismount(mnt_pt):
+                continue
+            if subprocess.run(["mount", src_dev, mnt_pt], capture_output=True,
+                              text=True, timeout=30).returncode == 0:
+                restored.append(mnt_pt)
+            else:
+                log("[ab] could not remount %s (it comes back at reboot)" % mnt_pt)
     log("[ab] slot %s updated - reboot to try it (auto-revert after 3 failed boots)" % target)
     return {"ok": True, "slot": target, "partition": part, "bytes": iso_bytes,
-            "previous": active}
+            "previous": active, "restored": restored}
 
 
 def iso_write(iso_path, device, confirm=False, log=None):
