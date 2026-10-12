@@ -394,6 +394,13 @@ class Handler(BaseHTTPRequestHandler):
             self.store.ex("DELETE FROM runs WHERE id=?", (rid,))
             self.bus.publish({"event": "run", "data": {"id": rid, "deleted": True}})
             return self._send(200, {"ok": True})
+        m = re.match(r"^/api/v1/runners/([^/]+)$", path)
+        if m:
+            rid = m.group(1)
+            self.store.ex("DELETE FROM commands WHERE runner_id=?", (rid,))
+            self.store.ex("DELETE FROM runners WHERE id=?", (rid,))
+            self.bus.publish({"event": "runner", "data": {"id": rid, "deleted": True}})
+            return self._send(200, {"ok": True})
         return self._err(404, "not found")
 
     def do_POST(self):
