@@ -279,13 +279,14 @@ class Reporter:
         return r if s == 200 else None
 
     def start_run(self, label, profile=None, host=None, platform=None, gpu=None,
-                  driver=None, torch=None, system=None):
+                  driver=None, torch=None, system=None, preset=None):
         if not self.runner_id:
             return None
         s, r = self._req("POST", "/api/v1/runs", {
             "runner_id": self.runner_id, "host": host or self.name, "label": label,
             "profile": profile or {}, "started": time.time(), "platform": platform,
-            "gpu": gpu, "driver": driver, "torch": torch, "system": system or {}})
+            "gpu": gpu, "driver": driver, "torch": torch, "system": system or {},
+            "preset": preset})
         if s == 200:
             self.run_id = r.get("run_id")
             return self.run_id

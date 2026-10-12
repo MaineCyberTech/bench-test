@@ -72,7 +72,8 @@ CREATE TABLE IF NOT EXISTS runners (
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY, runner_id TEXT, host TEXT, label TEXT, profile TEXT,
   started REAL, ended REAL, status TEXT, exit_code INTEGER,
-  platform TEXT, gpu TEXT, driver TEXT, torch TEXT, summary TEXT, system TEXT
+  platform TEXT, gpu TEXT, driver TEXT, torch TEXT, summary TEXT, system TEXT,
+  preset TEXT
 );
 CREATE TABLE IF NOT EXISTS phases (
   id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, seq INTEGER, grp TEXT,
@@ -136,6 +137,8 @@ class Store:
         rcols = {r[1] for r in self.conn.execute("PRAGMA table_info(runs)")}
         if "system" not in rcols:
             self.conn.execute("ALTER TABLE runs ADD COLUMN system TEXT")
+        if "preset" not in rcols:
+            self.conn.execute("ALTER TABLE runs ADD COLUMN preset TEXT")
 
     def ex(self, sql, args=()):
         with self.lock:
@@ -650,10 +653,11 @@ class Handler(BaseHTTPRequestHandler):
             rid = b.get("runner_id")
             run_id = b.get("id") or str(uuid.uuid4())
             S.ex("INSERT INTO runs(id,runner_id,host,label,profile,started,status,platform,gpu,"
-                 "driver,torch,system) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                 "driver,torch,system,preset) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                  (run_id, rid, b.get("host"), b.get("label"), json.dumps(b.get("profile") or {}),
                   b.get("started") or now(), "running", b.get("platform"), b.get("gpu"),
-                  b.get("driver"), b.get("torch"), json.dumps(b.get("system") or {})))
+                  b.get("driver"), b.get("torch"), json.dumps(b.get("system") or {}),
+                  b.get("preset") or (b.get("profile") or {}).get("preset")))
             if rid:
                 S.ex("UPDATE runners SET status='busy', current_run=? WHERE id=?", (run_id, rid))
             run = run_public(S.one("SELECT * FROM runs WHERE id=?", (run_id,)))

@@ -5,8 +5,12 @@ const GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nve
 const PRESETS = {
   "Quick check (short soaks)": { spin: { gpu: 60, combined: 60, fullsoak: 60, gfx: 30 } },
   "Full run (defaults)": { spin: { gpu: 600, combined: 300, fullsoak: 300, gfx: 60 } },
-  "Graphics only": { groups: { gpu: 0, cpu: 0, ram: 0, disk: 0, combined: 0, fullsoak: 0, net: 0, nvenc: 0, sys: 0, gfx: 1 } },
+  "GPU compute": { groups: { gpu: 1, cpu: 0, ram: 0, disk: 0, combined: 0, fullsoak: 0, net: 0, nvenc: 0, sys: 1, gfx: 0 }, spin: { gpu: 60 } },
   "CPU + RAM + disk": { groups: { gpu: 0, cpu: 1, ram: 1, disk: 1, combined: 0, fullsoak: 0, net: 1, nvenc: 0, sys: 1, gfx: 0 } },
+  "Storage + network": { groups: { gpu: 0, cpu: 0, ram: 0, disk: 1, combined: 0, fullsoak: 0, net: 1, nvenc: 0, sys: 1, gfx: 0 } },
+  "Video / graphics": { groups: { gpu: 0, cpu: 0, ram: 0, disk: 0, combined: 0, fullsoak: 0, net: 0, nvenc: 1, sys: 1, gfx: 1 }, spin: { gfx: 60 } },
+  "Soak only (long)": { groups: { gpu: 1, cpu: 0, ram: 0, disk: 0, combined: 0, fullsoak: 1, net: 0, nvenc: 0, sys: 1, gfx: 0 }, spin: { gpu: 1800, fullsoak: 1800 } },
+  "Full-system soak (long)": { groups: { gpu: 0, cpu: 0, ram: 0, disk: 0, combined: 0, fullsoak: 1, net: 0, nvenc: 0, sys: 1, gfx: 0 }, spin: { fullsoak: 1800 } },
 };
 const C = { temp: "#ef6b73", power: "#4c9aff", util: "#46c98d", fan: "#e5b567" };
 const SERIES = {
@@ -275,6 +279,7 @@ async function renderHistory() {
       return `<tr data-detail="${r.id}">
         <td>${esc(r.host)}</td>
         <td class="syscol">${esc(sysLine(r))}</td>
+        <td>${esc(r.preset || "—")}</td>
         <td>${esc(r.label || "")}</td>
         <td class="muted">${ts(r.started)}</td>
         <td class="mono">${runDur(r)}</td>
@@ -427,7 +432,7 @@ async function startRun(runnerId) {
   $("#mGo").onclick = async () => {
     const skip = $$("#mGroups input").filter((i) => !i.checked).map((i) => i.value);
     const payload = {
-      label: $("#mPreset").value, skip,
+      label: $("#mPreset").value, preset: $("#mPreset").value, skip,
       gpu_soak: +$("#mGpu").value, combined: +$("#mComb").value,
       fullsoak: +$("#mFull").value, gfx: +$("#mGfx").value,
     };

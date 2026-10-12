@@ -119,7 +119,8 @@ class Agent:
         os.makedirs(self.out_dir, exist_ok=True)
         self.rep.start_run(label, profile, host=self.a.name or platform.node(),
                            platform=self.caps.get("platform"), gpu=self.caps.get("gpu"),
-                           driver=self.caps.get("driver"), system=self.sysinfo)
+                           driver=self.caps.get("driver"), system=self.sysinfo,
+                           preset=(profile or {}).get("preset") or label)
         self.rep.event("run started: %s" % label)
         self.proc = subprocess.Popen(cmd, cwd=REPO, env=env, stdout=subprocess.PIPE,
                                      stderr=subprocess.STDOUT, text=True, bufsize=1,

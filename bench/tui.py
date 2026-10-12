@@ -42,14 +42,17 @@ except Exception:  # reporting is optional
 GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "sys", "gfx"]
 
 PRESETS = [
-    ("Quick check", {"groups": GROUPS,
-                     "dur": {"gpu": "60", "combined": "60", "fullsoak": "60", "gfx": "30"}}),
-    ("Full run", {"groups": GROUPS,
-                  "dur": {"gpu": "600", "combined": "300", "fullsoak": "300", "gfx": "60"}}),
-    ("Graphics only", {"groups": ["sys", "gfx"],
-                       "dur": {"gpu": "600", "combined": "300", "fullsoak": "300", "gfx": "60"}}),
-    ("CPU + RAM + disk", {"groups": ["cpu", "ram", "disk", "net", "sys"],
-                          "dur": {"gpu": "600", "combined": "300", "fullsoak": "300", "gfx": "60"}}),
+    ("Quick check (short soaks)", {"groups": GROUPS,
+                                   "dur": {"gpu": "60", "combined": "60", "fullsoak": "60", "gfx": "30"}}),
+    ("Full run (defaults)", {"groups": GROUPS,
+                             "dur": {"gpu": "600", "combined": "300", "fullsoak": "300", "gfx": "60"}}),
+    ("GPU compute", {"groups": ["gpu", "sys"], "dur": {"gpu": "60"}}),
+    ("CPU + RAM + disk", {"groups": ["cpu", "ram", "disk", "net", "sys"], "dur": {}}),
+    ("Storage + network", {"groups": ["disk", "net", "sys"], "dur": {}}),
+    ("Video / graphics", {"groups": ["nvenc", "gfx", "sys"], "dur": {"gfx": "60"}}),
+    ("Soak only (long)", {"groups": ["gpu", "fullsoak", "sys"],
+                          "dur": {"gpu": "1800", "fullsoak": "1800"}}),
+    ("Full-system soak (long)", {"groups": ["fullsoak", "sys"], "dur": {"fullsoak": "1800"}}),
 ]
 
 SPARK = "▁▂▃▄▅▆▇█"
@@ -117,8 +120,11 @@ class BenchTUI:
                                 kind="tui", os_name=_p.system(),
                                 runner_id=ident.get("runner_id"), api_key=ident.get("api_key"),
                                 persist=True, log=lambda m: self.log.append(m))
-            if self.rep.register({"os": _p.system(), "platform": _p.platform(), "kind": "tui"}):
-                self.sysinfo = system_info()
+            self.sysinfo = system_info()
+            caps = {"os": _p.system(), "platform": _p.platform(), "kind": "tui",
+                    "gpu": self.sysinfo.get("gpu"), "driver": self.sysinfo.get("driver"),
+                    "cpu": self.sysinfo.get("cpu"), "ram_gib": self.sysinfo.get("ram_gib")}
+            if self.rep.register(caps):
                 self.pump = ReporterPump(self.rep, on_command=self._pending.put,
                                          log=lambda m: self.log.append(m))
                 self.pump.start()
@@ -223,7 +229,8 @@ class BenchTUI:
         if self.rep and self.rep.runner_id:
             self.tracker = PhaseTracker(self.rep)
             self.rep.start_run((profile or {}).get("label") or PRESETS[self.preset][0], profile or {},
-                               system=getattr(self, "sysinfo", None))
+                               system=getattr(self, "sysinfo", None),
+                               preset=(profile or {}).get("preset") or PRESETS[self.preset][0])
         threading.Thread(target=self._reader, args=(self.proc,), daemon=True).start()
 
     def _reader(self, proc):

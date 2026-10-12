@@ -62,10 +62,22 @@ PRESETS = {
     "Select a preset...": None,
     "Quick check (short soaks)": {"spin": {"gpu": 60, "combined": 60, "fullsoak": 60, "gfx": 30}},
     "Full run (defaults)": {"spin": {"gpu": 600, "combined": 300, "fullsoak": 300, "gfx": 60}},
-    "Graphics only": {"groups": {"gpu": 0, "cpu": 0, "ram": 0, "disk": 0, "combined": 0,
-                                 "fullsoak": 0, "net": 0, "nvenc": 0, "sys": 0, "gfx": 1}},
+    "GPU compute": {"groups": {"gpu": 1, "cpu": 0, "ram": 0, "disk": 0, "combined": 0,
+                               "fullsoak": 0, "net": 0, "nvenc": 0, "sys": 1, "gfx": 0},
+                    "spin": {"gpu": 60}},
     "CPU + RAM + disk": {"groups": {"gpu": 0, "cpu": 1, "ram": 1, "disk": 1, "combined": 0,
                                     "fullsoak": 0, "net": 1, "nvenc": 0, "sys": 1, "gfx": 0}},
+    "Storage + network": {"groups": {"gpu": 0, "cpu": 0, "ram": 0, "disk": 1, "combined": 0,
+                                     "fullsoak": 0, "net": 1, "nvenc": 0, "sys": 1, "gfx": 0}},
+    "Video / graphics": {"groups": {"gpu": 0, "cpu": 0, "ram": 0, "disk": 0, "combined": 0,
+                                    "fullsoak": 0, "net": 0, "nvenc": 1, "sys": 1, "gfx": 1},
+                         "spin": {"gfx": 60}},
+    "Soak only (long)": {"groups": {"gpu": 1, "cpu": 0, "ram": 0, "disk": 0, "combined": 0,
+                                    "fullsoak": 1, "net": 0, "nvenc": 0, "sys": 1, "gfx": 0},
+                         "spin": {"gpu": 1800, "fullsoak": 1800}},
+    "Full-system soak (long)": {"groups": {"gpu": 0, "cpu": 0, "ram": 0, "disk": 0, "combined": 0,
+                                           "fullsoak": 1, "net": 0, "nvenc": 0, "sys": 1, "gfx": 0},
+                                "spin": {"fullsoak": 1800}},
 }
 
 STATUS_COLOR = {"running": ACCENT, "done": GOOD, "WARN": WARN, "warn": WARN, "error": BAD}
@@ -426,8 +438,11 @@ class Dashboard:
                                 kind="gui", os_name=_p.system(), log=self._log,
                                 runner_id=ident.get("runner_id"), api_key=ident.get("api_key"),
                                 persist=True)
-            if self.rep.register({"os": _p.system(), "platform": _p.platform(), "kind": "gui"}):
-                self.sysinfo = system_info()
+            self.sysinfo = system_info()
+            caps = {"os": _p.system(), "platform": _p.platform(), "kind": "gui",
+                    "gpu": self.sysinfo.get("gpu"), "driver": self.sysinfo.get("driver"),
+                    "cpu": self.sysinfo.get("cpu"), "ram_gib": self.sysinfo.get("ram_gib")}
+            if self.rep.register(caps):
                 self.pump = ReporterPump(self.rep, on_command=self._remote_command, log=self._log)
                 self.pump.start()
                 self._log("[report] connected to %s" % self.server)
@@ -525,7 +540,8 @@ class Dashboard:
         if self.rep and self.rep.runner_id:
             self.tracker = PhaseTracker(self.rep)
             self.rep.start_run((profile or {}).get("label") or self.preset.get() or "run", profile or {},
-                               system=getattr(self, "sysinfo", None))
+                               system=getattr(self, "sysinfo", None),
+                               preset=(profile or {}).get("preset") or self.preset.get())
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
         self._set_status("running · %s" % (self.preset.get() or "run").split(" (")[0], ACCENT)
