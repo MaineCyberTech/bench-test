@@ -135,16 +135,22 @@ class BenchTUI:
             caps = {"os": _p.system(), "platform": _p.platform(), "kind": "tui",
                     "gpu": self.sysinfo.get("gpu"), "driver": self.sysinfo.get("driver"),
                     "cpu": self.sysinfo.get("cpu"), "ram_gib": self.sysinfo.get("ram_gib")}
-            if self.rep.register(caps):
+            self._connect_reporting(caps)
+        except Exception as exc:
+            self.log.append("[report] disabled: %s" % exc)
+            self.rep = None
+
+    def _connect_reporting(self, caps):
+        # retry until the server is reachable (the network can be up late at boot)
+        def work():
+            while self.rep and not self.rep.register(caps):
+                time.sleep(5)
+            if self.rep and self.rep.runner_id:
                 self.pump = ReporterPump(self.rep, on_command=self._pending.put,
                                          log=lambda m: self.log.append(m))
                 self.pump.start()
                 self.log.append("[report] connected to %s" % self.server)
-            else:
-                self.rep = None
-        except Exception as exc:
-            self.log.append("[report] disabled: %s" % exc)
-            self.rep = None
+        threading.Thread(target=work, daemon=True).start()
 
     def _apply_remote(self, cmd):
         kind = cmd.get("kind")

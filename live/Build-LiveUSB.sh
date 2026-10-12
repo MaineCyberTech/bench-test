@@ -199,6 +199,7 @@ cat >> "$PROFILE/profiledef.sh" <<'EOF'
 file_permissions+=(
   ["/usr/local/bin/bench-tui"]="0:0:755"
   ["/usr/local/bin/bench-gui"]="0:0:755"
+  ["/usr/local/bin/bench-agent-env"]="0:0:755"
   ["/usr/local/bin/bench-fan-curve"]="0:0:755"
   ["/usr/local/bin/bench-fan-auto"]="0:0:755"
   ["/usr/local/bin/bench-live-run"]="0:0:755"

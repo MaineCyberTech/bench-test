@@ -1,0 +1,34 @@
+#!/bin/sh
+# bench-agent-env - make the bench-test control-plane config available and export
+# it for the dashboards/runner. Sourced by bench-tui / bench-gui / bench-live-run.
+#
+# Order: /etc/bench-agent.conf (baked into the image) first; otherwise mount the
+# BENCHDATA partition on demand (it is often not mounted yet at boot, which is why
+# a config dropped on the stick can be missed) and read /mnt/benchdata/bench-agent.conf.
+set -u
+
+conf=""
+if [ -f /etc/bench-agent.conf ]; then
+    conf=/etc/bench-agent.conf
+else
+    if ! mountpoint -q /mnt/benchdata 2>/dev/null; then
+        dev="$(blkid -L BENCHDATA 2>/dev/null || true)"
+        if [ -n "$dev" ]; then
+            mkdir -p /mnt/benchdata 2>/dev/null || true
+            i=0
+            while [ "$i" -lt 6 ]; do
+                mount "$dev" /mnt/benchdata 2>/dev/null && break
+                i=$((i + 1)); sleep 1
+            done
+        fi
+    fi
+    [ -f /mnt/benchdata/bench-agent.conf ] && conf=/mnt/benchdata/bench-agent.conf
+fi
+
+if [ -n "$conf" ]; then
+    # shellcheck disable=SC1090
+    set -a; . "$conf"; set +a
+    echo "[bench] control-plane config: $conf -> ${BENCHD_SERVER:-?}"
+else
+    echo "[bench] no control-plane config (drop bench-agent.conf on BENCHDATA or bake /etc/bench-agent.conf)"
+fi
