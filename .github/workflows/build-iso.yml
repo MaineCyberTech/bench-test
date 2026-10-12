@@ -58,6 +58,17 @@ jobs:
             echo "no BENCH_UPLOAD_CONF secret set - image carries no upload credentials"
           fi
 
+      - name: Install control-plane config (optional secret)
+        run: |
+          if [ -n "${{ secrets.BENCH_AGENT_CONF }}" ]; then
+            mkdir -p live/private
+            printf '%s\n' "${{ secrets.BENCH_AGENT_CONF }}" > live/private/bench-agent.conf
+            chmod 600 live/private/bench-agent.conf
+            echo "control-plane config baked into the image (auto check-in on boot)"
+          else
+            echo "no BENCH_AGENT_CONF secret set - image will not auto-connect"
+          fi
+
       - name: Requirements check
         run: |
           set -euo pipefail
