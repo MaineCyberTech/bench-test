@@ -997,7 +997,6 @@ def gh_release(tag):
 def iso_fetch(tag, gpu="nvidia-legacy", dest=None, log=None):
     """Download + concatenate a release's ISO parts and verify SHA256SUMS."""
     log = log or (lambda _m: None)
-    _ensure_persist()
     rel, err = gh_release(tag)
     if err:
         return {"error": err}
@@ -1145,21 +1144,6 @@ def _stage_root():
         if os.path.ismount(stage):
             return stage
     return persist_root()
-
-
-def _ensure_persist():
-    """Best-effort: mount the BENCHDATA partition at PERSIST_DIR for staging."""
-    if os.path.ismount(PERSIST_DIR):
-        return True
-    try:
-        out = subprocess.run(["blkid", "-o", "device", "-t", "LABEL=BENCHDATA"],
-                             capture_output=True, text=True, timeout=10).stdout.split()
-        if out:
-            os.makedirs(PERSIST_DIR, exist_ok=True)
-            subprocess.run(["mount", out[0], PERSIST_DIR], capture_output=True, timeout=15)
-    except Exception:
-        pass
-    return os.path.ismount(PERSIST_DIR)
 
 
 def _finish_stick(device, iso_bytes, confs, log=None):
