@@ -155,6 +155,8 @@ def main():
           "-FullSystemSeconds", ("0" if a.skip_fullsoak else str(a.fullsoak_seconds))]
     if a.skip_cpu:
         ps.append("-SkipCpu")
+    if a.skip_gpu:
+        ps.append("-SkipGpu")
     if a.skip_ram:
         ps.append("-SkipRam")
     if a.skip_disk:

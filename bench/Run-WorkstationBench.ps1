@@ -24,6 +24,7 @@ param(
     [switch]$SkipDisk,
     [switch]$SkipNet,
     [switch]$SkipCpu,
+    [switch]$SkipGpu,
     [switch]$SkipCombined,
     [switch]$SkipLlm,
     [switch]$SkipNvenc,
@@ -55,8 +56,12 @@ $summary.artifacts.pcie = "$base.pcie.json"
 $summary.artifacts.health = "$base.health.json"
 $summary.artifacts.env = "$base.env.json"
 
-Write-Host "=== [2/11] GPU compute battery (telemetry + report) ===" -ForegroundColor Yellow
-& "$PSScriptRoot\Invoke-GpuBench.ps1" -OutDir $OutDir -SoakSeconds $SoakSeconds -TorchIndex $TorchIndex -Size $Size -NoInstall:$NoInstall
+if (-not $SkipGpu) {
+    Write-Host "=== [2/11] GPU compute battery (telemetry + report) ===" -ForegroundColor Yellow
+    & "$PSScriptRoot\Invoke-GpuBench.ps1" -OutDir $OutDir -SoakSeconds $SoakSeconds -TorchIndex $TorchIndex -Size $Size -NoInstall:$NoInstall
+} else {
+    Write-Host "=== [2/11] GPU battery skipped ===" -ForegroundColor DarkGray
+}
 
 if (-not $SkipCpu) {
     Write-Host "=== [3/11] CPU compute battery ===" -ForegroundColor Yellow
