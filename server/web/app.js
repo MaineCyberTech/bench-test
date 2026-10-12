@@ -25,6 +25,13 @@ const SERIES = {
   mem_mhz: ["MEM MHz", "#7f9cf5"], vram_used_mib: ["VRAM MiB", "#e5b567"],
   cpu_util: ["CPU %", "#63b3ed"], cpu_temp_c: ["CPU °C", "#f6ad55"], ram_used: ["RAM GiB", "#68d391"],
   load1: ["load1", "#d6bcfa"], nvme_c: ["NVMe °C", "#fc8181"], cpu_max_core_c: ["CPU core max", "#f6ad55"],
+  temp_mem_c: ["VRAM temp °C", "#feb2b2"], gr_mhz: ["GPU core MHz", "#4fd1c5"],
+  gpu_enc_pct: ["enc %", "#f6e05e"], gpu_dec_pct: ["dec %", "#faf089"],
+  power_limit_w: ["power cap W", "#90cdf4"], video_mhz: ["NVENC MHz", "#b48ead"],
+  temp_limit_c: ["thermal limit °C", "#fc8181"], pcie_gen: ["PCIe gen", "#a0aec0"],
+  pcie_width: ["PCIe width", "#a0aec0"], throttle: ["throttled", "#f6ad55"],
+  disk_read_mbs: ["disk R MB/s", "#68d391"], disk_write_mbs: ["disk W MB/s", "#f6ad55"],
+  net_rx_mbs: ["net rx MB/s", "#63b3ed"], net_tx_mbs: ["net tx MB/s", "#4fd1c5"],
 };
 const CHART_PRESETS = {
   "temp · power · util": ["temp_c", "power_w", "gpu_util"],
@@ -32,9 +39,15 @@ const CHART_PRESETS = {
   "VRAM · SM clock": ["vram_used_mib", "sm_mhz", "mem_util"],
   "CPU · RAM": ["cpu_util", "ram_used", "load1"],
   "CPU temp · NVMe": ["cpu_temp_c", "cpu_max_core_c", "nvme_c"],
+  "headroom · throttle": ["temp_c", "temp_limit_c", "throttle"],
+  "clocks · video": ["sm_mhz", "gr_mhz", "video_mhz"],
+  "disk · net": ["disk_read_mbs", "disk_write_mbs", "net_rx_mbs"],
 };
 const GAUGES = [["temp_c", "temp °C"], ["power_w", "power W"], ["gpu_util", "GPU %"],
                 ["fan_pct", "fan %"], ["mem_util", "VRAM %"], ["cpu_temp_c", "CPU °C"]];
+
+let SHOW_OFFLINE = localStorage.getItem("benchd_show_offline") === "1";
+let SORT = { key: "started", dir: -1 };
 
 let TOKEN = new URLSearchParams(location.search).get("token") || localStorage.getItem("benchd_token") || "";
 let STATE = { runners: [], active: [], recent: [], metrics: [] };
@@ -128,6 +141,8 @@ function onLog(d) {
 function setConn(on) {
   $("#connDot").className = "dot " + (on ? "on" : "off");
   $("#connText").textContent = on ? "live" : "disconnected";
+  const b = $("#banner");
+  if (b) b.classList.toggle("show", !on && !!TOKEN);
 }
 
 /* --------------------------------------------------------------- state -- */
@@ -200,46 +215,68 @@ function onPhase(p) {
 /* -------------------------------------------------------------- render -- */
 function renderAll() { renderTop(); renderRunners(); renderActive(); renderHistory(); renderTrends(); renderCompareOptions(); renderSchedules(); }
 
+function machineKey(r) { return r.machine_id || ("name:" + (r.name || "")); }
+
 function renderTop() {
   const online = STATE.runners.filter((r) => r.online).length;
+  const machines = new Set(STATE.runners.map(machineKey)).size;
   $("#topstats").innerHTML = [
-    ["runners", STATE.runners.length],
-    ["online", online],
-    ["active runs", STATE.active.length],
-    ["runs", STATE.recent.length],
+    ["machines", machines], ["runners", STATE.runners.length], ["online", online],
+    ["active runs", STATE.active.length], ["history", STATE.recent.length],
   ].map(([k, v]) => `<div class="tstat"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
-  $("#runnerCount").textContent = `${STATE.runners.length} registered · ${online} online`;
+  document.title = STATE.active.length ? `(${STATE.active.length}) bench-test` : "bench-test control plane";
+  const off = STATE.runners.length - online;
+  $("#runnerCount").innerHTML = `${online} online · ${machines} machine${machines === 1 ? "" : "s"}` +
+    (off ? ` · <button class="badge toggle" data-toggle-off>${SHOW_OFFLINE ? "hide" : "show"} ${off} offline</button>` : "");
   $("#activeCount").textContent = `${STATE.active.length} running`;
 }
 
-function renderRunners() {
-  const el = $("#runners");
-  if (!STATE.runners.length) { el.innerHTML = `<div class="card muted">No runners registered yet. Start an agent with <span class="mono">python bench/agent.py --server … --token …</span></div>`; return; }
-  el.innerHTML = STATE.runners.map((r) => {
-    const cls = r.status === "busy" ? "busy" : (r.online ? "online" : "offline");
-    const caps = r.capabilities || {};
-    const run = STATE.active.find((a) => a.id === r.current_run);
-    const phase = run && run.phases.length ? run.phases[run.phases.length - 1] : null;
-    const disabled = r.online ? "" : "disabled";
-    return `<div class="runner ${r.online ? "" : "off"}">
+function runnerCard(r) {
+  const cls = r.status === "busy" ? "busy" : (r.online ? "online" : "offline");
+  const caps = r.capabilities || {};
+  const run = STATE.active.find((a) => a.id === r.current_run);
+  const phase = run && run.phases.length ? run.phases[run.phases.length - 1] : null;
+  const disabled = r.online ? "" : "disabled";
+  const badges = [
+    `<span class="badge kind">${esc(r.kind || "runner")}</span>`,
+    r.instance ? `<span class="badge instance">${esc(r.instance)}</span>` : "",
+    r.ephemeral ? `<span class="badge ephemeral">ephemeral</span>` : "",
+    r.uid ? `<span class="uid">#${esc(r.uid)}</span>` : "",
+  ].join("");
+  const dev = [caps.gpu || "no GPU", caps.cpu, caps.ram_gib ? caps.ram_gib + " GiB" : "",
+               caps.driver ? "driver " + caps.driver : ""].filter(Boolean).join(" · ");
+  return `<div class="runner ${r.online ? "" : "off"} ${r.status === "busy" ? "busy" : ""}" data-runner="${r.id}">
       <div class="rhead">
         <span class="statusp ${cls}"></span>
-        <div style="flex:1">
-          <div class="rname">${esc(r.label || r.name)}${r.uid ? ` <span class="muted mono">#${esc(r.uid)}</span>` : ""}</div>
-          <div class="rmeta">${esc(caps.gpu || "no GPU")} · ${esc(caps.os || r.os || "")} ${caps.driver ? "· driver " + esc(caps.driver) : ""}</div>
-        </div>
-        <span class="rtag">${esc(r.kind)}</span>
+        <div style="flex:1;min-width:0"><div class="rname">${esc(r.label || r.name)}</div></div>
       </div>
+      <div class="rmeta row">${badges}</div>
+      <div class="rmeta">${esc(dev || "no hardware detail")}</div>
       ${phase ? `<div class="phasechip"><span class="d"></span>${esc(phase.grp)} · ${esc(phase.label || "")}</div>` : ""}
       <div class="ract" style="margin-top:12px">
         <button class="accent" data-start="${r.id}" ${disabled}>Start run</button>
         <button data-stop="${r.id}" ${run ? "" : "disabled"}>Stop</button>
         <button class="ghost" data-update="${r.id}" ${disabled}>Update</button>
         <button class="ghost" data-fan="${r.id}" ${disabled}>Fan curve</button>
+        <button class="ghost forget" data-forget="${r.id}" title="Remove this runner from the fleet">forget</button>
       </div>
-      <div class="rmeta" style="margin-top:8px">last seen ${ago(r.last_seen)} · ${esc(r.git || "no git")}</div>
+      <div class="rmeta" style="margin-top:8px">last seen ${ago(r.last_seen)}${r.git ? " · git " + esc(String(r.git).slice(0, 7)) : ""}</div>
     </div>`;
-  }).join("");
+}
+
+function renderRunners() {
+  const el = $("#runners");
+  if (!STATE.runners.length) {
+    el.innerHTML = `<div class="card empty">No runners registered yet. Start an agent with <span class="mono">python bench/agent.py --server … --token …</span></div>`;
+    return;
+  }
+  const rank = (r) => (r.status === "busy" ? 0 : r.online ? 1 : 2);
+  let list = STATE.runners.slice().sort((a, b) =>
+    rank(a) - rank(b) || String(a.label || a.name).localeCompare(String(b.label || b.name)) ||
+    String(a.instance || "").localeCompare(String(b.instance || "")));
+  if (!SHOW_OFFLINE) list = list.filter((r) => r.online);
+  if (!list.length) { el.innerHTML = `<div class="card empty">All runners offline — use “show offline”.</div>`; return; }
+  el.innerHTML = list.map(runnerCard).join("");
 }
 
 function runCardHTML(a) {
@@ -332,29 +369,60 @@ function paintGauges(card, v) {
 }
 
 /* ------------------------------------------------------------ history --- */
+const HIST_SORT = {
+  host: (r) => r.host || "", preset: (r) => r.preset || "", label: (r) => r.label || "",
+  started: (r) => r.started || 0, status: (r) => r.status || "",
+  dur: (r) => (r.ended && r.started) ? (r.ended - r.started) : -1,
+  gpu: (r) => numOr(r.summary && r.summary.gpu_soak_tflops, -1),
+  cpu: (r) => numOr(r.summary && r.summary.cpu_soak_gflops, -1),
+  ram: (r) => numOr(r.summary && r.summary.ram_soak_gbps, -1),
+  peak: (r) => peakTemp(r) ?? -1,
+};
+const numOr = (v, d) => (v == null || isNaN(v)) ? d : +v;
+function peakTemp(r) {
+  const s = r.summary || {};
+  const t = (s.gpu_soak_telemetry && s.gpu_soak_telemetry.temp_c) || (s.telemetry && s.telemetry.temp_c);
+  return Array.isArray(t) ? t[t.length - 1] : null;
+}
+function sortArrow(key) {
+  if (SORT.key !== key) return "";
+  return `<span class="arw">${SORT.dir < 0 ? "▼" : "▲"}</span>`;
+}
 async function renderHistory() {
   try {
     const host = $("#histHost").value;
     const d = await api("/runs?limit=300" + (host ? "&host=" + encodeURIComponent(host) : ""));
     const q = ($("#histSearch").value || "").toLowerCase();
-    const rows = d.runs.filter((r) => !q || JSON.stringify(r).toLowerCase().includes(q));
+    const st = $("#histStatus").value;
+    let rows = d.runs.filter((r) => !q || JSON.stringify(r).toLowerCase().includes(q));
+    if (st) rows = rows.filter((r) => r.status === st);
+    const get = HIST_SORT[SORT.key] || HIST_SORT.started;
+    rows = rows.slice().sort((a, b) => {
+      const x = get(a), y = get(b);
+      if (typeof x === "string" || typeof y === "string") return String(x).localeCompare(String(y)) * SORT.dir;
+      return (x - y) * SORT.dir;
+    });
+    $("#histCount").textContent = `${rows.length} run${rows.length === 1 ? "" : "s"}`;
+    $$("#histTable th.sortable").forEach((th) => {
+      th.innerHTML = th.textContent.replace(/[▲▼]\s*$/, "").trim() + sortArrow(th.dataset.sort);
+    });
     const tb = $("#histTable tbody");
     tb.innerHTML = rows.map((r) => {
       const s = r.summary || {};
-      const peak = s.gpu_soak_telemetry && s.gpu_soak_telemetry.temp_c ? s.gpu_soak_telemetry.temp_c[2] : (s.telemetry && s.telemetry.temp_c ? s.telemetry.temp_c[2] : null);
+      const peak = peakTemp(r);
       return `<tr data-detail="${r.id}">
         <td>${esc(r.host)}</td>
-        <td class="syscol">${esc(sysLine(r))}</td>
+        <td class="syscol" title="${esc(sysLine(r))}">${esc(sysLine(r))}</td>
         <td>${esc(r.preset || "—")}</td>
         <td>${esc(r.label || "")}</td>
-        <td class="muted">${ts(r.started)}</td>
-        <td class="mono">${runDur(r)}</td>
+        <td class="muted" title="${ts(r.started)}">${ago(r.started)}</td>
+        <td class="num">${runDur(r)}</td>
         <td><span class="pill ${esc(r.status)}">${esc(r.status)}</span></td>
-        <td class="mono">${fmt(s.gpu_soak_tflops)}</td>
-        <td class="mono">${fmt(s.cpu_soak_gflops, 0)}</td>
-        <td class="mono">${fmt(s.ram_soak_gbps)}</td>
-        <td class="mono">${fmt(peak, 0)}</td></tr>`;
-    }).join("");
+        <td class="num">${fmt(s.gpu_soak_tflops)}</td>
+        <td class="num">${fmt(s.cpu_soak_gflops, 0)}</td>
+        <td class="num">${fmt(s.ram_soak_gbps)}</td>
+        <td class="num">${fmt(peak, 0)}</td></tr>`;
+    }).join("") || `<tr><td colspan="11" class="empty">No matching runs.</td></tr>`;
     fillSelect("#histHost", HOSTS, "all hosts");
   } catch (e) { /* ignore */ }
 }
@@ -455,6 +523,44 @@ function drawChart(cv, series, opt = {}) {
     g.fillStyle = "#8592a6";
     [xmin, (xmin + xmax) / 2, xmax].forEach((t) => g.fillText(new Date(t * 1000).toLocaleDateString(), sx(t) - 26, h - 8));
   }
+  cv._chart = { series, sx, xmin, xmax, opt };
+  attachHover(cv);
+}
+function tipEl() {
+  let t = $("#charttip");
+  if (!t) { t = document.createElement("div"); t.id = "charttip"; t.className = "charttip"; document.body.appendChild(t); }
+  return t;
+}
+function showTip(x, y, text) {
+  const t = tipEl();
+  t.textContent = text; t.style.display = "block";
+  const w = t.offsetWidth || 170;
+  t.style.left = Math.max(8, Math.min(x + 14, window.innerWidth - w - 12)) + "px";
+  t.style.top = Math.max(8, y + 14) + "px";
+}
+function hideTip() { const t = $("#charttip"); if (t) t.style.display = "none"; }
+function attachHover(cv) {
+  if (cv._hover) return; cv._hover = true;
+  cv.addEventListener("mousemove", (e) => {
+    const ch = cv._chart;
+    if (!ch || !ch.series || !ch.series.length) return;
+    const mx = e.clientX - cv.getBoundingClientRect().left;
+    let best = null, bd = Infinity;
+    ch.series.forEach((s) => s.points.forEach((p) => {
+      const d = Math.abs(ch.sx(p.x) - mx); if (d < bd) { bd = d; best = p.x; }
+    }));
+    if (best == null) return;
+    const tol = (ch.xmax - ch.xmin) * 0.05 + 1e-9;
+    const lines = [ch.opt && ch.opt.xTime ? new Date(best * 1000).toLocaleString()
+                                           : "t = " + fmt(best, 0) + "s"];
+    ch.series.forEach((s) => {
+      let v = null, d = Infinity;
+      s.points.forEach((p) => { const dd = Math.abs(p.x - best); if (dd < d) { d = dd; v = p.y; } });
+      if (d <= tol) lines.push(s.name + "  " + fmt(v, 1));
+    });
+    showTip(e.clientX, e.clientY, lines.join("\n"));
+  });
+  cv.addEventListener("mouseleave", hideTip);
 }
 function niceMax(v) { const p = Math.pow(10, Math.floor(Math.log10(v || 1))); return Math.ceil((v || 1) / p) * p; }
 
@@ -507,13 +613,25 @@ async function startRun(runnerId) {
       fullsoak: +$("#mFull").value, gfx: +$("#mGfx").value,
     };
     closeModal();
-    await api("/runners/" + runnerId + "/commands", "POST", { kind: "start", payload });
-    refresh();
+    try {
+      await api("/runners/" + runnerId + "/commands", "POST", { kind: "start", payload });
+      toast("run queued: " + payload.label);
+      refresh();
+    } catch (e) { toast("start failed: " + e.message, "err"); }
   };
 }
 async function cmd(runnerId, kind, payload) {
-  await api("/runners/" + runnerId + "/commands", "POST", { kind, payload: payload || {} });
-  refresh();
+  try {
+    await api("/runners/" + runnerId + "/commands", "POST", { kind, payload: payload || {} });
+    toast(kind + " sent");
+    refresh();
+  } catch (e) { toast(kind + " failed: " + e.message, "err"); }
+}
+async function forgetRunner(id) {
+  const r = STATE.runners.find((x) => x.id === id) || {};
+  if (!confirm("Remove " + (r.label || r.name || id) + " from the fleet? Its run history is kept.")) return;
+  try { await api("/runners/" + id, "DELETE"); toast("runner removed"); refresh(); }
+  catch (e) { toast("remove failed: " + e.message, "err"); }
 }
 
 async function showDetail(runId) {
@@ -523,15 +641,32 @@ async function showDetail(runId) {
   const tel = await api("/runs/" + runId + "/telemetry?max=900");
   const pts = (n) => (tel.rows || []).filter((x) => x[n] != null).map((x) => ({ x: x.elapsed, y: x[n] }));
   const st = (r.telemetry_stats && r.telemetry_stats.stats) || {};
+  const prev = await findPrev(r);
+  const ps = prev ? (prev.summary || {}) : {};
+  const at = (o, path) => path.split(".").reduce((x, k) => (x == null ? null : x[k]), o);
+  const dltOf = (path) => (prev ? dltHtml(at(s, path), at(ps, path)) : "");
+  const mat = s.gpu_matmul_tflops || {}, cmat = s.cpu_matmul_gflops || {};
+  const avgW = st.power_w && st.power_w.avg;
+  const peak = st.temp_c ? st.temp_c.max : null;
+  const tlim = st.temp_limit_c ? st.temp_limit_c.max : null;
+  const headroom = (peak != null && tlim != null) ? Math.round(tlim - peak) + " °C" : "—";
+  const perfW = (s.gpu_soak_tflops && avgW) ? (s.gpu_soak_tflops / avgW).toFixed(2) + " TF/W" : "—";
+  const thr = st.throttle ? Math.round(st.throttle.avg * 100) + "%" : "—";
   const tiles = [
-    ["GPU soak", fmt(s.gpu_soak_tflops) + " TF"],
-    ["fp16", fmt(s.gpu_matmul_tflops && s.gpu_matmul_tflops.fp16) + " TF"],
-    ["fp32", fmt(s.gpu_matmul_tflops && s.gpu_matmul_tflops.fp32) + " TF"],
-    ["CPU soak", fmt(s.cpu_soak_gflops, 0) + " GF"],
-    ["RAM soak", fmt(s.ram_soak_gbps) + " GB/s"],
-    ["Disk write", fmt(s.disk_seqwrite_mbps, 0) + " MB/s"],
-    ["Network", fmt(s.net && s.net.download_mbps, 0) + " Mb/s"],
-    ["peak temp", fmt(s.gpu_soak_telemetry && s.gpu_soak_telemetry.temp_c ? s.gpu_soak_telemetry.temp_c[2] : null, 0) + " °C"],
+    ["GPU soak", fmt(s.gpu_soak_tflops) + " TF", dltOf("gpu_soak_tflops")],
+    ["GPU fp16", fmt(mat.fp16) + " TF", dltOf("gpu_matmul_tflops.fp16")],
+    ["GPU fp32", fmt(mat.fp32) + " TF", dltOf("gpu_matmul_tflops.fp32")],
+    ["GPU bf16", fmt(mat.bf16) + " TF", dltOf("gpu_matmul_tflops.bf16")],
+    ["CPU soak", fmt(s.cpu_soak_gflops, 0) + " GF", dltOf("cpu_soak_gflops")],
+    ["CPU fp64", fmt(cmat.fp64, 0) + " GF", dltOf("cpu_matmul_gflops.fp64")],
+    ["RAM soak", fmt(s.ram_soak_gbps) + " GB/s", dltOf("ram_soak_gbps")],
+    ["Disk write", fmt(s.disk_seqwrite_mbps, 0) + " MB/s", dltOf("disk_seqwrite_mbps")],
+    ["Network", fmt(s.net && s.net.download_mbps, 0) + " Mb/s", dltOf("net.download_mbps")],
+    ["peak temp", fmt(peak, 0) + " °C", ""],
+  ];
+  const derived = [
+    ["perf/watt", perfW], ["avg power", fmt(avgW, 0) + " W"],
+    ["thermal headroom", headroom], ["time throttled", thr],
   ];
   const remarks = [];
   const v = s.fullsoak && s.fullsoak.result && s.fullsoak.result.verdict;
@@ -557,12 +692,18 @@ async function showDetail(runId) {
       <td class="muted mono">${a.n}</td></tr>`;
   }).join("");
   openModal(`<h3>${esc(r.host)} · ${esc(r.label || "run")} <span class="pill ${esc(r.status)}">${esc(r.status)}</span></h3>
-    <div class="muted">${ts(r.started)} · ${runDur(r)} · ${esc(sy.gpu || r.gpu || "")} ${sy.driver || r.driver ? "· driver " + esc(sy.driver || r.driver) : ""}</div>
+    <div class="muted">${ts(r.started)} · ${runDur(r)} · ${esc(sy.gpu || r.gpu || "")} ${sy.driver || r.driver ? "· driver " + esc(sy.driver || r.driver) : ""}${prev ? ` · <span class="delta flat">vs ${ts(prev.started)}</span>` : ""}</div>
     ${remarks.length ? `<div class="remarks">${remarks.map((x) => `<div>${esc(x)}</div>`).join("")}</div>` : ""}
     <div class="kv" style="margin:14px 0">
-      ${tiles.map(([k, val]) => `<div class="kvitem"><div class="k">${esc(k)}</div><div class="v">${esc(val)}</div></div>`).join("")}
+      ${tiles.map(([k, val, d]) => `<div class="kvitem"><div class="k">${esc(k)}</div><div class="v">${esc(val)}${d || ""}</div></div>`).join("")}
     </div>
-    <canvas id="dChart" height="220"></canvas>
+    <div class="kv" style="margin:0 0 14px">
+      ${derived.map(([k, val]) => `<div class="kvitem"><div class="k">${esc(k)}</div><div class="v">${esc(val)}</div></div>`).join("")}
+    </div>
+    <div class="chartrow"><canvas id="dChart" height="220"></canvas>
+      <select class="csel" id="dChartSel">${Object.keys(CHART_PRESETS).map((k) => `<option>${esc(k)}</option>`).join("")}</select></div>
+    <h4 class="sechead">Results</h4>
+    <table class="kvtable">${resultRows(s).map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(String(v))}</td></tr>`).join("") || `<tr><td class="muted">no structured results</td></tr>`}</table>
     <h4 class="sechead">System</h4>
     <table class="kvtable">${sysrows.map(([k, val]) => `<tr><th>${esc(k)}</th><td>${esc(String(val))}</td></tr>`).join("")}</table>
     ${Object.keys(sy.inventory || {}).length ? `<details><summary class="muted">full inventory</summary>
@@ -582,11 +723,46 @@ async function showDetail(runId) {
       ${(r.artifacts || []).map((a) => `<a class="dl" href="/api/v1/runs/${runId}/artifact/${encodeURIComponent(a.name)}?token=${encodeURIComponent(TOKEN)}">${esc(a.name)} <span class="muted">${a.size >= 1024 ? Math.round(a.size / 1024) + "K" : (a.size || 0) + "B"}</span></a>`).join("")}
     </div>
     <div class="formrow" style="justify-content:flex-end"><button class="ghost" onclick="closeModal()">close</button></div>`);
-  drawChart($("#dChart"), [
-    { name: "temp", color: C.temp, points: pts("temp_c") },
-    { name: "power", color: C.power, points: pts("power_w") },
-    { name: "util", color: C.util, points: pts("gpu_util") },
-  ], { yLabel: "telemetry" });
+  let dpreset = Object.keys(CHART_PRESETS)[0];
+  const drawDetail = () => {
+    $("#dChartSel").value = dpreset;
+    drawChart($("#dChart"), (CHART_PRESETS[dpreset] || []).map((k) => {
+      const meta = SERIES[k] || [k, "#4c9aff"];
+      return { name: meta[0], color: meta[1], points: pts(k) };
+    }), {});
+  };
+  drawDetail();
+  $("#dChartSel").onchange = (e) => { dpreset = e.target.value; drawDetail(); };
+}
+
+/* flatten a run summary into label/value rows so nothing measured stays hidden */
+function resultRows(summary) {
+  const skip = new Set(["host", "timestamp", "telemetry", "samples", "gpu_soak_telemetry"]);
+  const rows = [];
+  const walk = (prefix, obj) => {
+    for (const [k, v] of Object.entries(obj || {})) {
+      if (skip.has(k)) continue;
+      const key = prefix ? prefix + "." + k : k;
+      if (v && typeof v === "object" && !Array.isArray(v)) walk(key, v);
+      else if (Array.isArray(v)) rows.push([key, v.join(" / ")]);
+      else if (v !== null && v !== undefined && v !== "") rows.push([key, v]);
+    }
+  };
+  walk("", summary);
+  return rows;
+}
+function dltHtml(cur, prev) {
+  if (cur == null || prev == null || isNaN(cur) || isNaN(prev) || +prev === 0) return "";
+  const d = (+cur - +prev) / Math.abs(+prev) * 100;
+  const cls = d > 1 ? "up" : d < -1 ? "down" : "flat";
+  return ` <span class="delta ${cls}">${d > 0 ? "+" : ""}${d.toFixed(1)}%</span>`;
+}
+async function findPrev(r) {
+  try {
+    const d = await api("/runs?limit=200&host=" + encodeURIComponent(r.host));
+    return d.runs.filter((x) => x.id !== r.id && x.preset === r.preset && x.started && r.started && x.started < r.started)
+      .sort((a, b) => b.started - a.started)[0] || null;
+  } catch (e) { return null; }
 }
 
 /* ----------------------------------------------------------- schedules --- */
@@ -640,9 +816,23 @@ function newSchedule() {
 async function deleteSchedule(id) { await api("/schedules/" + id, "DELETE"); renderSchedules(); }
 
 /* -------------------------------------------------------------- modal --- */
-function openModal(html) { $("#modalbox").innerHTML = html; $("#modal").classList.add("show"); }
+function openModal(html) {
+  $("#modalbox").innerHTML = html;
+  $("#modal").classList.add("show");
+  const f = $("#modalbox input, #modalbox select");
+  if (f) setTimeout(() => { try { f.focus(); } catch (e) { /* ignore */ } }, 0);
+}
 function closeModal() { $("#modal").classList.remove("show"); }
 window.closeModal = closeModal;
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { if ($("#modal").classList.contains("show")) closeModal(); return; }
+  if (e.key === "/" && !/^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName)) {
+    e.preventDefault();
+    $$("#tabs button").find((b) => b.dataset.tab === "history")?.click();
+    const s = $("#histSearch"); if (s) s.focus();
+  }
+});
+$("#modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
 
 /* -------------------------------------------------------------- wiring -- */
 function fillSelect(sel, values, placeholder) {
@@ -653,8 +843,22 @@ function fillSelect(sel, values, placeholder) {
 }
 
 document.addEventListener("click", (e) => {
-  const t = e.target.closest("[data-tab],[data-start],[data-stop],[data-update],[data-fan],[data-detail],[data-sched-del]");
+  const th = e.target.closest("th.sortable");
+  if (th) {
+    const k = th.dataset.sort;
+    const numeric = ["started", "dur", "gpu", "cpu", "ram", "peak"].includes(k);
+    SORT = { key: k, dir: SORT.key === k ? -SORT.dir : (numeric ? -1 : 1) };
+    renderHistory();
+    return;
+  }
+  const t = e.target.closest("[data-tab],[data-start],[data-stop],[data-update],[data-fan],[data-detail],[data-sched-del],[data-toggle-off],[data-forget]");
   if (!t) return;
+  if (t.dataset.toggleOff !== undefined) {
+    SHOW_OFFLINE = !SHOW_OFFLINE;
+    localStorage.setItem("benchd_show_offline", SHOW_OFFLINE ? "1" : "0");
+    renderTop(); renderRunners();
+    return;
+  }
   if (t.dataset.tab) {
     $$("#tabs button").forEach((b) => b.classList.toggle("active", b === t));
     $$(".tabpane").forEach((p) => p.classList.toggle("active", p.id === "tab-" + t.dataset.tab));
@@ -669,12 +873,14 @@ document.addEventListener("click", (e) => {
   if (t.dataset.fan) return cmd(t.dataset.fan, "fan_curve", { on: true });
   if (t.dataset.detail) return showDetail(t.dataset.detail);
   if (t.dataset.schedDel) return deleteSchedule(t.dataset.schedDel);
+  if (t.dataset.forget) return forgetRunner(t.dataset.forget);
 });
 
 $("#tokenBtn").onclick = askToken;
 $("#schedNew").onclick = newSchedule;
 $("#histRefresh").onclick = renderHistory;
 $("#histHost").onchange = renderHistory;
+$("#histStatus").onchange = renderHistory;
 $("#histSearch").oninput = () => { clearTimeout(window._hs); window._hs = setTimeout(renderHistory, 200); };
 $("#trendHost").onchange = renderTrends;
 $("#trendMetric").onchange = renderTrends;

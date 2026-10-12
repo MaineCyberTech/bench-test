@@ -156,3 +156,31 @@ tbody tr:hover{background:#1a2029}
   opacity:0;transform:translateY(10px);transition:.2s;pointer-events:none;z-index:100;max-width:440px}
 .toast.show{opacity:1;transform:none}
 .toast.err{border-left-color:var(--bad)}
+
+/* ---- revamp: fleet view, badges, sortable tables, chart tooltips ---- */
+.banner{display:none;background:#3a2530;color:var(--bad);padding:8px 22px;font-size:13px;
+  border-bottom:1px solid var(--border)}
+.banner.show{display:block}
+.toolbar{display:flex;align-items:center;gap:8px;margin-left:auto;flex-wrap:wrap}
+.badge{display:inline-flex;align-items:center;font-size:10px;text-transform:uppercase;
+  letter-spacing:.6px;border-radius:20px;padding:1px 8px;border:1px solid var(--border);
+  color:var(--muted);white-space:nowrap}
+.badge.kind{background:#182231;color:var(--accent);border-color:#26405c}
+.badge.instance{color:var(--warn);border-color:#3a3320}
+.badge.ephemeral{color:var(--muted);border-style:dashed}
+.badge.toggle{background:transparent;cursor:pointer}
+.badge.toggle:hover{color:var(--text);border-color:var(--accent)}
+.uid{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.runner .rmeta.row{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin-top:5px}
+.runner.busy{border-color:#2b4a6b}
+.runner .ract .forget{margin-left:auto;color:var(--muted)}
+.runner .ract .forget:hover{color:var(--bad);border-color:var(--bad)}
+th.sortable{cursor:pointer;user-select:none}
+th.sortable:hover{color:var(--text)}
+th .arw{opacity:.45;font-size:9px;margin-left:3px}
+table td.num{font-family:var(--mono);text-align:right}
+.charttip{position:fixed;display:none;pointer-events:none;background:#0c0f14;
+  border:1px solid var(--border);border-radius:8px;padding:6px 9px;z-index:60;
+  font:11px/1.45 var(--mono);white-space:pre;box-shadow:0 6px 20px rgba(0,0,0,.45)}
+.chartrow,.card{position:relative}
+.empty{color:var(--muted);padding:14px;text-align:center}

@@ -22,6 +22,7 @@
     <button class="ghost" id="tokenBtn" title="Set access token">token</button>
   </div>
 </header>
+<div class="banner" id="banner">control plane unreachable — retrying…</div>
 
 <nav class="tabs" id="tabs">
   <button data-tab="live" class="active">Live</button>
@@ -50,15 +51,29 @@
       <h2>Run history</h2>
       <div class="filters">
         <select id="histHost"><option value="">all hosts</option></select>
+        <select id="histStatus">
+          <option value="">any status</option><option value="done">done</option>
+          <option value="running">running</option><option value="failed">failed</option>
+          <option value="stopped">stopped</option>
+        </select>
         <input id="histSearch" placeholder="filter…" />
+        <span class="muted mono" id="histCount"></span>
         <button class="ghost" id="histRefresh">refresh</button>
       </div>
     </div>
     <div class="card tablecard">
       <table id="histTable">
         <thead><tr>
-          <th>host</th><th>system</th><th>preset</th><th>label</th><th>started</th><th>duration</th><th>status</th>
-          <th>GPU soak TF</th><th>CPU soak GF</th><th>RAM GB/s</th><th>peak °C</th>
+          <th class="sortable" data-sort="host">host</th><th>system</th>
+          <th class="sortable" data-sort="preset">preset</th>
+          <th class="sortable" data-sort="label">label</th>
+          <th class="sortable" data-sort="started">started</th>
+          <th class="sortable num" data-sort="dur">duration</th>
+          <th class="sortable" data-sort="status">status</th>
+          <th class="sortable num" data-sort="gpu">GPU soak TF</th>
+          <th class="sortable num" data-sort="cpu">CPU soak GF</th>
+          <th class="sortable num" data-sort="ram">RAM GB/s</th>
+          <th class="sortable num" data-sort="peak">peak °C</th>
         </tr></thead>
         <tbody></tbody>
       </table>
