@@ -1160,12 +1160,15 @@ def _finish_stick(device, iso_bytes, confs, log=None):
     subprocess.run(["blockdev", "--rereadpt", device], capture_output=True, timeout=30)
     subprocess.run(["partx", "-a", device], capture_output=True, timeout=30)
     log("[iso] creating BENCHDATA partition at %dMiB" % start_mib)
-    subprocess.run(["parted", "-s", device, "mkpart", "primary", "fat32",
-                    "%dMiB" % start_mib, "100%"], capture_output=True, timeout=60)
+    r = subprocess.run(["sfdisk", "--append", device],
+                       input="start=%d, type=c\n" % (start_mib * 2048),
+                       capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        return {"partition": "sfdisk failed: %s" % (r.stderr.strip()[:140] or r.stdout.strip()[:140])}
     subprocess.run(["sync"], timeout=60)
     time.sleep(1)
-    subprocess.run(["blockdev", "--rereadpt", device], capture_output=True, timeout=30)
-    subprocess.run(["partx", "-a", device], capture_output=True, timeout=30)
+    r1 = subprocess.run(["blockdev", "--rereadpt", device], capture_output=True, text=True, timeout=30)
+    r2 = subprocess.run(["partx", "-a", device], capture_output=True, text=True, timeout=30)
     time.sleep(2)
     out = subprocess.run(["lsblk", "-lbno", "NAME,START", device],
                          capture_output=True, text=True, timeout=20).stdout
@@ -1177,7 +1180,9 @@ def _finish_stick(device, iso_bytes, confs, log=None):
             part = "/dev/" + f[0]
             break
     if not part:
-        return {"partition": "not visible yet (partx -a %s)" % device}
+        return {"partition": "not visible yet",
+                "rereadpt": (r1.stderr or r1.stdout).strip()[:120],
+                "partx": (r2.stderr or r2.stdout).strip()[:120]}
     subprocess.run(["mkfs.vfat", "-n", "BENCHDATA", part], capture_output=True, timeout=120)
     restored = []
     os.makedirs(PERSIST_DIR, exist_ok=True)
