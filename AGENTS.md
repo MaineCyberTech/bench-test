@@ -53,6 +53,7 @@ server/    benchd.py (API + web), web/ (dashboard), import_results.py, systemd u
 live/      Build-LiveUSB.sh + airootfs (launchers, units, conf examples)
 tests/     run_all.py + test_*.py (stdlib)
 docs/      METHODOLOGY.md, CONTROL_PLANE.md, FUTURE_WORK.md, PHASE_TIMINGS.md
+packaging/ build_app.py — PyInstaller bundles (CI: .github/workflows/build-app.yml)
 examples/  real Windows + Linux result sets
 results/   output (mostly git-ignored; a few runs are tracked as history)
 ```
@@ -78,11 +79,27 @@ python3 server/benchd.py --host 0.0.0.0 --port 8722   # token via /etc/benchd.co
 python3 server/import_results.py --server URL --token T --dir results   # backfill
 ```
 
+Packaged app (no Python install) — build the GUI/TUI/agent bundles:
+```bash
+pip install pyinstaller && python packaging/build_app.py --out dist
+./dist/bench-gui/bench-gui        # ./dist/bench-tui/…  ./dist/bench-agent/…
+```
+CI builds Windows + Linux bundles and attaches them to an `app-<n>` release.
+The bundles are stdlib-only, so connecting to a control plane needs nothing
+else; a local battery needs a toolkit checkout (`--repo` / `$BENCH_REPO`).
+
 ## Control plane (benchd)
 
 - **Auth:** operators use the shared join token (`BENCHD_TOKEN`) as a bearer or
   `?token=`; runners get a **per-runner API key** at `/register` and reuse it
   (stored in `~/.config/bench-agent.json`).
+- **Runner identity:** a runner also sends a `machine_id` (`machine_id()` in
+  `benchreport.py` — Windows `MachineGuid`, Linux DMI uuid / `/etc/machine-id`,
+  else a random id persisted next to the config) and the server **adopts the row
+  that machine already owns for its `kind`**, so a re-registering runner or an
+  ephemeral live-USB boot (whose `~/.config` does not persist) reuses one row
+  instead of minting duplicates. The UI shows `name #short-uid`; `--self-test`
+  runners are `ephemeral` and reaped once quiet.
 - **Endpoints** (all `/api/v1`): `register`, `heartbeat`, `runs` (create/phase/
   telemetry/log/event/artifact/finish), `runners/<id>/commands` (+`/ack`),
   `schedules`, and the UI side `state`, `stream` (SSE), `runs`, `runs/<id>`,
@@ -150,6 +167,11 @@ you add behaviour. Never commit with a failing suite.
 - **CI builds the ISO automatically** on push to `main` touching `bench/**` or
   `live/**` (`.github/workflows/build-iso.yml`, default variant `nvidia-legacy`),
   and on manual dispatch.
+- **Dashboards/agent are packaged for install-free use** (`packaging/build_app.py`
+  → PyInstaller bundles; CI `.github/workflows/build-app.yml` attaches them to an
+  `app-<n>` release). They resolve the toolkit via `_repo_dir()` —
+  `$BENCH_REPO` → next to the frozen exe → cwd → repo root — so keep that helper
+  when changing their top-of-file path setup.
 - **Read result files as UTF-8.** Windows' default code page (cp1252) throws on
   the sysinfo/report JSON (`°C`, etc.), silently dropping the inventory — always
   pass `encoding="utf-8-sig"` when opening a run's artifacts.

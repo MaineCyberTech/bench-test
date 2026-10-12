@@ -225,7 +225,7 @@ function renderRunners() {
       <div class="rhead">
         <span class="statusp ${cls}"></span>
         <div style="flex:1">
-          <div class="rname">${esc(r.name)}</div>
+          <div class="rname">${esc(r.name)}${r.uid ? ` <span class="muted mono">#${esc(r.uid)}</span>` : ""}</div>
           <div class="rmeta">${esc(caps.gpu || "no GPU")} · ${esc(caps.os || r.os || "")} ${caps.driver ? "· driver " + esc(caps.driver) : ""}</div>
         </div>
         <span class="rtag">${esc(r.kind)}</span>
@@ -595,7 +595,7 @@ async function renderSchedules() {
     const d = await api("/schedules");
     SCHEDULES = d.schedules || [];
   } catch (e) { return; }
-  const rname = (id) => { const r = STATE.runners.find((x) => x.id === id); return r ? r.name : String(id).slice(0, 8); };
+  const rname = (id) => { const r = STATE.runners.find((x) => x.id === id); return r ? r.name + (r.uid ? " #" + r.uid : "") : String(id).slice(0, 8); };
   $("#schedTable tbody").innerHTML = SCHEDULES.map((s) => {
     const when = s.kind === "daily" ? "daily " + esc(s.at_time) : "every " + dur(s.every_s);
     return `<tr>

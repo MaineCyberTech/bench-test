@@ -25,14 +25,28 @@ import threading
 import time
 
 BENCH = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.dirname(BENCH)
+
+
+def _repo_dir():
+    cands = [os.environ.get("BENCH_REPO"), os.getcwd()]
+    if getattr(sys, "frozen", False):
+        cands.insert(0, os.path.dirname(os.path.abspath(sys.executable)))
+    for c in cands:
+        if c and os.path.isdir(os.path.join(c, "bench")):
+            return os.path.abspath(c)
+    return os.path.dirname(BENCH)
+
+
+REPO = _repo_dir()
+BENCH = os.path.join(REPO, "bench")
 sys.path.insert(0, BENCH)
 
 from benchreport import (Reporter, PhaseTracker, TelemetryTail,  # noqa: E402
                          build_summary, build_summary_dir, telemetry_summary, read_runs_index,
                          load_identity, run_exec, system_info, read_inventory, load_conf)
 
-DEFAULT_GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "sys", "gfx"]
+DEFAULT_GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc",
+                  "llm", "fan", "sys", "gfx"]
 
 
 def run_hidden(cmd, **kw):
@@ -315,7 +329,8 @@ class Agent:
 
 def self_test(a):
     """Register, run a tiny no-op 'run', stream a phase + telemetry, finish."""
-    rep = Reporter(a.server, a.token, name=a.name, kind="agent", version="selftest")
+    rep = Reporter(a.server, a.token, name=a.name, kind="selftest",
+                   version="selftest", ephemeral=True)
     if not rep.register({"self_test": True}):
         print("SELF-TEST: register failed")
         return 1

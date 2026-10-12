@@ -80,6 +80,15 @@ def run():
     c.check("web preset count", len(web) == len(CANON), (len(web), len(CANON)))
     for name, (want_g, want_d) in CANON.items():
         c.check("web %s" % name, web.get(name) == (want_g, want_d), web.get(name))
+
+    # the runners' own group lists must match too — a missing entry silently
+    # drops that group's phases (benchreport) or mis-advertises capabilities
+    rep = _load("benchreport", os.path.join(BENCH, "benchreport.py"))
+    ag = _load("agent", os.path.join(BENCH, "agent.py"))
+    c.check("benchreport.GROUPS canonical", rep.GROUPS == GROUPS, rep.GROUPS)
+    c.check("agent.DEFAULT_GROUPS canonical", ag.DEFAULT_GROUPS == GROUPS, ag.DEFAULT_GROUPS)
+    c.check("tui.GROUPS canonical", tui.GROUPS == GROUPS, tui.GROUPS)
+    c.check("gui group keys canonical", {k for k, _ in gui.GROUPS} == set(GROUPS), gui.GROUPS)
     return c.fails
 
 

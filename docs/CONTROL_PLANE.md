@@ -102,7 +102,7 @@ Runner-facing:
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/register` | register/heartbeat identity → `runner_id` + per-runner `api_key` |
+| POST | `/register` | register a runner (adopts an existing row by `machine_id`+`kind`) → `runner_id` + per-runner `api_key` |
 | POST | `/runners/<id>/heartbeat` | liveness + status + capabilities |
 | GET | `/runners/<id>/commands` | poll queued commands (drains the queue) |
 | POST | `/runners/<id>/commands/<cid>/ack` | acknowledge a command |
@@ -202,6 +202,15 @@ pct exec 108 -- systemctl mask tmp.mount run-lock.mount dev-mqueue.mount
   rebuilds automatically on push to `main` touching `bench/**` or `live/**`.
 - Runners are considered **offline** after 15 s without a heartbeat; their history
   is retained.
+- **Runner identity is stable per machine.** Each runner sends a `machine_id`
+  (Windows `MachineGuid`, Linux DMI uuid / `/etc/machine-id`, else a random id
+  persisted next to the agent config; `$BENCH_MACHINE_ID` overrides) and the
+  server **adopts the row that machine already owns for that role** instead of
+  minting a new one — so a re-registration, an OS reinstall or an **ephemeral
+  live-USB boot** (whose `~/.config` does not persist) reuses one row rather than
+  piling up duplicates. The fleet view shows the name with a short `#uid` suffix,
+  so hosts that share a hostname stay distinguishable. One-shot `--self-test`
+  runners are flagged *ephemeral* and dropped once they stop heartbeating.
 - `update` runs `git pull --ff-only` on the runner and reports the new commit;
   `restart` re-execs the agent so a fresh checkout takes effect.
 - SQLite uses WAL; the DB grows ~1 row/second per active run (fine for a lab).

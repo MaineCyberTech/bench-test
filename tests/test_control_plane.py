@@ -33,6 +33,21 @@ def run():
     st, reg2 = cl.call("POST", "/api/v1/register", {"runner_id": rid, "api_key": key, "name": "lab-1"})
     c.check("re-register keeps id+key", reg2.get("runner_id") == rid and reg2.get("api_key") == key, reg2)
 
+    # ---- stable machine identity (dedupe across lost config / live boots) ----
+    st, m1 = cl.call("POST", "/api/v1/register",
+                     {"name": "box", "os": "Linux", "kind": "agent", "machine_id": "dmi-abc123"})
+    st, m2 = cl.call("POST", "/api/v1/register",
+                     {"name": "box", "os": "Linux", "kind": "agent", "machine_id": "dmi-abc123"})
+    c.check("machine_id dedupes a re-registering runner",
+            m1.get("runner_id") == m2.get("runner_id") and m1.get("api_key") == m2.get("api_key"),
+            (m1, m2))
+    st, m3 = cl.call("POST", "/api/v1/register",
+                     {"name": "box", "os": "Linux", "kind": "gui", "machine_id": "dmi-abc123"})
+    c.check("machine_id is scoped per kind", m3.get("runner_id") != m1.get("runner_id"), m3)
+    st, rl = cl.call("GET", "/api/v1/runners")
+    c.check("runners expose a short uid", any(x.get("uid") == "abc123" for x in rl["runners"]),
+            [x.get("uid") for x in rl["runners"]])
+
     # ---- run lifecycle ----
     st, rr = cl.call("POST", "/api/v1/runs", {"runner_id": rid, "host": "lab-1", "label": "Quick",
                                               "preset": "Quick check", "system": {"cpu": "X"}}, token=key)
@@ -133,6 +148,12 @@ def run():
     B.reap_stale_runs(st, B.Handler.bus)
     c.check("reaper fails stale run", st.one("SELECT status FROM runs WHERE id='stale-run'")["status"] == "failed", "")
     c.check("reaper leaves live run", st.one("SELECT status FROM runs WHERE id='live-run'")["status"] == "running", "")
+
+    st.ex("INSERT INTO runners(id,name,last_seen,status,ephemeral) VALUES(?,?,?,?,?)",
+          ("eph-r", "self-test", time.time() - 300, "idle", 1))
+    B.reap_ephemeral_runners(st, B.Handler.bus)
+    c.check("reaper drops a stale ephemeral runner",
+            st.one("SELECT id FROM runners WHERE id='eph-r'") is None, "")
 
     # ---- delete ----
     st, _ = cl.call("DELETE", "/api/v1/runs/" + run_id)

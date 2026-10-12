@@ -67,7 +67,8 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS runners (
   id TEXT PRIMARY KEY, name TEXT, os TEXT, kind TEXT, version TEXT,
   capabilities TEXT, first_seen REAL, last_seen REAL, status TEXT,
-  current_run TEXT, addr TEXT, git TEXT, api_key TEXT
+  current_run TEXT, addr TEXT, git TEXT, api_key TEXT,
+  machine_id TEXT, ephemeral INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY, runner_id TEXT, host TEXT, label TEXT, profile TEXT,
@@ -131,6 +132,10 @@ class Store:
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(runners)")}
         if "api_key" not in cols:
             self.conn.execute("ALTER TABLE runners ADD COLUMN api_key TEXT")
+        if "machine_id" not in cols:
+            self.conn.execute("ALTER TABLE runners ADD COLUMN machine_id TEXT")
+        if "ephemeral" not in cols:
+            self.conn.execute("ALTER TABLE runners ADD COLUMN ephemeral INTEGER DEFAULT 0")
         tcols = {r[1] for r in self.conn.execute("PRAGMA table_info(telemetry)")}
         if "extra" not in tcols:
             self.conn.execute("ALTER TABLE telemetry ADD COLUMN extra TEXT")
@@ -210,6 +215,9 @@ def runner_public(r):
     r = dict(r)
     r.pop("api_key", None)
     r["online"] = online(r.get("last_seen"))
+    r["ephemeral"] = bool(r.get("ephemeral"))
+    mid = r.get("machine_id") or ""
+    r["uid"] = mid.split("-", 1)[-1][:8] if mid else ""
     try:
         r["capabilities"] = json.loads(r.get("capabilities") or "{}")
     except Exception:
@@ -769,25 +777,35 @@ class Handler(BaseHTTPRequestHandler):
         S = self.store
         rid = b.get("runner_id")
         key = b.get("api_key")
+        kind = b.get("kind", "agent")
+        mid = (b.get("machine_id") or "").strip() or None
         existing = None
         if rid:
             existing = S.one("SELECT * FROM runners WHERE id=?", (rid,))
             if existing and key and existing["api_key"] != key:
                 existing = None  # stale/wrong key -> treat as new
-        if not existing:
+        if not existing and mid:
+            # Stable identity: adopt the row this machine already owns for this
+            # role, so a re-registering runner (or an ephemeral live-USB boot
+            # whose config did not persist) does not mint a duplicate.
+            existing = S.one("SELECT * FROM runners WHERE machine_id=? AND kind=?", (mid, kind))
+        if existing:
+            rid = existing["id"]
+            key = existing["api_key"]
+        else:
             rid = rid or str(uuid.uuid4())
             key = secrets.token_urlsafe(32)
-        else:
-            key = existing["api_key"]
         S.ex("INSERT INTO runners(id,name,os,kind,version,capabilities,first_seen,last_seen,"
-             "status,current_run,addr,git,api_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) "
+             "status,current_run,addr,git,api_key,machine_id,ephemeral) "
+             "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
              "ON CONFLICT(id) DO UPDATE SET name=excluded.name, os=excluded.os, kind=excluded.kind, "
              "version=excluded.version, capabilities=excluded.capabilities, last_seen=excluded.last_seen, "
-             "status=excluded.status, addr=excluded.addr, git=excluded.git",
-             (rid, b.get("name"), b.get("os"), b.get("kind", "agent"), b.get("version"),
+             "status=excluded.status, addr=excluded.addr, git=excluded.git, "
+             "machine_id=excluded.machine_id, ephemeral=excluded.ephemeral",
+             (rid, b.get("name"), b.get("os"), kind, b.get("version"),
               json.dumps(b.get("capabilities") or {}), now(), now(),
               b.get("status", "idle"), b.get("current_run"), self.client_address[0],
-              b.get("git"), key))
+              b.get("git"), key, mid, 1 if b.get("ephemeral") else 0))
         r = runner_public(S.one("SELECT * FROM runners WHERE id=?", (rid,)))
         self.bus.publish({"event": "runner", "data": r})
         return self._send(200, {"runner_id": rid, "api_key": key, "poll_interval": 2.0,
@@ -886,12 +904,23 @@ def reap_stale_runs(store, bus):
                      "data": run_public(store.one("SELECT * FROM runs WHERE id=?", (r["id"],)))})
 
 
+def reap_ephemeral_runners(store, bus):
+    """Delete one-shot runners (e.g. `--self-test`) once they stop heartbeating,
+    so test registrations never accumulate in the fleet view."""
+    t = now()
+    for r in store.q("SELECT id, last_seen FROM runners WHERE ephemeral=1"):
+        if (t - (r["last_seen"] or 0)) > 60:
+            store.ex("DELETE FROM runners WHERE id=?", (r["id"],))
+            bus.publish({"event": "runner", "data": {"id": r["id"], "deleted": True}})
+
+
 def scheduler_loop(store, bus, stop):
     """Fire due schedules by queueing a start command to the target runner."""
     while not stop.is_set():
         try:
             scheduler_tick(store, bus)
             reap_stale_runs(store, bus)
+            reap_ephemeral_runners(store, bus)
         except Exception as e:
             print("[benchd] scheduler error: %s" % e, flush=True)
         stop.wait(10.0)

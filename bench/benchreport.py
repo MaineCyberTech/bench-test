@@ -26,8 +26,10 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 
-GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "sys", "gfx", "fan"]
+GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc",
+          "llm", "fan", "sys", "gfx"]
 
 SAMPLE_FIELDS = ["elapsed", "temp_c", "fan_pct", "power_w", "gpu_util",
                  "gpu_fan_rpm", "cpu_util", "ram_used", "sm_mhz", "mem_used"]
@@ -216,18 +218,90 @@ def save_identity(server, runner_id, api_key):
         pass
 
 
+_MACHINE_ID = None
+
+
+def machine_id():
+    """A stable, machine-derived id so a runner keeps its identity across
+    restarts, reinstalls and ephemeral live-USB boots.
+
+    The persisted runner_id (a random uuid in `bench-agent.json`) does not
+    survive those, so re-registration used to mint a fresh runner every time
+    (hence the duplicate 'bench-live' / hostname rows). This id is derived from
+    the machine instead, so the control plane can recognise a runner it has
+    already seen.
+
+    Order: `$BENCH_MACHINE_ID` -> hardware/OS id (DMI uuid **or** board serial,
+    Windows `MachineGuid`, `/etc/machine-id`) -> a random id persisted next to
+    the identity file as a last resort.
+    """
+    global _MACHINE_ID
+    if _MACHINE_ID:
+        return _MACHINE_ID
+
+    def _read(path):
+        try:
+            with open(path) as fh:
+                return fh.read().strip()
+        except Exception:
+            return ""
+
+    mid = (os.environ.get("BENCH_MACHINE_ID") or "").strip()
+    if not mid and os.name != "nt":
+        # DMI first: stable on a live USB (which runs as root) and across an OS
+        # reinstall; skip the all-zero placeholder some boards report.
+        for p in ("/sys/class/dmi/id/product_uuid", "/sys/class/dmi/id/board_serial"):
+            v = _read(p).lower()
+            if v and set(v.replace("-", "")) != {"0"}:
+                mid = "dmi-" + v
+                break
+    if not mid and os.name == "nt":
+        try:
+            import winreg
+            k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                               r"SOFTWARE\Microsoft\Cryptography", 0,
+                               winreg.KEY_READ | winreg.KEY_WOW64_64KEY)
+            v = str(winreg.QueryValueEx(k, "MachineGuid")[0]).strip().lower()
+            if v:
+                mid = "win-" + v
+        except Exception:
+            pass
+    if not mid:
+        for p in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+            v = _read(p).lower()
+            if v and "uninitialized" not in v:
+                mid = "lnx-" + v
+                break
+    if not mid:
+        # last resort: a random id persisted next to the identity file
+        try:
+            p = os.path.join(os.path.dirname(identity_path()), "bench-machine-id")
+            mid = _read(p)
+            if not mid:
+                mid = "rnd-" + uuid.uuid4().hex
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                with open(p, "w") as fh:
+                    fh.write(mid)
+        except Exception:
+            mid = "rnd-" + uuid.uuid4().hex
+    _MACHINE_ID = mid
+    return mid
+
+
 class Reporter:
     def __init__(self, server, token, name=None, kind="agent", version=None,
                  os_name=None, timeout=6, log=None, git=None, runner_id=None,
-                 api_key=None, persist=False):
+                 api_key=None, persist=False, ephemeral=False):
         self.server = (server or "").rstrip("/")
         self.join_token = token or ""
         self.token = api_key or token or ""
         self.runner_id = runner_id
         self.api_key = api_key
         self.persist = persist
+        self.ephemeral = ephemeral
         self.name = name or socket.gethostname()
         self.kind = kind
+        self.machine_id = machine_id()
         self.os_name = os_name or sys.platform
         self.version = version
         self.git = git
@@ -277,7 +351,8 @@ class Reporter:
             "runner_id": self.runner_id, "api_key": self.api_key,
             "name": self.name, "os": self.os_name, "kind": self.kind, "version": self.version,
             "git": self.git, "capabilities": capabilities or {}, "status": status,
-            "current_run": self.run_id})
+            "current_run": self.run_id, "machine_id": self.machine_id,
+            "ephemeral": self.ephemeral})
         if s == 200 and r.get("runner_id"):
             self.runner_id = r["runner_id"]
             if r.get("api_key"):

@@ -85,6 +85,26 @@ results. Both show **control-plane link status** and, when connected, stream
 phases/telemetry/logs and accept remote start/stop. **Closing a dashboard cancels
 its run.**
 
+## Packaged app (no Python install)
+
+Prebuilt bundles of the dashboards + agent are attached to each **App bundles**
+release, so the GUI/TUI can run on another machine without installing Python or
+the toolkit:
+
+```bash
+gh release download app-<n> -p 'bench-app-*.zip'   # or grab it from Releases
+unzip bench-app-windows.zip                        # -> bench-gui/ bench-tui/ bench-agent/
+./bench-gui/bench-gui                              # or bench-tui / bench-agent
+```
+
+Each bundle carries its own interpreter (PyInstaller) and the dashboards/agent
+are stdlib-only, so **viewing/controlling runs and connecting to a control plane
+need nothing else.** Running a *local* battery additionally needs a toolkit
+checkout (for numpy/PyTorch) — point the app at it with `--repo DIR` or
+`$BENCH_REPO`, or unzip the bundle next to a `bench/` directory. Build the
+bundles yourself with `python packaging/build_app.py`; CI builds them for
+Windows + Linux (`.github/workflows/build-app.yml`).
+
 ## Control plane (`benchd`)
 
 A single pane of glass over a fleet. Stdlib HTTP + SSE + SQLite, plus a
@@ -107,6 +127,9 @@ summary, remarks, full **system inventory**, per-field **telemetry min/avg/max**
 phases, console, and downloads (report JSON, `telemetry.csv`).
 
 - **Auth:** shared join token for operators; per-runner API keys for runners.
+- **Runner identity:** stable per machine (`machine_id` + role) — a re-registration
+  or an ephemeral live-USB boot reuses one row instead of piling up duplicates,
+  and the UI shows `name #short-uid` so hosts sharing a hostname differ.
 - **Backfill:** `python3 server/import_results.py --server URL --token T --dir results`
 - Full API + deployment (Proxmox LXC): [`docs/CONTROL_PLANE.md`](docs/CONTROL_PLANE.md).
 
