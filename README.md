@@ -231,6 +231,10 @@ to the slot that last worked. A single-slot stick still has to be written from
 another device or reflashed in person (a running system cannot safely overwrite
 the partition it is booted from).
 
+Pick the release by the **commit in its notes**, not by its number or date: the tag
+is `iso-<gpu>-<run_number>`, and a run number says nothing about which commit was
+built (`iso-nvidia-legacy-61` was two commits behind `iso-nvidia-legacy-65`).
+
 ### Updating at start
 
 The GUI, TUI and agent **check their own checkout when they start** and
