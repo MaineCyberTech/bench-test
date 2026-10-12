@@ -1,0 +1,2 @@
+device=NVIDIA GeForce GTX 970 torch=2.14.1+cu126 cuda=12.6 arch=[5, 2] SMs=13 VRAM=3.9GiB
+RESULT_JSON:{"phase": "info", "device": "NVIDIA GeForce GTX 970", "torch": "2.14.1+cu126", "cuda": "12.6", "arch": [5, 2], "sm_count": 13, "vram_gib": 3.9, "cudnn": 91002}
