@@ -198,9 +198,17 @@ if [ "$DO_GFX" = 1 ]; then
             fi
             export DISPLAY=:9
         fi
-        # FurMark's X11 DPI probe segfaults when RESOURCE_MANAGER is missing (Xwayland here).
-        xprop -root RESOURCE_MANAGER 2>/dev/null | grep -q RESOURCE_MANAGER || \
-            xprop -root -f RESOURCE_MANAGER 8s -set RESOURCE_MANAGER '*dpi: 96' 2>/dev/null || true
+        # FurMark's X11 DPI/monitor probe crashes when RESOURCE_MANAGER is
+        # missing (Xwayland) or when the server reports ZERO monitors (headless
+        # X): give it a virtual monitor and a verified RESOURCE_MANAGER.
+        if [ -n "$(command -v xrandr 2>/dev/null)" ]; then
+            xrandr -display "$DISPLAY" --setmonitor bench 1920/597x1080/336+0+0 none 2>/dev/null || true
+        fi
+        for i in 1 2 3 4 5; do
+            xprop -display "$DISPLAY" -root -f RESOURCE_MANAGER 8s -set RESOURCE_MANAGER '*dpi: 96' 2>/dev/null || true
+            xprop -display "$DISPLAY" -root RESOURCE_MANAGER 2>/dev/null | grep -q dpi && break
+            sleep 0.5
+        done
         mkdir -p "$LOGDIR/furmark"
         GFX_OUT="$(cd "$(dirname "$FM")" && timeout $((GFX_SECONDS * 2 + 120)) ./furmark --demo furmark-gl \
             --width 1920 --height 1080 --benchmark --duration-ms "$((GFX_SECONDS * 1000))" \
