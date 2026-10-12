@@ -816,7 +816,7 @@ class Dashboard:
             self.tracker = None
         if self.rep and self.rep.run_id:
             try:
-                summary = build_summary_dir(self.results_dir)
+                summary = build_summary_dir(self.results_dir, since=self.run_t0)
                 csvs = glob.glob(os.path.join(self.results_dir, "*.telemetry.csv"))
                 if csvs:
                     ts = telemetry_summary(max(csvs, key=os.path.getmtime))

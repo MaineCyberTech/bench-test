@@ -2151,8 +2151,14 @@ def _hardware_verdicts(results_dir):
     return v
 
 
-def build_summary_dir(results_dir, window_h=8):
-    """Merge all of a run's report JSONs (Windows main + per-group) into one row."""
+def build_summary_dir(results_dir, window_h=8, since=None):
+    """Merge all of a run's report JSONs (Windows main + per-group) into one row.
+
+    `since` (a unix time, normally the run's start) restricts the merge to files
+    this run wrote: the results dir keeps earlier runs for hours, and merging
+    those made a summary inherit metrics it never measured (a 'System info + 60s
+    soak' run reported disk/net numbers from a previous run).
+    """
     now = time.time()
     reports = []
     main = None
@@ -2163,7 +2169,10 @@ def build_summary_dir(results_dir, window_h=8):
                        ".health.json", ".env.json", ".manifest.json")):
             continue
         mt = os.path.getmtime(p)
-        if now - mt > window_h * 3600:
+        if since is not None:
+            if mt < since - 5:          # a little slack for write ordering
+                continue
+        elif now - mt > window_h * 3600:
             continue
         try:
             with open(p, encoding="utf-8-sig") as fh:

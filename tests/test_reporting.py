@@ -331,6 +331,23 @@ def run():
     c.check("the ISO bakes FurMark outside the toolkit dir",
             "opt/bench-tools/furmark" in buildsh, "")
 
+    # ---- a summary must only cover the run that produced it ----
+    sdir = tmpdir()
+    old = os.path.join(sdir, "HOST-disk-20260101-000000.json")
+    with open(old, "w") as fh:
+        json.dump({"host": "HOST", "phases": [{"phase": "seqwrite", "group": "disk",
+                                               "result": {"mbps": 999.0}}]}, fh)
+    os.utime(old, (time.time() - 7200, time.time() - 7200))
+    c.check("an old report is merged when no run start is given",
+            (build_summary_dir(sdir) or {}).get("disk_seqwrite_mbps") == 999.0,
+            build_summary_dir(sdir))
+    c.check("an old report is excluded when the run's start is given",
+            "disk_seqwrite_mbps" not in (build_summary_dir(sdir, since=time.time() - 60) or {}),
+            build_summary_dir(sdir, since=time.time() - 60))
+    for f in ("gui.py", "tui.py", "agent.py"):
+        src = open(os.path.join(BENCH, f), encoding="utf-8").read()
+        c.check("%s scopes the summary to its own run" % f, "since=self.run_t0" in src, f)
+
     srv.stop()
     return c.fails
 

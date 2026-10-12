@@ -119,6 +119,7 @@ class BenchTUI:
         self.q = queue.Queue()
         self.proc = None
         self.running = False
+        self.run_t0 = None
         self.exited = False
         self._stopped = False
         self.phases = []
@@ -323,6 +324,7 @@ class BenchTUI:
         self.tel_path, self.tel_cols, self.csv_last = None, {}, None
         self.exited = False
         self._stopped = False
+        self.run_t0 = time.time()
         os.makedirs(self.results_dir, exist_ok=True)
         env = os.environ.copy()
         env.setdefault("BENCH_PY", venv_python(REPO) or sys.executable)
@@ -537,7 +539,7 @@ class BenchTUI:
             self.tracker = None
         if self.rep and self.rep.run_id:
             try:
-                summary = build_summary_dir(self.results_dir)
+                summary = build_summary_dir(self.results_dir, since=self.run_t0)
                 csvs = glob.glob(os.path.join(self.results_dir, "*.telemetry.csv"))
                 if csvs:
                     ts = telemetry_summary(max(csvs, key=os.path.getmtime))

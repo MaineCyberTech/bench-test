@@ -114,6 +114,7 @@ class Agent:
                             runner_id=ident.get("runner_id"), api_key=ident.get("api_key"),
                             persist=True)
         self.caps = probe_capabilities()
+        self.run_t0 = None
         self.sysinfo = system_info()
         self.proc = None
         self.run_label = None
@@ -142,6 +143,7 @@ class Agent:
                            platform=self.caps.get("platform"), gpu=self.caps.get("gpu"),
                            driver=self.caps.get("driver"), system=self.sysinfo,
                            preset=(profile or {}).get("preset") or label)
+        self.run_t0 = time.time()
         self.rep.event("run started: %s" % label)
         self.proc = subprocess.Popen(cmd, cwd=REPO, env=env, stdout=subprocess.PIPE,
                                      stderr=subprocess.STDOUT, text=True, bufsize=1,
@@ -200,7 +202,7 @@ class Agent:
     def _finish(self, rc):
         summary = read_runs_index(self.out_dir)
         if not summary:
-            summary = build_summary_dir(self.out_dir)
+            summary = build_summary_dir(self.out_dir, since=self.run_t0)
             csvs = glob.glob(os.path.join(self.out_dir, "*.telemetry.csv"))
             if csvs:
                 ts = telemetry_summary(max(csvs, key=os.path.getmtime))
