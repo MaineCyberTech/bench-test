@@ -77,6 +77,54 @@ def api(method, url, token, data=None):
         return 0, {"message": str(e)}
 
 
+def upload_as_one_commit(repo, branch, upath, folder, files, token, log=print):
+    """Put every file in ONE commit via the Git Data API (blobs -> tree -> commit).
+
+    The Contents API makes a commit per file, which turned a single run into
+    hundreds of commits on main (165 arrived in three minutes) and made every
+    other push lose a race with the uploader. Returns True on success.
+    """
+    st, ref = api("GET", "%s/repos/%s/git/ref/heads/%s" % (API, repo, branch), token)
+    sha = (ref or {}).get("object", {}).get("sha")
+    if st != 200 or not sha:
+        return False
+    st, commit = api("GET", "%s/repos/%s/git/commits/%s" % (API, repo, sha), token)
+    base_tree = (commit or {}).get("tree", {}).get("sha")
+    if not base_tree:
+        return False
+    entries = []
+    for p, rel in sorted(files):
+        try:
+            with open(p, "rb") as fh:
+                content = base64.b64encode(fh.read()).decode()
+        except Exception as e:
+            log("  skip %s: read: %s" % (rel, e))
+            continue
+        st, blob = api("POST", "%s/repos/%s/git/blobs" % (API, repo), token,
+                       {"content": content, "encoding": "base64"})
+        if st not in (200, 201) or not blob.get("sha"):
+            return False
+        entries.append({"path": "%s/%s/%s" % (upath, folder, rel.replace(os.sep, "/")),
+                        "mode": "100644", "type": "blob", "sha": blob["sha"]})
+    if not entries:
+        return False
+    st, tree = api("POST", "%s/repos/%s/git/trees" % (API, repo), token,
+                   {"base_tree": base_tree, "tree": entries})
+    if st not in (200, 201) or not tree.get("sha"):
+        return False
+    st, newc = api("POST", "%s/repos/%s/git/commits" % (API, repo), token,
+                   {"message": "bench: %s (%d files)" % (folder, len(entries)),
+                    "tree": tree["sha"], "parents": [sha]})
+    if st not in (200, 201) or not newc.get("sha"):
+        return False
+    st, _res = api("PATCH", "%s/repos/%s/git/refs/heads/%s" % (API, repo, branch), token,
+                   {"sha": newc["sha"]})
+    if st not in (200, 201):
+        return False
+    log("[upload] 1 commit, %d files -> %s@%s" % (len(entries), repo, branch))
+    return True
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
     src = args[0] if args else os.environ.get("BENCH_RESULTS_DIR", "/opt/bench-test/results")
@@ -118,6 +166,11 @@ def main():
 
     ok = 0
     fails = []
+    if upload_as_one_commit(repo, branch, upath, folder, files, token):
+        print("[upload] done -> https://github.com/%s/tree/%s/%s/%s"
+              % (repo, branch, upath, folder))
+        return 0
+    print("[upload] one-commit upload unavailable - falling back to per-file commits")
     for p, rel in sorted(files):
         target = "%s/%s/%s" % (upath, folder, rel.replace(os.sep, "/"))
         url = "%s/repos/%s/contents/%s" % (API, repo, urllib.parse.quote(target))

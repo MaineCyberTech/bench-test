@@ -336,6 +336,45 @@ def run():
                                               "usr", "local", "bin", "bench-agent-env"),
                                  encoding="utf-8").read(), "")
 
+    # ---- the uploader must make ONE commit, not one per file ----
+    import upload as up
+    calls = []
+
+    def fake_api(method, url, token, payload=None):
+        calls.append((method, url, payload))
+        if "/git/ref/heads/" in url:
+            return 200, {"object": {"sha": "p" * 40}}
+        if method == "GET" and "/git/commits/" in url:
+            return 200, {"tree": {"sha": "t" * 40}}
+        if url.endswith("/git/blobs"):
+            return 201, {"sha": "b" * 40}
+        if url.endswith("/git/trees"):
+            return 201, {"sha": "n" * 40}
+        if url.endswith("/git/commits"):
+            return 201, {"sha": "c" * 40}
+        if "/git/refs/heads/" in url:
+            return 200, {}
+        return 404, {}
+
+    saved_api = up.api
+    up.api = fake_api
+    try:
+        ufiles = []
+        for n in ("u1.txt", "u2.txt", "u3.txt"):
+            p = os.path.join(sand, n)
+            open(p, "w").write("x")
+            ufiles.append((p, n))
+        c.check("uploader writes one commit",
+                up.upload_as_one_commit("o/r", "main", "results", "folder", ufiles, "tok") is True, "")
+        c.check("exactly one commit call for three files",
+                len([x for x in calls if x[0] == "POST" and x[1].endswith("/git/commits")]) == 1, calls)
+        c.check("one blob per file",
+                len([x for x in calls if x[1].endswith("/git/blobs")]) == 3, calls)
+        c.check("the branch is moved once",
+                len([x for x in calls if x[0] == "PATCH"]) == 1, calls)
+    finally:
+        up.api = saved_api
+
     # ---- iso write guards (never actually writes) ----
     c.check("iso_write needs confirm", "confirm" in str(br.iso_write(r2["iso"], "/dev/null").get("error")), "")
     c.check("iso_write rejects a missing iso",
