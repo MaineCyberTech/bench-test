@@ -21,7 +21,19 @@ import time
 import tkinter as tk
 from tkinter import filedialog, font as tkfont, ttk
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+def _repo_dir():
+    """The toolkit checkout, resolved even when frozen (PyInstaller) or run from
+    elsewhere: $BENCH_REPO, next to the executable, or the cwd."""
+    cands = [os.environ.get("BENCH_REPO"), os.getcwd()]
+    if getattr(sys, "frozen", False):
+        cands.insert(0, os.path.dirname(os.path.abspath(sys.executable)))
+    for c in cands:
+        if c and os.path.isdir(os.path.join(c, "bench")):
+            return os.path.abspath(c)
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+REPO = _repo_dir()
 BENCH = os.path.join(REPO, "bench")
 FAN_CURVE = os.path.join(BENCH, "fan_curve.py")
 sys.path.insert(0, BENCH)

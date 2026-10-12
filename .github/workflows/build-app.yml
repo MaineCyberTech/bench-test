@@ -1,0 +1,92 @@
+name: Build app bundles
+
+# Builds standalone bench-test app bundles (GUI / TUI / agent) with PyInstaller
+# for Windows and Linux, and attaches them to a release, so the dashboards can be
+# run on other systems without installing Python.
+#
+# Trigger: push to main touching bench/**, packaging/** or this file, or manual
+# dispatch. Download: gh release download app-<run> -p '*.zip'
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "bench/**"
+      - "packaging/**"
+      - ".github/workflows/build-app.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-app-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux
+          - os: windows-latest
+            label: windows
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet --upgrade pip pyinstaller
+          if [ "${{ matrix.label }}" = "linux" ]; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq python3-tk
+          fi
+
+      - name: Build bundles
+        shell: bash
+        run: python packaging/build_app.py --out dist
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          zip -qr "../bench-app-${{ matrix.label }}.zip" bench-gui bench-tui bench-agent
+          cd ..
+          ls -lh bench-app-${{ matrix.label }}.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-app-${{ matrix.label }}
+          path: bench-app-${{ matrix.label }}.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: app-${{ github.run_number }}
+          name: "App bundles #${{ github.run_number }}"
+          files: dist/*.zip
+          make_latest: false
+          body: |
+            Standalone bench-test app bundles (PyInstaller) — run the GUI/TUI/agent
+            without installing Python.
+            - `bench-app-windows.zip` · `bench-app-linux.zip`
+            Unzip, then run `bench-gui`, `bench-tui` or `bench-agent`.
+            Connecting to a control plane needs no other install; running a local
+            battery needs a toolkit checkout (`--repo DIR` / `$BENCH_REPO`).
