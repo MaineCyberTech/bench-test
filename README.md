@@ -122,12 +122,15 @@ python3 bench/tui.py --server http://lab:8722 --token …    # TUI (live USB) to
 
 Open `http://<server>:8722/?token=<token>`. Tabs: **Live** (a fleet view —
 online runners first, stale ones behind a toggle, each with gauges, charts, live
-console, remote terminal and controls), **History** (sortable/filterable table of
-every run), **Trends**, **Compare**, **Schedules**. Run detail shows the summary,
-remarks, full **system inventory**, per-field **telemetry min/avg/max**, phases,
-console and downloads — plus derived **perf/watt, thermal headroom, time
-throttled** and a **Δ vs the previous run of the same preset on that host**.
-Charts have hover tooltips; `Esc` closes dialogs, `/` jumps to search.
+console, remote terminal, plus confirm-gated **reboot / shut down**), **History**
+(sortable/filterable, with a **▲/▼ vs the previous run of the same preset on
+that host**), **Trends** (per-series median / p95 / max), **Compare**, **Fleet**
+(median throughput + peak temp **per machine** and **per GPU model**),
+**Schedules**. Run detail shows the summary, hardware **verdicts** (WHEA/TDR/
+ECC/disk), remarks, full **system inventory**, per-field **min/avg/max · std ·
+p95/p99**, derived **perf/watt, energy, thermal headroom, time throttled, clock
+residency**, phases, console and downloads. Charts have hover tooltips; `Esc`
+closes dialogs, `/` jumps to search.
 
 - **Auth:** shared join token for operators; per-runner API keys for runners.
 - **Runner identity:** stable per machine (`machine_id` + role) — a re-registration

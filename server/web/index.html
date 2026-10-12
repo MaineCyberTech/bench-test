@@ -29,6 +29,7 @@
   <button data-tab="history">History</button>
   <button data-tab="trends">Trends</button>
   <button data-tab="compare">Compare</button>
+  <button data-tab="fleet">Fleet</button>
   <button data-tab="schedules">Schedules</button>
 </nav>
 
@@ -101,6 +102,31 @@
       <button class="accent" id="cmpRun">compare</button>
     </div>
     <div class="grid2" id="cmpResult"></div>
+  </section>
+
+  <section id="tab-fleet" class="tabpane">
+    <div class="section-head">
+      <h2>By machine</h2>
+      <span class="muted" id="fleetCount"></span>
+    </div>
+    <div class="card tablecard">
+      <table id="fleetHosts">
+        <thead><tr>
+          <th>machine</th><th>runs</th><th>last run</th><th>median GPU TF</th>
+          <th>median CPU GF</th><th>median RAM GB/s</th><th>median peak °C</th><th>latest</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="section-head"><h2>By GPU</h2></div>
+    <div class="card tablecard">
+      <table id="fleetGpus">
+        <thead><tr>
+          <th>gpu</th><th>runs</th><th>machines</th><th>median GPU TF</th><th>median peak °C</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
   </section>
 
   <section id="tab-schedules" class="tabpane">

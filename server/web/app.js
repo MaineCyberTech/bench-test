@@ -84,6 +84,14 @@ const sysLine = (r) => {
   const parts = [cpu, sy.ram_gib ? sy.ram_gib + " GiB" : null, gpu].filter(Boolean);
   return parts.join(" · ");
 };
+const numOrNull = (v) => (v == null || v === "" || isNaN(v)) ? null : +v;
+function median(vals) {
+  const v = vals.filter((x) => x != null).map(Number).sort((a, b) => a - b);
+  if (!v.length) return null;
+  const m = v.length >> 1;
+  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+}
+function gpuOf(r) { return ((r.system && r.system.gpu) || r.gpu || "?").replace(/NVIDIA GeForce\s*/i, ""); }
 function toast(msg, kind) {
   let t = $("#toast");
   if (!t) { t = document.createElement("div"); t.id = "toast"; document.body.appendChild(t); }
@@ -215,7 +223,12 @@ function onPhase(p) {
 }
 
 /* -------------------------------------------------------------- render -- */
-function renderAll() { renderTop(); renderRunners(); renderActive(); renderHistory(); renderTrends(); renderCompareOptions(); renderSchedules(); }
+function renderAll() {
+  renderTop(); renderRunners(); renderActive(); renderHistory(); renderTrends();
+  renderCompareOptions(); renderSchedules();
+  const fp = $("#tab-fleet");
+  if (fp && fp.classList.contains("active")) renderFleet();
+}
 
 function machineKey(r) { return r.machine_id || ("name:" + (r.name || "")); }
 
@@ -403,6 +416,14 @@ async function renderHistory() {
     let rows = d.runs.filter((r) => !q || JSON.stringify(r).toLowerCase().includes(q));
     if (st) rows = rows.filter((r) => r.status === st);
     const get = HIST_SORT[SORT.key] || HIST_SORT.started;
+    // pair each run with the previous one for the same host + preset (chronological)
+    const seen = {};
+    d.runs.slice().sort((a, b) => (a.started || 0) - (b.started || 0)).forEach((r) => {
+      if (!r.preset) { r.__prev = null; return; }   // only compare like-for-like runs
+      const k = (r.host || "") + "|" + r.preset;
+      r.__prev = seen[k] || null;
+      seen[k] = r;
+    });
     rows = rows.slice().sort((a, b) => {
       const x = get(a), y = get(b);
       if (typeof x === "string" || typeof y === "string") return String(x).localeCompare(String(y)) * SORT.dir;
@@ -416,6 +437,17 @@ async function renderHistory() {
     tb.innerHTML = rows.map((r) => {
       const s = r.summary || {};
       const peak = peakTemp(r);
+      // ▲/▼ vs the previous run of the same preset on the same host (>=5%)
+      let vsBadge = "";
+      const pg = numOrNull(r.__prev && r.__prev.summary && r.__prev.summary.gpu_soak_tflops);
+      const cg = numOrNull(s.gpu_soak_tflops);
+      if (pg && cg) {
+        const dd = (cg - pg) / Math.abs(pg) * 100;
+        if (Math.abs(dd) >= 3) {
+          vsBadge = ` <span class="delta ${dd > 0 ? "up" : "down"}" title="vs previous run on this host">`
+            + `${dd > 0 ? "▲" : "▼"}${Math.abs(dd).toFixed(0)}%</span>`;
+        }
+      }
       return `<tr data-detail="${r.id}">
         <td>${esc(r.host)}</td>
         <td class="syscol" title="${esc(sysLine(r))}">${esc(sysLine(r))}</td>
@@ -424,13 +456,49 @@ async function renderHistory() {
         <td class="muted" title="${ts(r.started)}">${ago(r.started)}</td>
         <td class="num">${runDur(r)}</td>
         <td><span class="pill ${esc(r.status)}">${esc(r.status)}</span></td>
-        <td class="num">${fmt(s.gpu_soak_tflops)}</td>
+        <td class="num">${fmt(s.gpu_soak_tflops)}${vsBadge}</td>
         <td class="num">${fmt(s.cpu_soak_gflops, 0)}</td>
         <td class="num">${fmt(s.ram_soak_gbps)}</td>
         <td class="num">${fmt(peak, 0)}</td></tr>`;
     }).join("") || `<tr><td colspan="11" class="empty">No matching runs.</td></tr>`;
     fillSelect("#histHost", HOSTS, "all hosts");
   } catch (e) { /* ignore */ }
+}
+
+/* -------------------------------------------------------------- fleet --- */
+async function renderFleet() {
+  let runs = [];
+  try { runs = (await api("/runs?limit=500")).runs; } catch (e) { return; }
+  const done = runs.filter((r) => r.status !== "running");
+  const byHost = {}, byGpu = {};
+  for (const r of done) {
+    (byHost[r.host || "?"] = byHost[r.host || "?"] || []).push(r);
+    (byGpu[gpuOf(r)] = byGpu[gpuOf(r)] || []).push(r);
+  }
+  const agg = (rs) => ({
+    gpu: median(rs.map((r) => numOrNull(r.summary && r.summary.gpu_soak_tflops))),
+    cpu: median(rs.map((r) => numOrNull(r.summary && r.summary.cpu_soak_gflops))),
+    ram: median(rs.map((r) => numOrNull(r.summary && r.summary.ram_soak_gbps))),
+    peak: median(rs.map(peakTemp)),
+  });
+  const latest = (rs) => rs.slice().sort((a, b) => (b.started || 0) - (a.started || 0))[0];
+  $("#fleetCount").textContent = `${Object.keys(byHost).length} machines · ${done.length} finished runs`;
+  $("#fleetHosts tbody").innerHTML = Object.entries(byHost).sort().map(([h, rs]) => {
+    const a = agg(rs), L = latest(rs);
+    return `<tr data-detail="${L.id}">
+      <td>${esc(h)}</td><td class="num">${rs.length}</td>
+      <td class="muted">${ago(L.started)}</td>
+      <td class="num">${fmt(a.gpu)}</td><td class="num">${fmt(a.cpu, 0)}</td>
+      <td class="num">${fmt(a.ram)}</td><td class="num">${fmt(a.peak, 0)}</td>
+      <td><span class="pill ${esc(L.status)}">${esc(L.status)}</span></td></tr>`;
+  }).join("") || `<tr><td colspan="8" class="empty">No finished runs yet.</td></tr>`;
+  $("#fleetGpus tbody").innerHTML = Object.entries(byGpu)
+    .sort((x, y) => y[1].length - x[1].length).map(([g, rs]) => {
+      const a = agg(rs);
+      const hosts = new Set(rs.map((r) => r.host)).size;
+      return `<tr><td>${esc(g)}</td><td class="num">${rs.length}</td><td class="num">${hosts}</td>
+        <td class="num">${fmt(a.gpu)}</td><td class="num">${fmt(a.peak, 0)}</td></tr>`;
+    }).join("") || `<tr><td colspan="5" class="empty">No GPU data.</td></tr>`;
 }
 
 /* ------------------------------------------------------------- trends --- */
@@ -455,8 +523,12 @@ async function renderTrends() {
       points: d.series[m].map((p) => ({ x: p.t, y: p.v })),
     }));
     drawChart($("#trendChart"), series, { xTime: true, yLabel: metrics.map(labelFor).join(" / ") });
-    $("#trendLegend").innerHTML = series.map((s) =>
-      `<span><i class="sw" style="background:${s.color}"></i>${esc(s.name)} · ${s.points.length} pts</span>`).join("");
+    const tstats = d.stats || {};
+    $("#trendLegend").innerHTML = series.map((s, i) => {
+      const q = tstats[metrics[i]] || {};
+      const extra = q.n ? ` · med ${fmt(q.p50, 1)} · p95 ${fmt(q.p95, 1)} · max ${fmt(q.max, 1)}` : "";
+      return `<span><i class="sw" style="background:${s.color}"></i>${esc(s.name)} · ${s.points.length} pts${extra}</span>`;
+    }).join("");
   } catch (e) { /* ignore */ }
 }
 function labelFor(m) { const f = STATE.metrics.find((x) => x[0] === m); return f ? f[1] : m; }
@@ -892,6 +964,7 @@ document.addEventListener("click", (e) => {
     $$(".tabpane").forEach((p) => p.classList.toggle("active", p.id === "tab-" + t.dataset.tab));
     if (t.dataset.tab === "history") renderHistory();
     if (t.dataset.tab === "trends") renderTrends();
+    if (t.dataset.tab === "fleet") renderFleet();
     if (t.dataset.tab === "schedules") renderSchedules();
     return;
   }

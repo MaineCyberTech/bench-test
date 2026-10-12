@@ -662,7 +662,17 @@ class Handler(BaseHTTPRequestHandler):
                     series[m].append({"t": r["started"], "v": v, "run": r["id"], "host": r["host"]})
         hosts = [h["host"] for h in self.store.q(
             "SELECT DISTINCT host FROM runs WHERE host IS NOT NULL ORDER BY host")]
-        return self._send(200, {"hosts": hosts, "metrics": METRICS, "series": series})
+        stats = {}
+        for m, pts in series.items():
+            vals = sorted(p["v"] for p in pts)
+            if vals:
+                n = len(vals)
+                stats[m] = {"n": n, "min": vals[0], "max": vals[-1],
+                            "avg": round(sum(vals) / n, 2),
+                            "p50": self._pct(vals, 50), "p95": self._pct(vals, 95),
+                            "p99": self._pct(vals, 99)}
+        return self._send(200, {"hosts": hosts, "metrics": METRICS, "series": series,
+                                "stats": stats})
 
     def _stream(self):
         q = self.bus.subscribe()

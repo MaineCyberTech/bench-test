@@ -143,6 +143,9 @@ def run():
     c.check("preset recorded", runs["runs"][0]["preset"] == "Quick check", runs["runs"][0])
     st, tr = cl.call("GET", "/api/v1/trends?host=lab-1&metric=gpu_soak_tflops")
     c.check("trends", tr["series"]["gpu_soak_tflops"][0]["v"] == 81.1, tr)
+    ts_ = tr.get("stats", {}).get("gpu_soak_tflops", {})
+    c.check("trends carry percentile stats",
+            ts_.get("n") == 1 and ts_.get("p95") == 81.1 and "p50" in ts_, ts_)
 
     # ---- schedules ----
     st, sc = cl.call("POST", "/api/v1/schedules", {"runner_id": rid, "label": "nightly",

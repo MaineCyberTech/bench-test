@@ -52,17 +52,17 @@ mandatory third-party dependency.
 - **Analytics**: p95/p99/stddev, energy (J), clock residency, throttled %,
   thermal/power headroom; Δ vs the previous run of the same preset.
 - **Benchmarks**: GPU **fp64**; net **jitter (mdev)** + **packet loss**.
+- **Fleet analytics**: `/trends` carries median/p95/p99 per series; the **Fleet**
+  tab shows medians per machine and per **GPU model**; History flags a run whose
+  throughput is ≥3% below the previous run of the same preset on that host.
 
 ### Still open
 - **Windows per-engine GPU** (`Get-Counter '\GPU Engine(*)\Utilization Percentage'`)
   and battery/lid state.
 - **NVENC quality** (VMAF/SSIM needs ffmpeg) and **LLM** tokens/s · prompt-eval ·
   model-load time.
-- **Fleet analytics**: p95/p99 per host, "worse than last run" badge in History,
-  medians per GPU model.
 
-### Cheap next additions
-- **Linux**: `dmidecode` (true DIMM speed/part), `ethtool -S` (drops/errors),
+### Cheap next additions- **Linux**: `dmidecode` (true DIMM speed/part), `ethtool -S` (drops/errors),
   per-core frequency residency.
 - **Windows**: `Win32_Processor` current clock, `Get-WinEvent` Kernel-Power 41
   (unexpected shutdown) → verdict.
