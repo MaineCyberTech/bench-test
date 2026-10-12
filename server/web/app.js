@@ -259,6 +259,9 @@ function runnerCard(r) {
     r.instance ? `<span class="badge instance">${esc(r.instance)}</span>` : "",
     r.ephemeral ? `<span class="badge ephemeral">ephemeral</span>` : "",
     r.uid ? `<span class="uid">#${esc(r.uid)}</span>` : "",
+    (caps.groups && caps.groups.length && caps.groups.length < ALL_GROUPS.length)
+      ? `<span class="badge" title="groups this runner implements">${caps.groups.length}/${ALL_GROUPS.length} groups</span>`
+      : "",
   ].join("");
   const dev = [caps.gpu || "no GPU", caps.cpu, caps.ram_gib ? caps.ram_gib + " GiB" : "",
                caps.driver ? "driver " + caps.driver : ""].filter(Boolean).join(" · ");
@@ -677,12 +680,18 @@ function drawRunChart(card, runId) {
 
 /* ------------------------------------------------------------ actions --- */
 async function startRun(runnerId) {
+  const runner = STATE.runners.find((r) => r.id === runnerId) || {};
+  const sup = (runner.capabilities && runner.capabilities.groups) || GROUPS;
   const presetKeys = Object.keys(PRESETS);
   openModal(`<h3>Start run</h3>
     <div class="formrow"><label>Preset</label>
       <select id="mPreset">${presetKeys.map((k) => `<option>${esc(k)}</option>`).join("")}</select></div>
     <div class="formrow"><label>Groups</label><div class="chk" id="mGroups">
-      ${GROUPS.map((g) => `<label><input type="checkbox" value="${g}" checked>${g}</label>`).join("")}</div></div>
+      ${GROUPS.map((g) => {
+        const ok = sup.includes(g);
+        return `<label${ok ? "" : ' class="muted" title="not implemented on this runner"'}>`
+          + `<input type="checkbox" value="${g}"${ok ? "" : " disabled"}>${esc(g)}</label>`;
+      }).join("")}</div></div>
     <div class="formrow"><label>Durations (s)</label>
       GPU soak <input id="mGpu" type="number" value="600" style="width:80px">
       combined <input id="mComb" type="number" value="300" style="width:80px">
@@ -694,7 +703,7 @@ async function startRun(runnerId) {
   const applyPreset = () => {
     const p = PRESETS[$("#mPreset").value] || {};
     const groups = p.groups || gset(...ALL_GROUPS);
-    $$("#mGroups input").forEach((i) => { i.checked = !!groups[i.value]; });
+    $$("#mGroups input").forEach((i) => { i.checked = !i.disabled && !!groups[i.value]; });
     const spin = p.spin || DEF_SPIN;
     $("#mGpu").value = spin.gpu; $("#mComb").value = spin.combined;
     $("#mFull").value = spin.fullsoak; $("#mGfx").value = spin.gfx;
@@ -703,7 +712,7 @@ async function startRun(runnerId) {
   applyPreset();
   $("#mCancel").onclick = closeModal;
   $("#mGo").onclick = async () => {
-    const skip = $$("#mGroups input").filter((i) => !i.checked).map((i) => i.value);
+    const skip = $$("#mGroups input:not(:disabled)").filter((i) => !i.checked).map((i) => i.value);
     const payload = {
       label: $("#mPreset").value, preset: $("#mPreset").value, skip,
       gpu_soak: +$("#mGpu").value, combined: +$("#mComb").value,

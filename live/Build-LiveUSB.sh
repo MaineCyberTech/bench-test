@@ -156,6 +156,16 @@ rsync -a \
     --exclude 'live/private' --exclude 'server/data' --exclude 'server/benchd.conf' \
     "$REPO/" "$PROFILE/airootfs/opt/bench-test/"
 
+# the image must never carry private credentials — fail the build if it does
+for bad in "$PROFILE/airootfs/opt/bench-test/live/private" \
+           "$PROFILE/airootfs/opt/bench-test/server/benchd.conf" \
+           "$PROFILE/airootfs/opt/bench-test/.git"; do
+    if [ -e "$bad" ]; then
+        echo "[build] ERROR: private file leaked into the image: $bad" >&2
+        exit 1
+    fi
+done
+
 # FurMark 2 linux64 into tools/: repo copy -> tools release asset -> geeks3d
 FM_SRC="$REPO/tools/furmark/FurMark_linux64"
 if [ ! -x "$FM_SRC/furmark" ]; then

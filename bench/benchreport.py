@@ -31,6 +31,17 @@ import uuid
 GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc",
           "llm", "fan", "sys", "gfx"]
 
+
+def supported_groups():
+    """The groups this platform's battery actually implements.
+
+    `fan` is Linux-only and `llm` is Windows-only; runners advertise this so the
+    dashboards can disable a toggle that would be a silent no-op.
+    """
+    if os.name == "nt":
+        return [g for g in GROUPS if g != "fan"]
+    return [g for g in GROUPS if g != "llm"]
+
 SAMPLE_FIELDS = ["elapsed", "temp_c", "fan_pct", "power_w", "gpu_util",
                  "gpu_fan_rpm", "cpu_util", "ram_used", "sm_mhz", "mem_used"]
 

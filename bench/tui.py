@@ -47,7 +47,8 @@ sys.path.insert(0, BENCH)
 try:
     from benchreport import (Reporter, PhaseTracker, ReporterPump, build_summary, build_summary_dir,
                              telemetry_summary, newest_report, load_identity, run_exec, system_info,
-                             read_inventory, load_conf, CSV_ALIASES, power_action)
+                             read_inventory, load_conf, CSV_ALIASES, power_action,
+                             supported_groups)
 except Exception:  # reporting is optional
     Reporter = None
 
@@ -147,6 +148,7 @@ class BenchTUI:
                                 log=lambda m: self.log.append(m))
             self.sysinfo = system_info()
             caps = {"os": _p.system(), "platform": _p.platform(), "kind": "tui",
+                    "groups": supported_groups(),
                     "gpu": self.sysinfo.get("gpu"), "driver": self.sysinfo.get("driver"),
                     "cpu": self.sysinfo.get("cpu"), "ram_gib": self.sysinfo.get("ram_gib")}
             self._connect_reporting(caps)

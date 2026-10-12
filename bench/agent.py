@@ -44,7 +44,7 @@ sys.path.insert(0, BENCH)
 from benchreport import (Reporter, PhaseTracker, TelemetryTail,  # noqa: E402
                          build_summary, build_summary_dir, telemetry_summary, read_runs_index,
                          load_identity, run_exec, system_info, read_inventory, load_conf,
-                         power_action)
+                         power_action, supported_groups)
 
 DEFAULT_GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc",
                   "llm", "fan", "sys", "gfx"]
@@ -59,7 +59,7 @@ def run_hidden(cmd, **kw):
 
 
 def probe_capabilities():
-    caps = {"os": platform.system(), "groups": list(DEFAULT_GROUPS),
+    caps = {"os": platform.system(), "groups": supported_groups(),
             "platform": platform.platform(), "python": platform.python_version()}
     try:
         out = run_hidden(["nvidia-smi", "--query-gpu=name,driver_version,memory.total",

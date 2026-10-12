@@ -163,6 +163,10 @@ you add behaviour. Never commit with a failing suite.
   so Windows sub-phases show as rows.
 - **`--skip-llm`/`--skip-fan`** are accepted by both runners (`fan` is Linux-only,
   `llm` Windows-only) so the dashboards can pass the same skip set everywhere.
+  Which groups a platform implements is declared once in
+  `benchreport.supported_groups()` and advertised in each runner's
+  `capabilities.groups`; the web start dialog disables the rest. Keep that in
+  step with the batteries.
 - **The Windows battery has no `-SkipGpu` unless `Run-WorkstationBench.ps1` has it**
   — if you add a skip flag, wire it in the `.ps1`, in `run_win.py`, and in the
   dashboards' group list.
