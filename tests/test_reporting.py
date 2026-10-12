@@ -206,6 +206,11 @@ def run():
         c.check("%s uses the shared dashboard spec" % f,
                 "DASH_FIELDS" in src and "hardware_line" in src, "")
 
+    for f in ("gui.py", "tui.py"):
+        src = open(os.path.join(BENCH, f), encoding="utf-8").read()
+        c.check("%s pushes every telemetry column (incl. elapsed)" % f,
+                ("for k in self.tel_cols" in src) or ("for n in self._cols" in src), f)
+
     # ---- the run's full CSV must reach the server when it ends ----
     class _FakeRep:
         run_id = "run-x"

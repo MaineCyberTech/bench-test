@@ -608,7 +608,10 @@ class BenchTUI:
                 if v is not None:
                     self.tel[key].append(v)
             if self.pump:
-                sample = {k: v for k, v in self.csv_now.items() if v is not None}
+                # push every column we can read, not a fixed list: 'elapsed' is
+                # what the charts plot against, and leaving it out made every
+                # sample land with elapsed=NULL, so the web chart showed "no data"
+                sample = {k: get(k) for k in self.tel_cols if get(k) is not None}
                 if sample:
                     self.pump.push_sample(sample)
 
