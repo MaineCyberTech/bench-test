@@ -41,18 +41,24 @@ except Exception:  # reporting is optional
 
 GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "sys", "gfx"]
 
+def _g(*on):
+    return [g for g in GROUPS if g in on]
+
+
+_DEF_DUR = {"gpu": "600", "combined": "300", "fullsoak": "300", "gfx": "60"}
+
 PRESETS = [
-    ("Quick check (short soaks)", {"groups": GROUPS,
+    ("Quick check (short soaks)", {"groups": list(GROUPS),
                                    "dur": {"gpu": "60", "combined": "60", "fullsoak": "60", "gfx": "30"}}),
-    ("Full run (defaults)", {"groups": GROUPS,
-                             "dur": {"gpu": "600", "combined": "300", "fullsoak": "300", "gfx": "60"}}),
-    ("GPU compute", {"groups": ["gpu", "sys"], "dur": {"gpu": "60"}}),
-    ("CPU + RAM + disk", {"groups": ["cpu", "ram", "disk", "net", "sys"], "dur": {}}),
-    ("Storage + network", {"groups": ["disk", "net", "sys"], "dur": {}}),
-    ("Video / graphics", {"groups": ["nvenc", "gfx", "sys"], "dur": {"gfx": "60"}}),
-    ("Soak only (long)", {"groups": ["gpu", "fullsoak", "sys"],
-                          "dur": {"gpu": "1800", "fullsoak": "1800"}}),
-    ("Full-system soak (long)", {"groups": ["fullsoak", "sys"], "dur": {"fullsoak": "1800"}}),
+    ("Full run (defaults)", {"groups": list(GROUPS), "dur": dict(_DEF_DUR)}),
+    ("GPU compute", {"groups": _g("gpu", "sys"), "dur": {**_DEF_DUR, "gpu": "60"}}),
+    ("CPU + RAM + disk", {"groups": _g("cpu", "ram", "disk", "sys"), "dur": dict(_DEF_DUR)}),
+    ("Storage + network", {"groups": _g("disk", "net", "sys"), "dur": dict(_DEF_DUR)}),
+    ("Video / graphics", {"groups": _g("nvenc", "gfx", "sys"), "dur": dict(_DEF_DUR)}),
+    ("Soak only (long)", {"groups": _g("gpu", "fullsoak", "sys"),
+                          "dur": {**_DEF_DUR, "gpu": "1800", "fullsoak": "1800"}}),
+    ("Full-system soak (long)", {"groups": _g("fullsoak", "sys"),
+                                 "dur": {**_DEF_DUR, "fullsoak": "1800"}}),
 ]
 
 SPARK = "▁▂▃▄▅▆▇█"
@@ -863,8 +869,17 @@ class BenchTUI:
     def key(self, ch):
         if ch in (ord("q"), ord("Q")):
             if self.running:
-                self._set("stop the run first (x)", 3)
-                return True
+                # closing cancels an in-flight run so it never gets stuck
+                self._set("stopping run before exit...", 3)
+                self.stop()
+                for _ in range(30):
+                    if self.proc and self.proc.poll() is not None:
+                        break
+                    time.sleep(0.1)
+                try:
+                    self._on_exit()
+                except Exception:
+                    pass
             # never exit with uncollected results: if the auto-collect has not
             # succeeded yet, do a final synchronous attempt before quitting
             if os.path.exists(RESULT_COLLECTOR) and not self.collected_ok:

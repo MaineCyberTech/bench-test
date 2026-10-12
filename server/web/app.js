@@ -2,15 +2,18 @@
 /* bench-test control plane — single pane of glass (vanilla JS, no build step) */
 
 const GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "sys", "gfx"];
+const ALL_GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "sys", "gfx"];
+const gset = (...on) => Object.fromEntries(ALL_GROUPS.map((g) => [g, on.includes(g) ? 1 : 0]));
+const DEF_SPIN = { gpu: 600, combined: 300, fullsoak: 300, gfx: 60 };
 const PRESETS = {
-  "Quick check (short soaks)": { spin: { gpu: 60, combined: 60, fullsoak: 60, gfx: 30 } },
-  "Full run (defaults)": { spin: { gpu: 600, combined: 300, fullsoak: 300, gfx: 60 } },
-  "GPU compute": { groups: { gpu: 1, cpu: 0, ram: 0, disk: 0, combined: 0, fullsoak: 0, net: 0, nvenc: 0, sys: 1, gfx: 0 }, spin: { gpu: 60 } },
-  "CPU + RAM + disk": { groups: { gpu: 0, cpu: 1, ram: 1, disk: 1, combined: 0, fullsoak: 0, net: 1, nvenc: 0, sys: 1, gfx: 0 } },
-  "Storage + network": { groups: { gpu: 0, cpu: 0, ram: 0, disk: 1, combined: 0, fullsoak: 0, net: 1, nvenc: 0, sys: 1, gfx: 0 } },
-  "Video / graphics": { groups: { gpu: 0, cpu: 0, ram: 0, disk: 0, combined: 0, fullsoak: 0, net: 0, nvenc: 1, sys: 1, gfx: 1 }, spin: { gfx: 60 } },
-  "Soak only (long)": { groups: { gpu: 1, cpu: 0, ram: 0, disk: 0, combined: 0, fullsoak: 1, net: 0, nvenc: 0, sys: 1, gfx: 0 }, spin: { gpu: 1800, fullsoak: 1800 } },
-  "Full-system soak (long)": { groups: { gpu: 0, cpu: 0, ram: 0, disk: 0, combined: 0, fullsoak: 1, net: 0, nvenc: 0, sys: 1, gfx: 0 }, spin: { fullsoak: 1800 } },
+  "Quick check (short soaks)": { groups: gset(...ALL_GROUPS), spin: { gpu: 60, combined: 60, fullsoak: 60, gfx: 30 } },
+  "Full run (defaults)": { groups: gset(...ALL_GROUPS), spin: { ...DEF_SPIN } },
+  "GPU compute": { groups: gset("gpu", "sys"), spin: { ...DEF_SPIN, gpu: 60 } },
+  "CPU + RAM + disk": { groups: gset("cpu", "ram", "disk", "sys"), spin: { ...DEF_SPIN } },
+  "Storage + network": { groups: gset("disk", "net", "sys"), spin: { ...DEF_SPIN } },
+  "Video / graphics": { groups: gset("nvenc", "gfx", "sys"), spin: { ...DEF_SPIN } },
+  "Soak only (long)": { groups: gset("gpu", "fullsoak", "sys"), spin: { ...DEF_SPIN, gpu: 1800, fullsoak: 1800 } },
+  "Full-system soak (long)": { groups: gset("fullsoak", "sys"), spin: { ...DEF_SPIN, fullsoak: 1800 } },
 };
 const C = { temp: "#ef6b73", power: "#4c9aff", util: "#46c98d", fan: "#e5b567" };
 const SERIES = {
@@ -424,10 +427,14 @@ async function startRun(runnerId) {
       <button class="accent" id="mGo">start</button></div>`);
   const applyPreset = () => {
     const p = PRESETS[$("#mPreset").value] || {};
-    if (p.groups) $$("#mGroups input").forEach((i) => { i.checked = !!p.groups[i.value]; });
-    if (p.spin) { $("#mGpu").value = p.spin.gpu; $("#mComb").value = p.spin.combined; $("#mFull").value = p.spin.fullsoak; $("#mGfx").value = p.spin.gfx; }
+    const groups = p.groups || gset(...ALL_GROUPS);
+    $$("#mGroups input").forEach((i) => { i.checked = !!groups[i.value]; });
+    const spin = p.spin || DEF_SPIN;
+    $("#mGpu").value = spin.gpu; $("#mComb").value = spin.combined;
+    $("#mFull").value = spin.fullsoak; $("#mGfx").value = spin.gfx;
   };
   $("#mPreset").onchange = applyPreset;
+  applyPreset();
   $("#mCancel").onclick = closeModal;
   $("#mGo").onclick = async () => {
     const skip = $$("#mGroups input").filter((i) => !i.checked).map((i) => i.value);

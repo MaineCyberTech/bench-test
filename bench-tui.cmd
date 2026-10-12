@@ -12,7 +12,7 @@ if not exist "%VENV%\Scripts\python.exe" (
   python -m venv "%VENV%" || exit /b 1
   "%VENV%\Scripts\python.exe" -m pip install --quiet --upgrade pip
   "%VENV%\Scripts\python.exe" -m pip install --quiet numpy psutil windows-curses
-  echo [bench] installing PyTorch (CUDA 12.8) ... this is a one-time ~2.5 GB download
+  echo [bench] installing PyTorch CUDA 12.8 ... this is a one-time ~2.5 GB download
   "%VENV%\Scripts\python.exe" -m pip install --quiet --index-url https://download.pytorch.org/whl/cu128 torch
 )
 

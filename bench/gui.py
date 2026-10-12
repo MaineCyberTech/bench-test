@@ -58,26 +58,29 @@ GROUPS = [
     ("nvenc", "Video encode"), ("sys", "Inventory"), ("gfx", "Graphics (FurMark)"),
 ]
 
+_ALL_G = {k: 1 for k in ("gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc",
+                         "sys", "gfx")}
+
+
+def _g(*on):
+    return {k: (1 if k in on else 0) for k in _ALL_G}
+
+
+_DEF_DUR = {"gpu": 600, "combined": 300, "fullsoak": 300, "gfx": 60}
+
 PRESETS = {
     "Select a preset...": None,
-    "Quick check (short soaks)": {"spin": {"gpu": 60, "combined": 60, "fullsoak": 60, "gfx": 30}},
-    "Full run (defaults)": {"spin": {"gpu": 600, "combined": 300, "fullsoak": 300, "gfx": 60}},
-    "GPU compute": {"groups": {"gpu": 1, "cpu": 0, "ram": 0, "disk": 0, "combined": 0,
-                               "fullsoak": 0, "net": 0, "nvenc": 0, "sys": 1, "gfx": 0},
-                    "spin": {"gpu": 60}},
-    "CPU + RAM + disk": {"groups": {"gpu": 0, "cpu": 1, "ram": 1, "disk": 1, "combined": 0,
-                                    "fullsoak": 0, "net": 1, "nvenc": 0, "sys": 1, "gfx": 0}},
-    "Storage + network": {"groups": {"gpu": 0, "cpu": 0, "ram": 0, "disk": 1, "combined": 0,
-                                     "fullsoak": 0, "net": 1, "nvenc": 0, "sys": 1, "gfx": 0}},
-    "Video / graphics": {"groups": {"gpu": 0, "cpu": 0, "ram": 0, "disk": 0, "combined": 0,
-                                    "fullsoak": 0, "net": 0, "nvenc": 1, "sys": 1, "gfx": 1},
-                         "spin": {"gfx": 60}},
-    "Soak only (long)": {"groups": {"gpu": 1, "cpu": 0, "ram": 0, "disk": 0, "combined": 0,
-                                    "fullsoak": 1, "net": 0, "nvenc": 0, "sys": 1, "gfx": 0},
-                         "spin": {"gpu": 1800, "fullsoak": 1800}},
-    "Full-system soak (long)": {"groups": {"gpu": 0, "cpu": 0, "ram": 0, "disk": 0, "combined": 0,
-                                           "fullsoak": 1, "net": 0, "nvenc": 0, "sys": 1, "gfx": 0},
-                                "spin": {"fullsoak": 1800}},
+    "Quick check (short soaks)": {"groups": _ALL_G,
+                                  "spin": {"gpu": 60, "combined": 60, "fullsoak": 60, "gfx": 30}},
+    "Full run (defaults)": {"groups": _ALL_G, "spin": dict(_DEF_DUR)},
+    "GPU compute": {"groups": _g("gpu", "sys"), "spin": {**_DEF_DUR, "gpu": 60}},
+    "CPU + RAM + disk": {"groups": _g("cpu", "ram", "disk", "sys"), "spin": dict(_DEF_DUR)},
+    "Storage + network": {"groups": _g("disk", "net", "sys"), "spin": dict(_DEF_DUR)},
+    "Video / graphics": {"groups": _g("nvenc", "gfx", "sys"), "spin": dict(_DEF_DUR)},
+    "Soak only (long)": {"groups": _g("gpu", "fullsoak", "sys"),
+                         "spin": {**_DEF_DUR, "gpu": 1800, "fullsoak": 1800}},
+    "Full-system soak (long)": {"groups": _g("fullsoak", "sys"),
+                                "spin": {**_DEF_DUR, "fullsoak": 1800}},
 }
 
 STATUS_COLOR = {"running": ACCENT, "done": GOOD, "WARN": WARN, "warn": WARN, "error": BAD}
@@ -501,10 +504,15 @@ class Dashboard:
         preset = PRESETS.get(self.preset.get())
         if not preset:
             return
-        for key, val in (preset.get("groups") or {}).items():
-            self.gvars[key].set(bool(val))
+        groups = preset.get("groups")
+        if groups is None:
+            groups = {k: 1 for k in self.gvars}
+        for key, val in groups.items():
+            if key in self.gvars:
+                self.gvars[key].set(bool(val))
         for key, val in (preset.get("spin") or {}).items():
-            self.svars[key].set(str(val))
+            if key in self.svars:
+                self.svars[key].set(str(val))
 
     def start(self, profile=None):
         if self.running:
@@ -868,6 +876,17 @@ class Dashboard:
             threading.Thread(target=work, daemon=True).start()
 
     def _on_close(self):
+        # closing the window cancels an in-flight run so it never gets stuck
+        if self.running and self.proc and self.proc.poll() is None:
+            self.stop()
+            for _ in range(30):
+                if self.proc.poll() is not None:
+                    break
+                time.sleep(0.1)
+            try:
+                self._on_exit()
+            except Exception:
+                pass
         if self.pump:
             self.pump.stop()
         # never close with uncollected results: final synchronous attempt

@@ -856,11 +856,35 @@ def scheduler_tick(store, bus):
     return fired
 
 
+def reap_stale_runs(store, bus):
+    """Fail runs whose runner stopped heartbeating (e.g. a dashboard was killed).
+
+    Backstop so a closed/killed runner never leaves a run 'running' forever.
+    """
+    t = now()
+    for r in store.q("SELECT id, runner_id, started FROM runs WHERE status='running'"):
+        if t - (r["started"] or 0) < 60:
+            continue  # too new to judge
+        last = None
+        if r["runner_id"]:
+            rr = store.one("SELECT last_seen FROM runners WHERE id=?", (r["runner_id"],))
+            last = rr["last_seen"] if rr else None
+        if last is not None and (t - last) <= 45:
+            continue  # runner still heartbeating
+        store.ex("UPDATE runs SET status='failed', ended=? WHERE id=?", (t, r["id"]))
+        if r["runner_id"]:
+            store.ex("UPDATE runners SET status='idle', current_run=NULL WHERE id=?",
+                     (r["runner_id"],))
+        bus.publish({"event": "run",
+                     "data": run_public(store.one("SELECT * FROM runs WHERE id=?", (r["id"],)))})
+
+
 def scheduler_loop(store, bus, stop):
     """Fire due schedules by queueing a start command to the target runner."""
     while not stop.is_set():
         try:
             scheduler_tick(store, bus)
+            reap_stale_runs(store, bus)
         except Exception as e:
             print("[benchd] scheduler error: %s" % e, flush=True)
         stop.wait(10.0)
