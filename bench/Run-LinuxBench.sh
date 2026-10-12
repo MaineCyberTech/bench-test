@@ -210,6 +210,14 @@ if [ "$DO_GFX" = 1 ]; then
             xprop -display "$DISPLAY" -root RESOURCE_MANAGER 2>/dev/null | grep -q dpi && break
             sleep 0.5
         done
+        # diagnostic snapshot: uploaded with the run logs for gfx post-mortems
+        {
+            echo "display: $DISPLAY"
+            xdpyinfo -display "$DISPLAY" 2>&1 | head -15
+            xrandr -display "$DISPLAY" --listmonitors 2>&1
+            xprop -display "$DISPLAY" -root RESOURCE_MANAGER 2>&1
+            if command -v glxinfo >/dev/null 2>&1; then glxinfo -B 2>&1 | head -12; fi
+        } > "$LOGDIR/gfx-diag.txt" 2>&1
         mkdir -p "$LOGDIR/furmark"
         GFX_OUT="$(cd "$(dirname "$FM")" && timeout $((GFX_SECONDS * 2 + 120)) ./furmark --demo furmark-gl \
             --width 1920 --height 1080 --benchmark --duration-ms "$((GFX_SECONDS * 1000))" \
@@ -217,6 +225,16 @@ if [ "$DO_GFX" = 1 ]; then
             --export-dir "$LOGDIR/furmark" --hw-polling-interval 1000 2>&1)"; GFRC=$?
         printf '%s\n' "$GFX_OUT" > "$LOGDIR/gfx-furmark.log"
         printf '%s\n' "$GFX_OUT" | grep -a -v '^$' | sed 's/^/    /'
+        # if FurMark still dies, fall back to glmark2 so the gfx phase always
+        # produces a score (glmark2 ships in the live image)
+        if [ "$GFRC" -ne 0 ] && command -v glmark2 >/dev/null 2>&1; then
+            echo "    furmark failed (rc=$GFRC) - falling back to glmark2"
+            GM_OUT="$(timeout $((GFX_SECONDS * 2 + 120)) glmark2 -b 2>&1)"; GMRC=$?
+            printf '%s\n' "$GM_OUT" > "$LOGDIR/gfx-glmark2.log"
+            printf '%s\n' "$GM_OUT" | grep -E "glmark2 Score|FPS:" | tail -3 | sed 's/^/    /'
+            GSCORE="$(printf '%s\n' "$GM_OUT" | grep -oE "glmark2 Score: [0-9]+" | tail -1 | grep -oE "[0-9]+")"
+            printf '{"group":"gfx","phase":"glmark2","result":{"score":%s,"furmark_rc":%s}}\n' "${GSCORE:-0}" "$GFRC" >> "$JSONL"
+        fi
         cp "$(dirname "$FM")/_furmark_log.txt" "$LOGDIR/" 2>/dev/null || true
         cp "$(dirname "$FM")/_geexlab_log.txt" "$LOGDIR/" 2>/dev/null || true
         "$PY" - "$LOGDIR" "$JSONL" "$GFX_SECONDS" "$GFRC" <<'PYEOF'
