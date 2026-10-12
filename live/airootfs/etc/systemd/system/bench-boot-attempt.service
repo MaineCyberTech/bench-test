@@ -1,0 +1,13 @@
+[Unit]
+Description=bench-test: record a boot attempt on the A/B stick
+DefaultDependencies=no
+After=local-fs.target
+Before=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/bench-slot attempt
+
+[Install]
+WantedBy=multi-user.target

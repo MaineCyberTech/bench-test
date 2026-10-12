@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""Slot state for A/B sticks: reads/writes the grub env block on BENCH_ESP.
+
+Usage: bench-slot status | confirm | attempt | set A|B
+
+The booted slot comes from the kernel cmdline (bench_slot=A|B). 'attempt'
+increments the counter early in boot; 'confirm' (multi-user) resets it and
+pins the active slot; grub itself flips slots when attempts >= 3.
+"""
+import os
+import subprocess
+import sys
+
+ESP_LABEL = "BENCH_ESP"
+ENV_SIZE = 1024
+HEADER = "# GRUB Environment Block\n"
+
+
+def esp_device():
+    out = subprocess.run(["blkid", "-o", "device", "-t", "LABEL=%s" % ESP_LABEL],
+                         capture_output=True, text=True).stdout.split()
+    return out[0] if out else ""
+
+
+def mount_esp(dev):
+    mnt = "/run/bench-esp"
+    os.makedirs(mnt, exist_ok=True)
+    if not os.path.ismount(mnt):
+        if subprocess.run(["mount", dev, mnt], capture_output=True).returncode != 0:
+            return ""
+    return mnt
+
+
+def env_path(mnt):
+    return os.path.join(mnt, "boot/grub/grubenv")
+
+
+def read_env(p):
+    env = {}
+    try:
+        with open(p, "rb") as fh:
+            for ln in fh.read(ENV_SIZE).decode("utf-8", "replace").splitlines():
+                if "=" in ln and not ln.startswith("#"):
+                    k, v = ln.split("=", 1)
+                    env[k.strip()] = v.strip()
+    except OSError:
+        pass
+    return env
+
+
+def write_env(p, env):
+    body = HEADER
+    for k in sorted(env):
+        body += "%s=%s\n" % (k, env[k])
+    body += "#" * (ENV_SIZE - len(body))
+    with open(p, "wb") as fh:
+        fh.write(body[:ENV_SIZE].encode())
+
+
+def booted_slot():
+    try:
+        for w in open("/proc/cmdline").read().split():
+            if w.startswith("bench_slot="):
+                return w.split("=", 1)[1].upper()
+    except OSError:
+        pass
+    return ""
+
+
+def main():
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
+    dev = esp_device()
+    if not dev:
+        if cmd == "status":
+            print("slot: none (no BENCH_ESP partition - not an A/B stick)")
+        return 0 if cmd in ("attempt", "confirm") else 1
+    mnt = mount_esp(dev)
+    if not mnt:
+        print("slot: cannot mount %s" % dev)
+        return 1
+    p = env_path(mnt)
+    env = read_env(p)
+    env.setdefault("active", "A")
+    env.setdefault("attempts", "0")
+    booted = booted_slot()
+    if cmd == "status":
+        print("slot: active=%s attempts=%s booted=%s" % (env["active"], env["attempts"], booted or "?"))
+    elif cmd == "attempt":
+        env["attempts"] = str(int(env.get("attempts", "0") or 0) + 1)
+        write_env(p, env)
+    elif cmd == "confirm":
+        env["attempts"] = "0"
+        if booted:
+            env["active"] = booted
+        write_env(p, env)
+    elif cmd == "set" and len(sys.argv) > 2:
+        env["active"] = sys.argv[2].upper()
+        env["attempts"] = "0"
+        write_env(p, env)
+    else:
+        print(__doc__)
+        subprocess.run(["umount", mnt], capture_output=True)
+        return 2
+    subprocess.run(["umount", mnt], capture_output=True)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

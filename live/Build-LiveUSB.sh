@@ -210,6 +210,11 @@ ln -sf ../bench-fan-curve.service \
 # it (the dashboard's 'f' still switches it off for the session)
 ln -sf ../bench-fan-auto.service \
     "$PROFILE/airootfs/etc/systemd/system/multi-user.target.wants/bench-fan-auto.service"
+# A/B slot bookkeeping (no-op on non-A/B sticks)
+ln -sf ../bench-boot-attempt.service \
+    "$PROFILE/airootfs/etc/systemd/system/multi-user.target.wants/bench-boot-attempt.service"
+ln -sf ../bench-boot-confirm.service \
+    "$PROFILE/airootfs/etc/systemd/system/multi-user.target.wants/bench-boot-confirm.service"
 
 # exec permissions for our helpers
 cat >> "$PROFILE/profiledef.sh" <<'EOF'
@@ -220,6 +225,7 @@ file_permissions+=(
   ["/usr/local/bin/bench-agent-env"]="0:0:755"
   ["/usr/local/bin/bench-fan-curve"]="0:0:755"
   ["/usr/local/bin/bench-fan-auto"]="0:0:755"
+  ["/usr/local/bin/bench-slot"]="0:0:755"
   ["/usr/local/bin/bench-live-run"]="0:0:755"
   ["/usr/local/bin/bench-collect"]="0:0:755"
   ["/usr/local/bin/bench-upload"]="0:0:755"

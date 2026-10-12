@@ -1,0 +1,11 @@
+[Unit]
+Description=bench-test: confirm the booted A/B slot
+After=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/bench-slot confirm
+
+[Install]
+WantedBy=multi-user.target
