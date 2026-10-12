@@ -92,6 +92,8 @@ main{padding:18px 22px 60px}
 .phase.run .ic{color:var(--accent)}
 .phase.ok .ic{color:var(--good)}
 .phase.warn .ic{color:var(--warn)}
+.phase.skip{opacity:.45}
+.phase.skip .ic{color:var(--muted)}
 .phase .g{color:var(--muted)}
 canvas{width:100%;display:block}
 

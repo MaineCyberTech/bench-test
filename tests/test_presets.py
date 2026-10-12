@@ -89,6 +89,31 @@ def run():
     c.check("agent.DEFAULT_GROUPS canonical", ag.DEFAULT_GROUPS == GROUPS, ag.DEFAULT_GROUPS)
     c.check("tui.GROUPS canonical", tui.GROUPS == GROUPS, tui.GROUPS)
     c.check("gui group keys canonical", {k for k, _ in gui.GROUPS} == set(GROUPS), gui.GROUPS)
+    # every preset must actually do something beyond `sys`, and be distinct
+    import benchreport as rep
+
+    def want_groups(spec):
+        g = spec["groups"]
+        if isinstance(g, dict):
+            return [k for k, v in g.items() if v]
+        return [k for k in GROUPS if k in g]
+
+    seen = {}
+    for name, p in dict(tui.PRESETS).items():
+        want = want_groups(p)
+        c.check("preset %s does something beyond sys" % name,
+                any(g != "sys" for g in want), want)
+        key = (tuple(sorted(want)), tuple(sorted((k, int(v)) for k, v in p["dur"].items())))
+        c.check("preset %s is distinct" % name, key not in seen,
+                "%s == %s" % (name, seen.get(key)))
+        seen[key] = name
+    for name, p in {k: v for k, v in gui.PRESETS.items() if v}.items():
+        c.check("gui preset %s does something beyond sys" % name,
+                any(g != "sys" for g in want_groups(p)), want_groups(p))
+    c.check("supported_groups matches the platform",
+            ("fan" not in rep.supported_groups()) if os.name == "nt"
+            else ("llm" not in rep.supported_groups()), rep.supported_groups())
+
     return c.fails
 
 

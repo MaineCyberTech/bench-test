@@ -386,9 +386,13 @@ function renderActive() {
 }
 
 function phaseRow(p) {
-  const ic = p.status === "running" ? "▶" : p.status === "warn" ? "!" : p.status === "error" ? "✕" : "✓";
-  const t = (p.t0 && p.t1) ? dur(p.t1 - p.t0) : (p.t0 ? dur(Date.now() / 1000 - p.t0) : "");
-  return `<div class="phase ${p.status === "running" ? "run" : p.status === "warn" ? "warn" : "ok"}">
+  const skipped = /\bskip(ped)?\b/i.test(p.label || "");
+  const ic = skipped ? "–" : p.status === "running" ? "▶" : p.status === "warn" ? "!" :
+    p.status === "error" ? "✕" : "✓";
+  const cls = skipped ? "skip" : p.status === "running" ? "run" :
+    p.status === "warn" ? "warn" : "ok";
+  const t = skipped ? "" : ((p.t0 && p.t1) ? dur(p.t1 - p.t0) : (p.t0 ? dur(Date.now() / 1000 - p.t0) : ""));
+  return `<div class="phase ${cls}">
     <span class="ic">${ic}</span><span class="g">${esc(p.grp)}</span>
     <span>${esc(p.label || "")}</span><span class="muted">${t}</span></div>`;
 }
@@ -703,9 +707,17 @@ async function startRun(runnerId) {
   const runner = STATE.runners.find((r) => r.id === runnerId) || {};
   const sup = (runner.capabilities && runner.capabilities.groups) || GROUPS;
   const presetKeys = Object.keys(PRESETS);
+  const usable = (k) => {
+    const p = PRESETS[k];
+    if (!p || !p.groups) return true;
+    // a preset with nothing beyond `sys` this runner can do is not useful
+    return GROUPS.some((g) => p.groups[g] && g !== "sys" && sup.includes(g));
+  };
   openModal(`<h3>Start run</h3>
     <div class="formrow"><label>Preset</label>
-      <select id="mPreset">${presetKeys.map((k) => `<option>${esc(k)}</option>`).join("")}</select></div>
+      <select id="mPreset">${presetKeys.map((k) =>
+        `<option${usable(k) ? "" : " disabled"}>${esc(k)}</option>`).join("")}</select>
+      <span class="muted" id="mPresetInfo"></span></div>
     <div class="formrow"><label>Groups</label><div class="chk" id="mGroups">
       ${GROUPS.map((g) => {
         const ok = sup.includes(g);
@@ -727,6 +739,13 @@ async function startRun(runnerId) {
     const spin = p.spin || DEF_SPIN;
     $("#mGpu").value = spin.gpu; $("#mComb").value = spin.combined;
     $("#mFull").value = spin.fullsoak; $("#mGfx").value = spin.gfx;
+    const want = GROUPS.filter((g) => groups[g]);
+    const un = want.filter((g) => !sup.includes(g));
+    const info = $("#mPresetInfo");
+    if (info) {
+      info.textContent = "runs " + (want.filter((g) => sup.includes(g)).join(", ") || "nothing") +
+        (un.length ? " · not on this runner: " + un.join(", ") : "");
+    }
   };
   $("#mPreset").onchange = applyPreset;
   applyPreset();
@@ -910,8 +929,21 @@ async function showDetail(runId) {
       <td class="num muted">${fmt(a.std, 2)}</td><td class="num">${fmt(a.p95, 1)}</td>
       <td class="num">${fmt(a.p99, 1)}</td><td class="muted mono">${a.n}</td></tr>`;
   }).join("");
+  const preset = PRESETS[r.preset || ""];
+  let conformance = "";
+  if (preset) {
+    const expected = GROUPS.filter((g) => preset.groups && preset.groups[g]);
+    const skipped = new Set((r.phases || [])
+      .filter((p) => /\bskip(ped)?\b/i.test(p.label || "")).map((p) => p.grp));
+    const ran = expected.filter((g) => !skipped.has(g));
+    const missed = expected.filter((g) => skipped.has(g));
+    const level = missed.length ? "warn" : "good";
+    conformance = `<div class="v-${level}"><b>${missed.length ? "!" : "✓"}</b> preset “${esc(r.preset)}”
+      ran ${ran.length}/${expected.length} groups${missed.length ? " — skipped: " + esc(missed.join(", ")) : ""}</div>`;
+  }
   openModal(`<h3>${esc(r.host)} · ${esc(r.label || "run")} <span class="pill ${esc(r.status)}">${esc(r.status)}</span></h3>
     <div class="muted">${ts(r.started)} · ${runDur(r)} · ${esc(sy.gpu || r.gpu || "")} ${sy.driver || r.driver ? "· driver " + esc(sy.driver || r.driver) : ""}${prev ? ` · <span class="delta flat">vs ${ts(prev.started)}</span>` : ""}</div>
+    ${conformance ? `<div class="remarks verdicts">${conformance}</div>` : ""}
     ${(s.verdicts || []).length ? `<div class="remarks verdicts">${s.verdicts.map((x) =>
       `<div class="v-${esc(x.level)}"><b>${x.level === "good" ? "✓" : x.level === "warn" ? "!" : x.level === "info" ? "i" : "✕"}</b> ${esc(x.text)}</div>`).join("")}</div>` : ""}
     ${remarks.length ? `<div class="remarks">${remarks.map((x) => `<div>${esc(x)}</div>`).join("")}</div>` : ""}
