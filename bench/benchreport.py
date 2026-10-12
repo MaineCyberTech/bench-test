@@ -864,14 +864,21 @@ def toolkit_version(root=None):
 
 
 def _resolve_commit(ref):
-    """Best-effort ref -> short commit (needs network; '' when unknown)."""
+    """Best-effort ref -> short commit (needs network; '' when unknown).
+
+    Cache-busted on purpose: GitHub (or its CDN) will serve a branch tip that is
+    a minute or two old, which stamps a freshly fetched copy with a commit it is
+    already past - and the fleet view then shows a false "update available".
+    """
     s = str(ref or "")
     if re.match(r"^[0-9a-f]{7,40}$", s):
         return s[:7]
     try:
-        url = "%s/repos/%s/commits/%s" % (GH_API, REPO_SLUG, s)
+        url = "%s/repos/%s/commits/%s?bench=%d" % (GH_API, REPO_SLUG, s,
+                                                   int(time.time() * 1000))
         req = urllib.request.Request(url, headers={"User-Agent": UA,
-                                                   "Accept": "application/vnd.github+json"})
+                                                   "Accept": "application/vnd.github+json",
+                                                   "Cache-Control": "no-cache"})
         with urllib.request.urlopen(req, timeout=20) as r:
             return (json.loads(r.read().decode()).get("sha") or "")[:7]
     except Exception:
