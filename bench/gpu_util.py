@@ -30,7 +30,9 @@ _CACHE = {"t": 0.0, "v": None}
 
 def _run(args, timeout=5):
     try:
-        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout,
+                           creationflags=(getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                                          if os.name == "nt" else 0))
         return r.stdout if r.returncode == 0 else None
     except Exception:
         return None
