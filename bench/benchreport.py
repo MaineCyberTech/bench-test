@@ -997,6 +997,7 @@ def gh_release(tag):
 def iso_fetch(tag, gpu="nvidia-legacy", dest=None, log=None):
     """Download + concatenate a release's ISO parts and verify SHA256SUMS."""
     log = log or (lambda _m: None)
+    _ensure_persist()
     rel, err = gh_release(tag)
     if err:
         return {"error": err}
@@ -1052,6 +1053,128 @@ def _device_of_path(path):
     return os.path.realpath(dev) if dev else ""
 
 
+def _is_usb_device(device):
+    """True when the device sits on a USB transport (or reports removable)."""
+    try:
+        rp = os.path.realpath(device)
+        out = subprocess.run(["udevadm", "info", "-q", "path", "-n", rp],
+                             capture_output=True, text=True, timeout=10).stdout
+        if "usb" in out:
+            return True
+        name = os.path.basename(rp)
+        disk = name
+        if not os.path.exists("/sys/block/%s" % disk):
+            parent = subprocess.run(["lsblk", "-no", "PKNAME", rp],
+                                    capture_output=True, text=True, timeout=10).stdout.strip()
+            disk = parent or name
+        with open("/sys/block/%s/removable" % disk) as fh:
+            return fh.read().strip() == "1"
+    except Exception:
+        return False
+
+
+def _mountpoint_of(device):
+    """Mountpoint of the device or any of its partitions, or ''."""
+    base = os.path.basename(os.path.realpath(device))
+    best = ""
+    try:
+        with open("/proc/mounts") as fh:
+            for ln in fh:
+                p = ln.split()
+                if len(p) < 2:
+                    continue
+                src = os.path.basename(p[0])
+                if src == base or (src.startswith(base) and src[len(base):].isdigit()):
+                    best = p[1].replace("\\040", " ")
+    except OSError:
+        pass
+    return best
+
+
+def _stash_confs(device):
+    """Read the upload/agent configs before a destructive write."""
+    confs = {}
+    mnt = _mountpoint_of(device)
+    if mnt:
+        for n in ("bench-upload.conf", "bench-agent.conf"):
+            try:
+                with open(os.path.join(mnt, n), "rb") as fh:
+                    confs[n] = fh.read()
+            except OSError:
+                pass
+    for n, p in (("bench-upload.conf", "/etc/bench-upload.conf"),
+                 ("bench-agent.conf", "/etc/bench-agent.conf")):
+        if n not in confs:
+            try:
+                with open(p, "rb") as fh:
+                    confs[n] = fh.read()
+            except OSError:
+                pass
+    return confs
+
+
+def _ensure_persist():
+    """Best-effort: mount the BENCHDATA partition at PERSIST_DIR for staging."""
+    if os.path.ismount(PERSIST_DIR):
+        return True
+    try:
+        out = subprocess.run(["blkid", "-o", "device", "-t", "LABEL=BENCHDATA"],
+                             capture_output=True, text=True, timeout=10).stdout.split()
+        if out:
+            os.makedirs(PERSIST_DIR, exist_ok=True)
+            subprocess.run(["mount", out[0], PERSIST_DIR], capture_output=True, timeout=15)
+    except Exception:
+        pass
+    return os.path.ismount(PERSIST_DIR)
+
+
+def _finish_stick(device, iso_bytes, confs, log=None):
+    """Recreate the BENCHDATA partition + restore configs after a raw write.
+
+    Mirrors Build-LiveUSB.sh's write step so a live-flashed stick keeps its
+    results partition and credentials. USB devices only; best effort."""
+    log = log or (lambda _m: None)
+    if not _is_usb_device(device):
+        return {"partition": "skipped (not a USB device)"}
+    start_mib = iso_bytes // 1048576 + 16
+    subprocess.run(["sync"], timeout=60)
+    subprocess.run(["blockdev", "--rereadpt", device], capture_output=True, timeout=30)
+    subprocess.run(["partx", "-a", device], capture_output=True, timeout=30)
+    log("[iso] creating BENCHDATA partition at %dMiB" % start_mib)
+    subprocess.run(["parted", "-s", device, "mkpart", "primary", "fat32",
+                    "%dMiB" % start_mib, "100%"], capture_output=True, timeout=60)
+    subprocess.run(["sync"], timeout=60)
+    time.sleep(1)
+    subprocess.run(["blockdev", "--rereadpt", device], capture_output=True, timeout=30)
+    subprocess.run(["partx", "-a", device], capture_output=True, timeout=30)
+    time.sleep(2)
+    out = subprocess.run(["lsblk", "-lbno", "NAME,START", device],
+                         capture_output=True, text=True, timeout=20).stdout
+    part = ""
+    min_sec = iso_bytes // 512
+    for ln in out.splitlines():
+        f = ln.split()
+        if len(f) == 2 and f[1].isdigit() and int(f[1]) >= min_sec:
+            part = "/dev/" + f[0]
+            break
+    if not part:
+        return {"partition": "not visible yet (partx -a %s)" % device}
+    subprocess.run(["mkfs.vfat", "-n", "BENCHDATA", part], capture_output=True, timeout=120)
+    restored = []
+    os.makedirs(PERSIST_DIR, exist_ok=True)
+    if subprocess.run(["mount", part, PERSIST_DIR], capture_output=True, timeout=30).returncode == 0:
+        for n, data in confs.items():
+            try:
+                with open(os.path.join(PERSIST_DIR, n), "wb") as fh:
+                    fh.write(data)
+                restored.append(n)
+            except OSError:
+                pass
+        subprocess.run(["umount", PERSIST_DIR], capture_output=True, timeout=30)
+    log("[iso] BENCHDATA on %s (restored: %s)" % (part, ", ".join(restored) or "none"))
+    return {"partition": part, "restored": restored}
+
+
 def iso_write(iso_path, device, confirm=False, log=None):
     """Write a staged ISO to a block device (destructive; guarded)."""
     log = log or (lambda _m: None)
@@ -1070,6 +1193,8 @@ def iso_write(iso_path, device, confirm=False, log=None):
     for guard in ("/", "/mnt/benchdata", "/opt", PERSIST_DIR):
         if _device_of_path(guard) and _device_of_path(guard) == os.path.realpath(device):
             return {"error": "refusing to overwrite the device backing %s" % guard}
+    confs = _stash_confs(device)
+    iso_bytes = os.path.getsize(iso_path)
     log("[iso] writing %s -> %s" % (iso_path, device))
     try:
         with open(iso_path, "rb") as src, open(device, "wb", buffering=0) as dst:
@@ -1078,7 +1203,12 @@ def iso_write(iso_path, device, confirm=False, log=None):
             os.fsync(dst.fileno())
     except Exception as e:
         return {"error": "write failed: %s" % e, "device": device}
-    return {"ok": True, "device": device, "bytes": os.path.getsize(iso_path)}
+    res = {"ok": True, "device": device, "bytes": iso_bytes}
+    try:
+        res.update(_finish_stick(device, iso_bytes, confs, log=log))
+    except Exception as e:
+        res["partition_error"] = str(e)
+    return res
 
 
 
