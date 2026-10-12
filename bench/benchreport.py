@@ -1005,7 +1005,7 @@ def iso_fetch(tag, gpu="nvidia-legacy", dest=None, log=None):
                    key=lambda a: a["name"])
     if not parts:
         return {"error": "no ISO parts on %s" % tag, "assets": [a["name"] for a in rel["assets"]]}
-    out_dir = dest or os.path.join(persist_root(), "iso")
+    out_dir = dest or os.path.join(_stage_root(), "iso")
     os.makedirs(out_dir, exist_ok=True)
     iso = os.path.join(out_dir, "bench-live-%s.iso" % gpu)
     total = 0
@@ -1130,6 +1130,23 @@ def _stash_confs(device):
     return confs
 
 
+def _stage_root():
+    """Staging root for ISOs: RAM on a live system (the stick is the target),
+    the persistent partition otherwise."""
+    if os.path.exists("/run/archiso"):
+        stage = "/var/tmp/bench-iso-stage"
+        if not os.path.ismount(stage):
+            try:
+                os.makedirs(stage, exist_ok=True)
+                subprocess.run(["mount", "-t", "tmpfs", "-o", "size=6144M", "tmpfs", stage],
+                               capture_output=True, timeout=30)
+            except Exception:
+                pass
+        if os.path.ismount(stage):
+            return stage
+    return persist_root()
+
+
 def _ensure_persist():
     """Best-effort: mount the BENCHDATA partition at PERSIST_DIR for staging."""
     if os.path.ismount(PERSIST_DIR):
@@ -1208,9 +1225,21 @@ def iso_write(iso_path, device, confirm=False, log=None):
         return {"error": "cannot stat %s (%s)" % (device, e)}
     if not stat.S_ISBLK(st.st_mode):
         return {"error": "%s is not a block device" % device}
-    for guard in ("/", "/mnt/benchdata", "/opt", PERSIST_DIR):
+    # On a live system the stick is safe to reflash in place (copytoram keeps
+    # everything in RAM), so only the system-disk guards stay; elsewhere the
+    # data/persist mounts are protected too.
+    live = os.path.exists("/run/archiso")
+    guards = ("/", "/opt") if live else ("/", "/mnt/benchdata", "/opt", PERSIST_DIR)
+    for guard in guards:
         if _device_of_path(guard) and _device_of_path(guard) == os.path.realpath(device):
             return {"error": "refusing to overwrite the device backing %s" % guard}
+    # Never write an ISO that is stored ON the target device (the write would
+    # clobber the file mid-read).
+    iso_dev = _device_of_path(os.path.dirname(os.path.abspath(iso_path)))
+    if iso_dev and (iso_dev == os.path.realpath(device)
+                    or iso_dev.rstrip("0123456789") == os.path.realpath(device)):
+        return {"error": "the staged ISO lives on the target device - stage it "
+                         "in RAM or on another stick first"}
     confs = _stash_confs(device)
     _unmount_all(device)
     iso_bytes = os.path.getsize(iso_path)
