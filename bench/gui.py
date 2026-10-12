@@ -152,6 +152,10 @@ class Dashboard:
         self._fonts()
         self._styles()
         self._build()
+        # With pythonw there is no console: Tk's default handler tries to print a
+        # callback traceback to a None stderr, which loses the exception (and used
+        # to kill the periodic loop / a pending command). Report it instead.
+        self.root.report_callback_exception = self._tk_error
         if tab:
             try:
                 self.nb.select(tab)
@@ -434,6 +438,13 @@ class Dashboard:
         if int(self.log.index("end-1c").split(".")[0]) > 800:
             self.log.delete("1.0", "100.0")
         self.log.see("end")
+
+    def _tk_error(self, etype, value, tb):
+        """Tk callback exceptions: report them instead of dying silently."""
+        import traceback
+        last = traceback.format_exception(etype, value, tb)[-1].strip()
+        self._diag("[gui] %s: %s" % (etype.__name__, value))
+        self._diag("[gui] %s" % last)
 
     def _diag(self, line):
         """Our own diagnostics: show locally *and* stream to the control plane,

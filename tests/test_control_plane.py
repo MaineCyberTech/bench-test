@@ -226,6 +226,19 @@ def run():
     c.check("reaper drops a stale ephemeral runner",
             st.one("SELECT id FROM runners WHERE id='eph-r'") is None, "")
 
+    # a command a runner fetched but never acked must not sit in 'sent' forever
+    st.ex("INSERT INTO commands(id,runner_id,kind,payload,status,created,sent) "
+          "VALUES(?,?,?,?,?,?,?)",
+          ("stuck-c", rid, "start", "{}", "sent", time.time() - 400, time.time() - 400))
+    st.ex("INSERT INTO commands(id,runner_id,kind,payload,status,created,sent) "
+          "VALUES(?,?,?,?,?,?,?)",
+          ("fresh-c", rid, "start", "{}", "sent", time.time() - 5, time.time() - 5))
+    B.reap_stale_commands(st, B.Handler.bus)
+    c.check("reaper fails a never-acked command",
+            st.one("SELECT status FROM commands WHERE id='stuck-c'")["status"] == "failed", "")
+    c.check("reaper leaves a just-sent command",
+            st.one("SELECT status FROM commands WHERE id='fresh-c'")["status"] == "sent", "")
+
     # ---- delete ----
     st, _ = cl.call("DELETE", "/api/v1/runs/" + run_id)
     c.check("delete run", cl.call("GET", "/api/v1/runs/%s" % run_id)[0] == 404, "")

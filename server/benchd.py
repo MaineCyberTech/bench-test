@@ -1219,6 +1219,18 @@ def reap_ephemeral_runners(store, bus):
             bus.publish({"event": "runner", "data": {"id": r["id"], "deleted": True}})
 
 
+def reap_stale_commands(store, bus):
+    """Fail commands a runner fetched but never acked (its process died, or the
+    UI thread dropped it) so they don't sit invisible in 'sent' forever."""
+    t = now()
+    for c in store.q("SELECT id, runner_id, kind, sent FROM commands WHERE status='sent'"):
+        if c["sent"] and (t - c["sent"]) > 120:
+            store.ex("UPDATE commands SET status='failed', result=? WHERE id=?",
+                     (json.dumps({"error": "no ack from the runner (dropped?)"}), c["id"]))
+            bus.publish({"event": "command", "data": {"id": c["id"], "runner_id": c["runner_id"],
+                                                      "kind": c["kind"], "status": "failed"}})
+
+
 def scheduler_loop(store, bus, stop):
     """Fire due schedules by queueing a start command to the target runner."""
     while not stop.is_set():
@@ -1226,6 +1238,7 @@ def scheduler_loop(store, bus, stop):
             scheduler_tick(store, bus)
             reap_stale_runs(store, bus)
             reap_ephemeral_runners(store, bus)
+            reap_stale_commands(store, bus)
         except Exception as e:
             print("[benchd] scheduler error: %s" % e, flush=True)
         stop.wait(10.0)
