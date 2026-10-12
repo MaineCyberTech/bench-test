@@ -254,6 +254,15 @@ def run():
     c.check("runner exposes its toolkit commit", row.get("toolkit_commit") == "abc1234", row)
     c.check("staleness is a bool", isinstance(row.get("update_available"), bool), row.get("update_available"))
     c.check("a different commit is flagged stale", row.get("update_available") is True, row)
+    hh = cl.call("GET", "/health", token=None)[1]
+    if hh.get("git"):
+        st, reg4 = cl.call("POST", "/api/v1/register",
+                           {"name": "v2", "os": "Linux", "kind": "agent",
+                            "capabilities": {"toolkit": {"mode": "git", "commit": hh["git"]}}})
+        row4 = [x for x in cl.call("GET", "/api/v1/runners")[1]["runners"]
+                if x["id"] == reg4["runner_id"]][0]
+        c.check("a runner at the latest commit is NOT stale",
+                row4.get("update_available") is False, row4)
 
     srv.stop()
     return c.fails

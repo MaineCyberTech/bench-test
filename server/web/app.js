@@ -265,9 +265,9 @@ function runnerCard(r) {
       ? `<span class="badge" title="groups this runner implements">${caps.groups.length}/${ALL_GROUPS.length} groups</span>`
       : "",
     r.update_available
-      ? `<span class="badge stale" title="toolkit ${esc(r.toolkit_commit || "?")} vs latest ${esc(r.latest_commit || STATE.latest_git || "?")} on ${esc(r.label || r.name)}">update available</span>`
+      ? `<span class="badge stale" title="${esc(r.toolkit_status || "behind")}: toolkit ${esc(r.toolkit_commit || "?")} vs latest ${esc(r.latest_commit || STATE.latest_git || "?")}">update available</span>`
       : (r.toolkit_commit
-        ? `<span class="badge" title="toolkit ${esc(r.toolkit_commit)} (latest ${esc(r.latest_commit || STATE.latest_git || "?")})">${esc(r.toolkit_commit)}</span>` : ""),
+        ? `<span class="badge" title="toolkit ${esc(r.toolkit_commit)} (${esc(r.toolkit_status || "unknown")} vs latest ${esc(r.latest_commit || STATE.latest_git || "?")})">${esc(r.toolkit_commit)}</span>` : ""),
   ].join("");
   const dev = [caps.gpu || "no GPU", caps.cpu, caps.ram_gib ? caps.ram_gib + " GiB" : "",
                caps.driver ? "driver " + caps.driver : ""].filter(Boolean).join(" · ");

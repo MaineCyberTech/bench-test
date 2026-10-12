@@ -240,7 +240,36 @@ def server_git():
 REPO_SLUG = os.environ.get("BENCH_REPO_SLUG") or "MaineCyberTech/bench-test"
 GH_API = os.environ.get("BENCH_GH_API") or "https://api.github.com"
 _REF = {"v": None, "t": 0.0}
-REF_TTL = 600.0
+REF_TTL = 120.0
+_CMP = {}
+
+
+def compare_commits(base, head):
+    """GitHub compare `base...head` -> ahead|behind|diverged|identical|'' (unknown).
+
+    `ahead` means head is newer than base, i.e. the runner (base) is behind.
+    """
+    if not base or not head:
+        return ""
+    if base == head:
+        return "identical"
+    key = (base, head)
+    if key in _CMP:
+        return _CMP[key]
+    status = ""
+    if os.environ.get("BENCH_OFFLINE") != "1":
+        try:
+            url = "%s/repos/%s/compare/%s...%s" % (GH_API, REPO_SLUG, base, head)
+            req = urllib.request.Request(url, headers={"User-Agent": "benchd",
+                                                       "Accept": "application/vnd.github+json"})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                status = str(json.loads(r.read().decode()).get("status") or "")
+        except Exception:
+            status = ""
+    if len(_CMP) > 500:
+        _CMP.clear()
+    _CMP[key] = status
+    return status
 
 
 def latest_git(force=False):
@@ -329,7 +358,12 @@ def runner_public(r):
     r["toolkit_commit"] = rc
     r["toolkit_mode"] = tk.get("mode") or ("git" if r.get("git") else "")
     r["latest_commit"] = ref
-    r["update_available"] = bool(ref and rc and rc != ref)
+    # ordering matters: a runner ahead of the cached tip, or one that *is* the
+    # tip, must not be flagged (a plain != wrongly flagged both)
+    st = compare_commits(rc, ref)
+    r["toolkit_status"] = st or ("differs" if (rc and ref and rc != ref) else "")
+    r["update_available"] = st == "ahead" or st == "diverged" or (
+        not st and bool(rc and ref and rc != ref))
     return r
 
 
