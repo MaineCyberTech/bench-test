@@ -119,6 +119,7 @@ jobs:
           make_latest: false
           body: |
             Self-hosted build of the `${{ inputs.gpu || 'nvidia-legacy' }}` live ISO (run ${{ github.run_number }}, ${{ inputs.compression || 'zstd' }} squashfs).
+            Built from commit `${{ github.sha }}` on `${{ github.ref_name }}` — the tag's run number does **not** map to a commit, so check this before flashing.
             Assets are <2 GiB parts (GitHub's release asset cap):
             `cat bench-live-${{ inputs.gpu }}.iso.part.* > bench-live-${{ inputs.gpu }}.iso && sha256sum -c SHA256SUMS`
             then flash with `sudo dd if=bench-live-${{ inputs.gpu }}.iso of=/dev/sdX bs=4M conv=fsync status=progress`.

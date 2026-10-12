@@ -98,6 +98,7 @@ jobs:
           body: |
             Standalone bench-test app bundles (PyInstaller) — run the GUI/TUI/agent
             without installing Python.
+            Built from commit `${{ github.sha }}` on `${{ github.ref_name }}`.
             - `bench-app-windows.zip` · `bench-app-linux.zip`
             Unzip, then run `bench-gui`, `bench-tui` or `bench-agent`.
             Connecting to a control plane needs no other install; running a local
