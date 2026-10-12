@@ -308,7 +308,13 @@ def run():
             B.update_matters([".github/workflows/build-iso.yml", "CHANGELOG.md"]) is False, "")
     c.check("update_matters ignores example/result data",
             B.update_matters(["examples/run.json", "results/x/telemetry.csv"]) is False, "")
+    c.check("update_matters ignores the control plane and tests",
+            B.update_matters(["server/benchd.py", "tests/test_control_plane.py"]) is False, "")
     c.check("update_matters flags toolkit code", B.update_matters(["bench/gui.py"]) is True, "")
+    c.check("update_matters flags the tools a runner uses",
+            B.update_matters(["tools/lhm/LibreHardwareMonitorLib.dll"]) is True, "")
+    c.check("update_matters flags the live-USB scripts",
+            B.update_matters(["live/Build-LiveUSB.sh"]) is True, "")
     c.check("update_matters flags a mixed range",
             B.update_matters(["docs/DATA.md", "live/Build-LiveUSB.sh"]) is True, "")
     c.check("update_matters is conservative when the file list is unknown",

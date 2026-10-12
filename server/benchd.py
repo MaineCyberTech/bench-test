@@ -284,8 +284,10 @@ def compare_commits(base, head):
     return compare_detail(base, head)[0]
 
 
-# a runner only needs an update when the difference includes something it runs
-IGNORED_UPDATE_PATHS = ("docs/", ".github/", "examples/", "results/")
+# a runner only needs an update when the difference includes something it runs.
+# The control plane is deployed separately and the test suite is not run by
+# runners, so those do not count; bench/, live/, packaging/ and tools/ do.
+IGNORED_UPDATE_PATHS = ("docs/", ".github/", "examples/", "results/", "server/", "tests/")
 IGNORED_UPDATE_SUFFIXES = (".md",)
 
 
