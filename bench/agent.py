@@ -48,7 +48,7 @@ from benchreport import (Reporter, PhaseTracker, TelemetryTail,  # noqa: E402
                          update_toolkit, iso_fetch, iso_write, iso_write_slot,
                          self_update, restart_self,
                          toolkit_version, is_live, update_needs_restart,
-                         auto_update, venv_python)
+                         auto_update, venv_python, upload_telemetry_csv)
 
 DEFAULT_GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc",
                   "llm", "fan", "sys", "gfx"]
@@ -209,6 +209,7 @@ class Agent:
         summary.setdefault("host", self.a.name)
         status = "done" if rc == 0 else ("stopped" if self.stop_flag else "failed")
         system = read_inventory(self.out_dir) or self.sysinfo
+        upload_telemetry_csv(self.rep, self.out_dir)
         self.rep.finish(status, rc, summary, platform=self.caps.get("platform"),
                         gpu=self.caps.get("gpu"), driver=self.caps.get("driver"),
                         system=system)

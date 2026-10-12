@@ -46,7 +46,7 @@ try:
                              self_update, restart_self,
                              toolkit_version, is_live, update_needs_restart, hardware_line,
                              DASH_FIELDS, auto_update, should_restart_after_update,
-                             venv_python)
+                             venv_python, upload_telemetry_csv)
 except Exception:  # reporting is optional
     Reporter = None
 
@@ -818,6 +818,7 @@ class Dashboard:
                 summary = {}
             si = getattr(self, "sysinfo", None) or {}
             inv = read_inventory(self.results_dir) or si
+            upload_telemetry_csv(self.rep, self.results_dir)
             self.rep.finish("done" if rc == 0 else ("stopped" if self._stopped else "failed"),
                             rc or 0, summary, gpu=inv.get("gpu"), driver=inv.get("driver"),
                             system=inv)

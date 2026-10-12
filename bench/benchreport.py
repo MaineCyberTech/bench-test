@@ -2120,6 +2120,56 @@ def build_summary_dir(results_dir, window_h=8):
     return out
 
 
+def upload_telemetry_csv(rep, results_dir, log=None, cap=20000):
+    """Send the run's full 1 Hz CSV and attach the raw file.
+
+    The live stream carries only the ten fields the charts use, so everything
+    else (disk/net throughput, CPU temp, PCIe link, throttle bits, power limits,
+    nvenc, ...) was thrown away when a run ended. Every column is now posted
+    (the server keeps the ones outside its fixed schema in its `extra` column)
+    and the CSV itself is attached, so nothing is lost.
+
+    Returns the number of samples sent.
+    """
+    log = log or (lambda _m: None)
+    if rep is None or not getattr(rep, "run_id", None):
+        return 0
+    try:
+        files = glob.glob(os.path.join(results_dir, "*.telemetry.csv"))
+    except Exception:
+        return 0
+    if not files:
+        return 0
+    path = max(files, key=os.path.getmtime)
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            lines = [ln for ln in fh.read().splitlines() if ln.strip()]
+    except OSError:
+        return 0
+    if len(lines) < 2:
+        return 0
+    hdr = [h.strip().lower() for h in lines[0].split(",")]
+    canon = [CSV_ALIASES.get(h, h) for h in hdr]
+    samples = []
+    for ln in lines[1:cap + 1]:
+        vals = ln.split(",")
+        s = {}
+        for i, key in enumerate(canon):
+            if i >= len(vals) or vals[i] == "":
+                continue
+            try:
+                s[key] = float(vals[i])
+            except ValueError:
+                continue            # pstate and friends are labels, not numbers
+        if "elapsed" in s:
+            samples.append(s)
+    for i in range(0, len(samples), 200):
+        rep.telemetry(samples[i:i + 200])
+    rep.artifact(os.path.basename(path), "\n".join(lines) + "\n", kind="csv")
+    log("[report] telemetry: %d samples + %s" % (len(samples), os.path.basename(path)))
+    return len(samples)
+
+
 def telemetry_summary(csv_path):
     """min/avg/max for key telemetry fields from a 1 Hz CSV."""
     try:

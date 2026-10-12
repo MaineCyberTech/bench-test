@@ -8,7 +8,8 @@ import time
 
 from harness import Checker, Server, REPO, BENCH, tmpdir
 from benchreport import (Reporter, PhaseTracker, ReporterPump, build_summary_dir,
-                         telemetry_summary, system_info, read_inventory, run_exec)
+                         telemetry_summary, system_info, read_inventory, run_exec,
+                         upload_telemetry_csv)
 
 
 def run():
@@ -204,6 +205,44 @@ def run():
         src = open(os.path.join(BENCH, f), encoding="utf-8").read()
         c.check("%s uses the shared dashboard spec" % f,
                 "DASH_FIELDS" in src and "hardware_line" in src, "")
+
+    # ---- the run's full CSV must reach the server when it ends ----
+    class _FakeRep:
+        run_id = "run-x"
+
+        def __init__(self):
+            self.samples, self.arts = [], []
+
+        def telemetry(self, samples):
+            self.samples.extend(samples)
+
+        def artifact(self, name, text, kind="json"):
+            self.arts.append((name, kind, len(text)))
+
+    tdir = tmpdir()
+    with open(os.path.join(tdir, "host-win-1.telemetry.csv"), "w") as fh:
+        fh.write("elapsed_s,gpu_util_pct,temp_c,disk_read_mbs,pstate\n")
+        fh.write("0.0,10.0,45.0,1.5,P0\n")
+        fh.write("1.0,20.0,46.0,2.5,P0\n")
+    fr = _FakeRep()
+    n = upload_telemetry_csv(fr, tdir)
+    c.check("upload_telemetry_csv sends one sample per row", n == 2 and len(fr.samples) == 2,
+            (n, fr.samples))
+    c.check("upload_telemetry_csv canonicalises the column names",
+            fr.samples[0].get("gpu_util") == 10.0 and fr.samples[0].get("elapsed") == 0.0,
+            fr.samples[0])
+    c.check("upload_telemetry_csv keeps what the live stream drops",
+            fr.samples[1].get("disk_read_mbs") == 2.5 and "pstate" not in fr.samples[1],
+            fr.samples[1])
+    c.check("upload_telemetry_csv attaches the raw CSV",
+            bool(fr.arts) and fr.arts[0][0].endswith(".telemetry.csv") and fr.arts[0][1] == "csv",
+            fr.arts)
+    c.check("upload_telemetry_csv is a no-op without a run",
+            upload_telemetry_csv(None, tdir) == 0, "")
+    for f in ("gui.py", "tui.py", "agent.py"):
+        src = open(os.path.join(BENCH, f), encoding="utf-8").read()
+        c.check("%s uploads the telemetry CSV at the end of a run" % f,
+                "upload_telemetry_csv(" in src, f)
 
     srv.stop()
     return c.fails
