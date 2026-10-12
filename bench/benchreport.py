@@ -113,12 +113,36 @@ def load_conf():
     return server, token
 
 
+def _cpu_name():
+    """A human CPU name (marketing string) rather than platform.processor()."""
+    import platform as _p
+    if os.name == "nt":
+        try:
+            import winreg
+            k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                               r"HARDWARE\DESCRIPTION\System\CentralProcessor\0")
+            v, _ = winreg.QueryValueEx(k, "ProcessorNameString")
+            if v:
+                return v.strip()
+        except Exception:
+            pass
+    else:
+        try:
+            with open("/proc/cpuinfo") as fh:
+                for ln in fh:
+                    if ln.lower().startswith("model name"):
+                        return ln.split(":", 1)[1].strip()
+        except Exception:
+            pass
+    return (_p.processor() or _p.machine() or "").strip()
+
+
 def system_info():
     """Best-effort host spec block for run history (cpu, ram, gpu, driver, platform)."""
     import platform as _p
     info = {"os": _p.system(), "platform": _p.platform(), "hostname": socket.gethostname(),
             "python": _p.python_version()}
-    info["cpu"] = (_p.processor() or _p.machine() or "").strip()
+    info["cpu"] = _cpu_name()
     try:
         import psutil
         info["ram_gib"] = round(psutil.virtual_memory().total / 1024 ** 3, 1)

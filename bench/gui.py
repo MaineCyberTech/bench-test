@@ -55,11 +55,12 @@ BAD = "#ef6b73"
 GROUPS = [
     ("gpu", "GPU compute + soak"), ("cpu", "CPU"), ("ram", "RAM"), ("disk", "Disk"),
     ("combined", "Combined GPU+CPU"), ("fullsoak", "Full-system soak"), ("net", "Network"),
-    ("nvenc", "Video encode"), ("sys", "Inventory"), ("gfx", "Graphics (FurMark)"),
+    ("nvenc", "Video encode"), ("llm", "LLM inference"), ("fan", "Fan response"),
+    ("sys", "Inventory"), ("gfx", "Graphics (FurMark)"),
 ]
 
 _ALL_G = {k: 1 for k in ("gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc",
-                         "sys", "gfx")}
+                         "llm", "fan", "sys", "gfx")}
 
 
 def _g(*on):
@@ -549,8 +550,9 @@ class Dashboard:
         self.running = True
         if self.rep and self.rep.runner_id:
             self.tracker = PhaseTracker(self.rep)
+            si = getattr(self, "sysinfo", None) or {}
             self.rep.start_run((profile or {}).get("label") or self.preset.get() or "run", profile or {},
-                               system=getattr(self, "sysinfo", None),
+                               gpu=si.get("gpu"), driver=si.get("driver"), system=si,
                                preset=(profile or {}).get("preset") or self.preset.get())
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
@@ -641,9 +643,11 @@ class Dashboard:
                         summary["telemetry"] = ts
             except Exception:
                 summary = {}
+            si = getattr(self, "sysinfo", None) or {}
+            inv = read_inventory(self.results_dir) or si
             self.rep.finish("done" if rc == 0 else ("stopped" if self._stopped else "failed"),
-                            rc or 0, summary,
-                            system=read_inventory(self.results_dir) or getattr(self, "sysinfo", None))
+                            rc or 0, summary, gpu=inv.get("gpu"), driver=inv.get("driver"),
+                            system=inv)
         self._load_results()
         self._auto_collect()
 

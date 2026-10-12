@@ -1,8 +1,8 @@
 "use strict";
 /* bench-test control plane — single pane of glass (vanilla JS, no build step) */
 
-const GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "sys", "gfx"];
-const ALL_GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "sys", "gfx"];
+const GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "llm", "fan", "sys", "gfx"];
+const ALL_GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "llm", "fan", "sys", "gfx"];
 const gset = (...on) => Object.fromEntries(ALL_GROUPS.map((g) => [g, on.includes(g) ? 1 : 0]));
 const DEF_SPIN = { gpu: 600, combined: 300, fullsoak: 300, gfx: 60 };
 const PRESETS = {

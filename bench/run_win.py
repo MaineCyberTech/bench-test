@@ -23,13 +23,14 @@ BATTERY = os.path.join(BENCH, "Run-WorkstationBench.ps1")
 DEFAULT_VALLEY = r"C:\Program Files (x86)\Unigine\Valley Benchmark 1.0\bin"
 
 # battery phase index (from "=== [n/11] TITLE ===") -> dashboard group
-PHASE_GROUP = {1: "sys", 2: "gpu", 3: "cpu", 4: "combined", 5: None,
+PHASE_GROUP = {1: "sys", 2: "gpu", 3: "cpu", 4: "combined", 5: "llm",
                6: "nvenc", 7: "gfx", 8: "ram", 9: "disk", 10: "net", 11: "fullsoak"}
 
 
 def parse_args():
     ap = argparse.ArgumentParser()
-    for g in ("gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "sys", "gfx"):
+    for g in ("gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "sys", "gfx",
+              "llm", "fan"):
         ap.add_argument("--skip-" + g, action="store_true")
     ap.add_argument("--gpu-soak", default="600")
     ap.add_argument("--combined-seconds", default="300")
@@ -165,6 +166,8 @@ def main():
         ps.append("-SkipNet")
     if a.skip_nvenc:
         ps.append("-SkipNvenc")
+    if a.skip_llm:
+        ps.append("-SkipLlm")
     if a.skip_combined:
         ps.append("-SkipCombined")
     if a.skip_gfx:
@@ -184,18 +187,25 @@ def main():
         p = subprocess.Popen(cmd, cwd=REPO, env=env, stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, text=True, bufsize=1,
                              creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0))
+        cur_group = None
         for line in p.stdout:
             line = line.rstrip("\n")
             m = re.match(r"^=== \[(\d+)/\d+\]\s*(.+?)\s*===\s*$", line)
             if m:
                 idx, title = int(m.group(1)), m.group(2)
                 grp = PHASE_GROUP.get(idx)
+                cur_group = grp
                 if grp:
                     print("[%s] %s" % (grp, title), flush=True)
                 else:
                     print("[%s]" % title, flush=True)
             else:
-                print(line, flush=True)
+                # break out the sub-phases the bench scripts emit ("[phase] matmul")
+                pm = re.match(r"^\[phase\]\s*(.+)$", line)
+                if pm and cur_group:
+                    print("[%s] %s" % (cur_group, pm.group(1)), flush=True)
+                else:
+                    print(line, flush=True)
         rc = p.wait()
     finally:
         stop_evt.set()

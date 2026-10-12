@@ -39,7 +39,7 @@ try:
 except Exception:  # reporting is optional
     Reporter = None
 
-GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "sys", "gfx"]
+GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "llm", "fan", "sys", "gfx"]
 
 def _g(*on):
     return [g for g in GROUPS if g in on]
@@ -236,8 +236,9 @@ class BenchTUI:
         self._set("running: %s" % PRESETS[self.preset][0], 2)
         if self.rep and self.rep.runner_id:
             self.tracker = PhaseTracker(self.rep)
+            si = getattr(self, "sysinfo", None) or {}
             self.rep.start_run((profile or {}).get("label") or PRESETS[self.preset][0], profile or {},
-                               system=getattr(self, "sysinfo", None),
+                               gpu=si.get("gpu"), driver=si.get("driver"), system=si,
                                preset=(profile or {}).get("preset") or PRESETS[self.preset][0])
         threading.Thread(target=self._reader, args=(self.proc,), daemon=True).start()
 
@@ -441,9 +442,11 @@ class BenchTUI:
                         summary["telemetry"] = ts
             except Exception:
                 summary = {}
+            si = getattr(self, "sysinfo", None) or {}
+            inv = read_inventory(self.results_dir) or si
             self.rep.finish("done" if rc == 0 else ("stopped" if self._stopped else "failed"),
-                            rc or 0, summary,
-                            system=read_inventory(self.results_dir) or getattr(self, "sysinfo", None))
+                            rc or 0, summary, gpu=inv.get("gpu"), driver=inv.get("driver"),
+                            system=inv)
         self._set("finished (exit %s) - c collect · r report" % rc, 1 if rc == 0 else 4)
         if os.path.exists(RESULT_COLLECTOR):
             self.collect()

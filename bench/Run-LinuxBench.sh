@@ -53,6 +53,7 @@ while [ $# -gt 0 ]; do
         --skip-cpu)        DO_CPU=0; shift ;;
         --skip-ram)        DO_RAM=0; shift ;;
         --skip-disk)       DO_DISK=0; shift ;;
+        --skip-llm)        shift ;;  # no LLM phase on Linux (accepted for parity)
         --skip-combined)   DO_COMBINED=0; shift ;;
         --skip-fullsoak)   DO_FULLSOAK=0; shift ;;
         --skip-net)        DO_NET=0; shift ;;
