@@ -387,10 +387,11 @@ function renderActive() {
 
 function phaseRow(p) {
   const skipped = /\bskip(ped)?\b/i.test(p.label || "");
+  const bad = p.status === "failed" || p.status === "error";
   const ic = skipped ? "–" : p.status === "running" ? "▶" : p.status === "warn" ? "!" :
-    p.status === "error" ? "✕" : "✓";
+    bad ? "✕" : "✓";
   const cls = skipped ? "skip" : p.status === "running" ? "run" :
-    p.status === "warn" ? "warn" : "ok";
+    p.status === "warn" ? "warn" : bad ? "bad" : "ok";
   const t = skipped ? "" : ((p.t0 && p.t1) ? dur(p.t1 - p.t0) : (p.t0 ? dur(Date.now() / 1000 - p.t0) : ""));
   return `<div class="phase ${cls}">
     <span class="ic">${ic}</span><span class="g">${esc(p.grp)}</span>

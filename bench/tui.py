@@ -39,7 +39,6 @@ def _repo_dir():
 
 REPO = _repo_dir()
 BENCH = os.path.join(REPO, "bench")
-RUNNER = os.path.join(BENCH, "Run-LinuxBench.sh")
 FAN_CURVE = os.path.join(BENCH, "fan_curve.py")
 FAN_CONF = "/etc/bench-fan-curve.conf"
 RESULT_COLLECTOR = "/usr/local/bin/bench-collect"
@@ -53,9 +52,19 @@ try:
                              update_toolkit, iso_fetch, iso_write, iso_write_slot,
                              self_update, restart_self,
                              toolkit_version, is_live, update_needs_restart, hardware_line,
-                             DASH_FIELDS, auto_update, should_restart_after_update)
+                             DASH_FIELDS, auto_update, should_restart_after_update, venv_python)
 except Exception:  # reporting is optional
     Reporter = None
+
+# Windows runs the Python battery directly - the .sh runner is Linux-only and
+# starting it there fails with WinError 193 - and it should use the venv
+# interpreter, which holds numpy/psutil/PyTorch.
+if os.name == "nt":
+    RUNNER = venv_python(REPO) or sys.executable
+    RUNNER_PREFIX = [os.path.join(BENCH, "run_win.py")]
+else:
+    RUNNER = os.path.join(BENCH, "Run-LinuxBench.sh")
+    RUNNER_PREFIX = []
 
 GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "llm", "fan", "sys", "gfx"]
 
@@ -308,9 +317,9 @@ class BenchTUI:
         self._stopped = False
         os.makedirs(self.results_dir, exist_ok=True)
         env = os.environ.copy()
-        env.setdefault("BENCH_PY", sys.executable)
+        env.setdefault("BENCH_PY", venv_python(REPO) or sys.executable)
         try:
-            self.proc = subprocess.Popen([RUNNER] + self._args(), cwd=REPO, env=env,
+            self.proc = subprocess.Popen([RUNNER] + RUNNER_PREFIX + self._args(), cwd=REPO, env=env,
                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                          text=True, bufsize=1, start_new_session=True,
                                          creationflags=(getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -538,7 +547,7 @@ class BenchTUI:
             self.collect()
 
     def _read_telemetry(self):
-        files = glob.glob(os.path.join(self.results_dir, "*-linux-*.telemetry.csv"))
+        files = glob.glob(os.path.join(self.results_dir, "*.telemetry.csv"))
         if not files:
             return
         newest = max(files, key=os.path.getmtime)
@@ -585,7 +594,9 @@ class BenchTUI:
                          "pcie_gen", "pcie_width", "cpu_pkg_w", "cpu_mhz", "load1", "psi_io",
                          "disk_read_mbs", "disk_write_mbs", "net_rx_mbs", "net_tx_mbs")}
         self.csv_now["pstate"] = raw("pstate")
-        elapsed = get("elapsed_s")
+        # the CSV column is elapsed_s, canonicalised to 'elapsed' (asking for
+        # 'elapsed_s' here silently disabled every telemetry sample the TUI sent)
+        elapsed = get("elapsed")
         if elapsed is not None and elapsed != self.csv_last:
             self.csv_last = elapsed
             self.tel["t"].append(elapsed)

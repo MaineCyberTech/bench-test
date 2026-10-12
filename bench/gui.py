@@ -112,7 +112,8 @@ PRESETS = {
                                 "spin": {**_DEF_DUR, "fullsoak": 1800}},
 }
 
-STATUS_COLOR = {"running": ACCENT, "done": GOOD, "WARN": WARN, "warn": WARN, "error": BAD}
+STATUS_COLOR = {"running": ACCENT, "done": GOOD, "WARN": WARN, "warn": WARN,
+                "error": BAD, "failed": BAD}
 
 
 def pick_font(candidates, fallback, size, weight="normal"):
@@ -745,7 +746,8 @@ class Dashboard:
             try:
                 if os.name == "nt":
                     subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.proc.pid)],
-                                   capture_output=True)
+                                   capture_output=True,
+                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
                 else:
                     os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
             except Exception:

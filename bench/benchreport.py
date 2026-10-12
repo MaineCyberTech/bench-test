@@ -277,7 +277,7 @@ def system_info():
     except Exception:
         pass
     try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=name,driver_version,memory.total",
+        out = run_hidden(["nvidia-smi", "--query-gpu=name,driver_version,memory.total",
                               "--format=csv,noheader"], capture_output=True, text=True,
                              timeout=8,
                              creationflags=(getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -820,7 +820,7 @@ def power_action(reboot=False):
                    ["shutdown", "-r" if reboot else "-h", "now"]]
     for c in choices:
         try:
-            subprocess.Popen(c, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            popen_hidden(c, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return {"power": "reboot" if reboot else "shutdown", "cmd": " ".join(c)}
         except FileNotFoundError:
             continue
@@ -843,6 +843,26 @@ GH_API = os.environ.get("BENCH_GH_API") or "https://api.github.com"
 UA = "bench-test-updater"
 
 
+# The dashboards run under pythonw (no console), so any console child - git,
+# nvidia-smi, shutdown - would flash a window of its own; the startup update ran
+# git status/fetch/rev-list/pull and produced a burst of them.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+
+
+def run_hidden(cmd, **kw):
+    """subprocess.run that never opens a console window on Windows."""
+    if os.name == "nt":
+        kw.setdefault("creationflags", NO_WINDOW)
+    return subprocess.run(cmd, **kw)
+
+
+def popen_hidden(cmd, **kw):
+    """subprocess.Popen that never opens a console window on Windows."""
+    if os.name == "nt":
+        kw.setdefault("creationflags", NO_WINDOW)
+    return subprocess.Popen(cmd, **kw)
+
+
 def is_live():
     """True on a booted live image (archiso) rather than a normal install."""
     return os.path.isdir("/run/archiso") or os.path.exists("/etc/arch-release")
@@ -855,8 +875,8 @@ def git_commit(repo=None):
     """Short HEAD of a git checkout ('' when it isn't one)."""
     repo = repo or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     try:
-        r = subprocess.run(["git", "-C", repo, "rev-parse", "--short", "HEAD"],
-                           capture_output=True, text=True, timeout=10)
+        r = run_hidden(["git", "-C", repo, "rev-parse", "--short", "HEAD"],
+                       capture_output=True, text=True, timeout=10)
         return r.stdout.strip() if r.returncode == 0 else ""
     except Exception:
         return ""
@@ -1113,8 +1133,8 @@ def auto_update(repo=None, log=None, enabled=None):
         return {"kind": "git", "ok": True, "updated": False, "skipped": "offline"}
 
     def git(*args, timeout=60):
-        return subprocess.run(["git", "-C", repo] + list(args), capture_output=True,
-                              text=True, timeout=timeout)
+        return run_hidden(["git", "-C", repo] + list(args), capture_output=True,
+                          text=True, timeout=timeout)
 
     try:
         dirty = git("status", "--porcelain").stdout.strip()
@@ -1149,8 +1169,8 @@ def restart_self(delay=1.5, log=None):
     log("[update] restarting to run the new toolkit")
     try:
         if os.name == "nt":
-            subprocess.Popen([sys.executable] + list(sys.argv), cwd=os.getcwd(),
-                             close_fds=True)
+            popen_hidden([sys.executable] + list(sys.argv), cwd=os.getcwd(),
+                         close_fds=True)
             os._exit(0)
         os.execv(sys.executable, [sys.executable] + list(sys.argv))
     except Exception as e:
@@ -1161,8 +1181,8 @@ def self_update(repo=None, log=None):
     """Update a git checkout with `git pull`, or a live install with the toolkit copy."""
     repo = repo or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if os.path.isdir(os.path.join(repo, ".git")):
-        r = subprocess.run(["git", "-C", repo, "pull", "--ff-only"],
-                           capture_output=True, text=True, timeout=180)
+        r = run_hidden(["git", "-C", repo, "pull", "--ff-only"],
+                       capture_output=True, text=True, timeout=180)
         out = ((r.stdout or "") + (r.stderr or "")).strip()
         return {"ok": r.returncode == 0, "kind": "git", "rc": r.returncode, "out": out[-2000:]}
     return update_toolkit(log=log, root=repo)
