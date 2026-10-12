@@ -142,6 +142,11 @@ if [ "$DO_DISK" = 1 ] && [ "$DISK_PATH_SET" = 0 ]; then
         DISK_PATH=/mnt/internal/bench-scratch
         mkdir -p "$DISK_PATH" 2>/dev/null || true
         echo "    [info] disk target: internal volume /mnt/internal"
+    elif [ ! -e /run/archiso ] && [ "$(df -T /var/tmp 2>/dev/null | awk 'NR==2 {print $2}')" != "tmpfs" ]; then
+        # non-live host (desktop/CI): test the machine's real disk
+        DISK_PATH=/var/tmp/bench-scratch
+        mkdir -p "$DISK_PATH" 2>/dev/null || true
+        echo "    [info] disk target: $DISK_PATH (host scratch)"
     else
         echo "    [info] disk: skipped - no internal disk available (live USB / RAM only)"
         echo "           mount an internal volume at /mnt/internal, or pass --disk-path DIR"
