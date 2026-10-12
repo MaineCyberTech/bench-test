@@ -129,6 +129,9 @@ def run():
             {"status": "done", "result": {"rc": 0}}, token=key)
     st, _ = cl.call("POST", "/api/v1/runners/%s/commands" % rid, {"kind": "nope"})
     c.check("unknown command rejected", st == 400, st)
+    for kind in ("shutdown", "reboot"):
+        st, r = cl.call("POST", "/api/v1/runners/%s/commands" % rid, {"kind": kind})
+        c.check("%s command accepted" % kind, st == 200 and r.get("id"), (st, r))
 
     # ---- finish + trends ----
     st, _ = cl.call("POST", "/api/v1/runs/%s/finish" % run_id,

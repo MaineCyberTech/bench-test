@@ -32,6 +32,7 @@ const SERIES = {
   pcie_width: ["PCIe width", "#a0aec0"], throttle: ["throttled", "#f6ad55"],
   disk_read_mbs: ["disk R MB/s", "#68d391"], disk_write_mbs: ["disk W MB/s", "#f6ad55"],
   net_rx_mbs: ["net rx MB/s", "#63b3ed"], net_tx_mbs: ["net tx MB/s", "#4fd1c5"],
+  cpu_pkg_w: ["CPU W", "#f687b3"], cpu_mhz: ["CPU MHz", "#9ae6b4"], psi_io: ["io stall", "#faf089"],
 };
 const CHART_PRESETS = {
   "temp · power · util": ["temp_c", "power_w", "gpu_util"],
@@ -42,6 +43,7 @@ const CHART_PRESETS = {
   "headroom · throttle": ["temp_c", "temp_limit_c", "throttle"],
   "clocks · video": ["sm_mhz", "gr_mhz", "video_mhz"],
   "disk · net": ["disk_read_mbs", "disk_write_mbs", "net_rx_mbs"],
+  "CPU power · clocks": ["cpu_pkg_w", "cpu_util", "cpu_temp_c"],
 };
 const GAUGES = [["temp_c", "temp °C"], ["power_w", "power W"], ["gpu_util", "GPU %"],
                 ["fan_pct", "fan %"], ["mem_util", "VRAM %"], ["cpu_temp_c", "CPU °C"]];
@@ -258,6 +260,10 @@ function runnerCard(r) {
         <button data-stop="${r.id}" ${run ? "" : "disabled"}>Stop</button>
         <button class="ghost" data-update="${r.id}" ${disabled}>Update</button>
         <button class="ghost" data-fan="${r.id}" ${disabled}>Fan curve</button>
+        <button class="ghost power" data-power="${r.id}" data-powerkind="reboot" ${disabled}
+                title="Reboot this machine">reboot</button>
+        <button class="ghost power" data-power="${r.id}" data-powerkind="shutdown" ${disabled}
+                title="Power off this machine">shut down</button>
         <button class="ghost forget" data-forget="${r.id}" title="Remove this runner from the fleet">forget</button>
       </div>
       <div class="rmeta" style="margin-top:8px">last seen ${ago(r.last_seen)}${r.git ? " · git " + esc(String(r.git).slice(0, 7)) : ""}</div>
@@ -633,6 +639,19 @@ async function forgetRunner(id) {
   try { await api("/runners/" + id, "DELETE"); toast("runner removed"); refresh(); }
   catch (e) { toast("remove failed: " + e.message, "err"); }
 }
+async function powerRunner(id, kind) {
+  const r = STATE.runners.find((x) => x.id === id) || {};
+  const name = r.label || r.name || id;
+  const busy = STATE.active.some((a) => a.runner_id === id);
+  const verb = kind === "reboot" ? "Reboot" : "Shut down";
+  const extra = busy ? "\n\nA run is in progress and will be stopped first." : "";
+  if (!confirm(verb + " " + name + "?" + extra + "\n\nThis powers off the machine.")) return;
+  try {
+    await api("/runners/" + id + "/commands", "POST", { kind, payload: {} });
+    toast(verb.toLowerCase() + " sent to " + name);
+    refresh();
+  } catch (e) { toast(kind + " failed: " + e.message, "err"); }
+}
 
 async function showDetail(runId) {
   const r = await api("/runs/" + runId);
@@ -641,6 +660,7 @@ async function showDetail(runId) {
   const tel = await api("/runs/" + runId + "/telemetry?max=900");
   const pts = (n) => (tel.rows || []).filter((x) => x[n] != null).map((x) => ({ x: x.elapsed, y: x[n] }));
   const st = (r.telemetry_stats && r.telemetry_stats.stats) || {};
+  const dv = (r.telemetry_stats && r.telemetry_stats.derived) || {};
   const prev = await findPrev(r);
   const ps = prev ? (prev.summary || {}) : {};
   const at = (o, path) => path.split(".").reduce((x, k) => (x == null ? null : x[k]), o);
@@ -665,8 +685,13 @@ async function showDetail(runId) {
     ["peak temp", fmt(peak, 0) + " °C", ""],
   ];
   const derived = [
-    ["perf/watt", perfW], ["avg power", fmt(avgW, 0) + " W"],
-    ["thermal headroom", headroom], ["time throttled", thr],
+    ["perf/watt", perfW],
+    ["avg power", fmt(avgW, 0) + " W"],
+    ["energy", dv.energy_j != null ? (dv.energy_j / 1000).toFixed(1) + " kJ" : "—"],
+    ["thermal headroom", dv.thermal_headroom_c != null ? dv.thermal_headroom_c + " °C" : headroom],
+    ["time throttled", dv.throttled_pct != null ? dv.throttled_pct + "%" : thr],
+    ["clock residency", dv.clock_residency_pct != null ? dv.clock_residency_pct + "%" : "—"],
+    ["power headroom", dv.power_headroom_w != null ? dv.power_headroom_w + " W" : "—"],
   ];
   const remarks = [];
   const v = s.fullsoak && s.fullsoak.result && s.fullsoak.result.verdict;
@@ -687,12 +712,15 @@ async function showDetail(runId) {
   const statRows = statKeys.map((k) => {
     const meta = SERIES[k] || [k, "#8592a6"];
     const a = st[k];
-    return `<tr><td>${esc(meta[0])}</td><td class="mono">${fmt(a.min, 1)}</td>
-      <td class="mono">${fmt(a.avg, 1)}</td><td class="mono">${fmt(a.max, 1)}</td>
-      <td class="muted mono">${a.n}</td></tr>`;
+    return `<tr><td>${esc(meta[0])}</td><td class="num">${fmt(a.min, 1)}</td>
+      <td class="num">${fmt(a.avg, 1)}</td><td class="num">${fmt(a.max, 1)}</td>
+      <td class="num muted">${fmt(a.std, 2)}</td><td class="num">${fmt(a.p95, 1)}</td>
+      <td class="num">${fmt(a.p99, 1)}</td><td class="muted mono">${a.n}</td></tr>`;
   }).join("");
   openModal(`<h3>${esc(r.host)} · ${esc(r.label || "run")} <span class="pill ${esc(r.status)}">${esc(r.status)}</span></h3>
     <div class="muted">${ts(r.started)} · ${runDur(r)} · ${esc(sy.gpu || r.gpu || "")} ${sy.driver || r.driver ? "· driver " + esc(sy.driver || r.driver) : ""}${prev ? ` · <span class="delta flat">vs ${ts(prev.started)}</span>` : ""}</div>
+    ${(s.verdicts || []).length ? `<div class="remarks verdicts">${s.verdicts.map((x) =>
+      `<div class="v-${esc(x.level)}"><b>${x.level === "good" ? "✓" : x.level === "warn" ? "!" : "✕"}</b> ${esc(x.text)}</div>`).join("")}</div>` : ""}
     ${remarks.length ? `<div class="remarks">${remarks.map((x) => `<div>${esc(x)}</div>`).join("")}</div>` : ""}
     <div class="kv" style="margin:14px 0">
       ${tiles.map(([k, val, d]) => `<div class="kvitem"><div class="k">${esc(k)}</div><div class="v">${esc(val)}${d || ""}</div></div>`).join("")}
@@ -708,9 +736,9 @@ async function showDetail(runId) {
     <table class="kvtable">${sysrows.map(([k, val]) => `<tr><th>${esc(k)}</th><td>${esc(String(val))}</td></tr>`).join("")}</table>
     ${Object.keys(sy.inventory || {}).length ? `<details><summary class="muted">full inventory</summary>
       <pre class="mono muted invjson">${esc(JSON.stringify(sy.inventory, null, 1))}</pre></details>` : ""}
-    <h4 class="sechead">Telemetry (min / avg / max)</h4>
-    <table class="statstable"><thead><tr><th>metric</th><th>min</th><th>avg</th><th>max</th><th>n</th></tr></thead>
-      <tbody>${statRows || `<tr><td colspan="5" class="muted">no telemetry</td></tr>`}</tbody></table>
+    <h4 class="sechead">Telemetry (min / avg / max · std · p95 / p99)</h4>
+    <table class="statstable"><thead><tr><th>metric</th><th>min</th><th>avg</th><th>max</th><th>std</th><th>p95</th><th>p99</th><th>n</th></tr></thead>
+      <tbody>${statRows || `<tr><td colspan="8" class="muted">no telemetry</td></tr>`}</tbody></table>
     <h4 class="sechead">Phases</h4>
     <div class="phases" style="max-height:300px">${r.phases.map(phaseRow).join("")}</div>
     ${r.logs && r.logs.length ? `<h4 class="sechead">Console</h4>
@@ -851,7 +879,7 @@ document.addEventListener("click", (e) => {
     renderHistory();
     return;
   }
-  const t = e.target.closest("[data-tab],[data-start],[data-stop],[data-update],[data-fan],[data-detail],[data-sched-del],[data-toggle-off],[data-forget]");
+  const t = e.target.closest("[data-tab],[data-start],[data-stop],[data-update],[data-fan],[data-detail],[data-sched-del],[data-toggle-off],[data-forget],[data-power]");
   if (!t) return;
   if (t.dataset.toggleOff !== undefined) {
     SHOW_OFFLINE = !SHOW_OFFLINE;
@@ -874,6 +902,7 @@ document.addEventListener("click", (e) => {
   if (t.dataset.detail) return showDetail(t.dataset.detail);
   if (t.dataset.schedDel) return deleteSchedule(t.dataset.schedDel);
   if (t.dataset.forget) return forgetRunner(t.dataset.forget);
+  if (t.dataset.power) return powerRunner(t.dataset.power, t.dataset.powerkind);
 });
 
 $("#tokenBtn").onclick = askToken;

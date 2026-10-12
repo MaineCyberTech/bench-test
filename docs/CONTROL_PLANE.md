@@ -142,7 +142,9 @@ gpu_fan_rpm, cpu_util, ram_used, sm_mhz, mem_used`.
 { "kind": "update" }                      // git pull --ff-only on the runner
 { "kind": "fan_curve", "payload": { "on": true } }
 { "kind": "power_limit", "payload": { "watts": 250 } }
-{ "kind": "restart" }
+{ "kind": "restart" }                       // re-exec the agent (fresh checkout)
+{ "kind": "reboot" }                        // power-cycle the machine
+{ "kind": "shutdown" }                      // power off the machine
 { "kind": "exec", "payload": { "cmd": "nvidia-smi -q | head", "timeout": 30 } }  // remote terminal
 ```
 

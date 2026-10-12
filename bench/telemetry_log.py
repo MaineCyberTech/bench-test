@@ -15,6 +15,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -31,7 +32,54 @@ HEADER = ("elapsed_s,time,gpu_util_pct,mem_util_pct,temp_c,fan_pct,power_w,"
           "cpu_max_core_c,swap_used_gib,cpu_util_pct,nvme_c,gpu_enc_pct,gpu_dec_pct,"
           "cpu_fan_rpm,gpu_fan_rpm,power_limit_w,disk_read_mbs,disk_write_mbs,"
           "net_rx_mbs,net_tx_mbs,temp_limit_c,power_default_w,power_max_w,video_mhz,"
-          "pcie_gen,pcie_width,retired,throttle,throttle_bits")
+          "pcie_gen,pcie_width,retired,throttle,throttle_bits,cpu_pkg_w,cpu_mhz,psi_io")
+
+
+def _read(path):
+    try:
+        with open(path) as fh:
+            return fh.read().strip()
+    except (OSError, ValueError):
+        return ""
+
+
+def rapl_uj():
+    """Total CPU package energy (microjoules) from RAPL; None when unavailable."""
+    tot = 0
+    found = False
+    for pat in ("/sys/class/powercap/intel-rapl*/energy_uj",
+                "/sys/class/powercap/amd-rapl*/energy_uj"):
+        for p in glob.glob(pat):
+            try:
+                tot += int(_read(p))
+                found = True
+            except ValueError:
+                pass
+    return tot if found else None
+
+
+def cpu_mhz():
+    """Average current core clock (MHz) from cpufreq, else /proc/cpuinfo."""
+    vals = []
+    for p in glob.glob("/sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq"):
+        try:
+            vals.append(float(_read(p)) / 1000.0)
+        except ValueError:
+            pass
+    if not vals:
+        for ln in _read("/proc/cpuinfo").splitlines():
+            if ln.startswith("cpu MHz"):
+                try:
+                    vals.append(float(ln.split(":", 1)[1]))
+                except ValueError:
+                    pass
+    return round(sum(vals) / len(vals)) if vals else ""
+
+
+def psi_io():
+    """I/O pressure stall (avg10) from PSI; blank when unsupported."""
+    m = re.search(r"some avg10=([\d.]+)", _read("/proc/pressure/io"))
+    return float(m.group(1)) if m else ""
 
 
 def _bits(s):
@@ -228,6 +276,8 @@ def main():
     prev_cpu = cpu_snapshot()
     prev_io = disk_net_counters()
     prev_t = time.time()
+    prev_e = rapl_uj()
+    prev_e_t = time.time()
     with open(a.out, "w") as fh:
         fh.write(HEADER + "\n")
         fh.flush()
@@ -272,9 +322,18 @@ def main():
                 gpu = [""] * 9
                 enc = dec = plimit = ""
                 extra = [""] * 9
+            e = rapl_uj()
+            pkg_w = ""
+            if e is not None and prev_e is not None and now > prev_e_t:
+                de = e - prev_e
+                if de >= 0:
+                    pkg_w = round(de / 1e6 / (now - prev_e_t), 1)
+            if e is not None:
+                prev_e, prev_e_t = e, now
             row = ([round(time.time() - t0, 1), datetime.now().strftime("%H:%M:%S")] + gpu
                    + [pkg, ram, load1, maxcore, swap, cpu_pct, nvme_temp(), enc, dec,
-                      maxfan, gpu_fan_rpm(), plimit, drd, dwr, nrx, ntx] + extra)
+                      maxfan, gpu_fan_rpm(), plimit, drd, dwr, nrx, ntx] + extra
+                   + [pkg_w, cpu_mhz(), psi_io()])
             fh.write(",".join(str(x) for x in row) + "\n")
             fh.flush()
             if a.duration and time.time() - t0 >= a.duration:

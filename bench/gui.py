@@ -40,7 +40,7 @@ sys.path.insert(0, BENCH)
 try:
     from benchreport import (Reporter, PhaseTracker, ReporterPump, build_summary, build_summary_dir,
                              telemetry_summary, newest_report, load_identity, run_exec, system_info,
-                             read_inventory, load_conf, CSV_ALIASES)
+                             read_inventory, load_conf, CSV_ALIASES, power_action)
 except Exception:  # reporting is optional
     Reporter = None
 
@@ -492,6 +492,10 @@ class Dashboard:
         elif kind == "fan_curve":
             self.toggle_curve()
             self.rep.ack(cmd.get("id"), "done", {"toggled": True})
+        elif kind in ("shutdown", "reboot"):
+            if self.running:
+                self.stop()
+            self.rep.ack(cmd.get("id"), "done", power_action(reboot=(kind == "reboot")))
         elif kind in ("exec", "shell"):
             self._exec_remote(cmd.get("id"), payload)
         else:

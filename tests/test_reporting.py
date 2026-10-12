@@ -107,6 +107,28 @@ def run():
             and all(k in ln_cols for k in ("throttle", "temp_limit_c", "video_mhz", "pcie_gen")),
             (win_cols[-9:], ln_cols[-9:]))
 
+    # ---- hardware verdicts from the health report + inventory ----
+    hv = tempfile.mkdtemp()
+    with open(os.path.join(hv, "host-20260101-000000.health.json"), "w") as fh:
+        json.dump({"summary": [{"provider": "Microsoft-Windows-WHEA-Logger", "id": "17", "count": 2},
+                               {"provider": "nvlddmkm", "id": "4101", "count": 1}],
+                   "disks": [{"name": "X", "wear": 85}]}, fh)
+    with open(os.path.join(hv, "host-info-20260101-000000.info.json"), "w") as fh:
+        json.dump({"hardware_errors": ["Xid 31 ..."], "ecc": {"ce": 4},
+                   "disk_health": {"/dev/nvme0n1": {"used_pct": 90, "media_errors": 0}}}, fh)
+    vs = build_summary_dir(hv).get("verdicts") or []
+    txt = " ".join(v.get("text", "") for v in vs)
+    c.check("verdict: WHEA reported", "WHEA" in txt, vs)
+    c.check("verdict: TDR reported", "TDR" in txt, vs)
+    c.check("verdict: ECC reported", "ECC" in txt, vs)
+    c.check("verdict: disk wear reported", "wear" in txt, vs)
+    c.check("verdicts carry a level",
+            bool(vs) and all(v.get("level") in ("good", "warn", "bad") for v in vs), vs)
+
+    # ---- power command helper exists (never invoked in tests) ----
+    from benchreport import power_action
+    c.check("power_action is callable", callable(power_action), power_action)
+
     srv.stop()
     return c.fails
 

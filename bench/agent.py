@@ -43,7 +43,8 @@ sys.path.insert(0, BENCH)
 
 from benchreport import (Reporter, PhaseTracker, TelemetryTail,  # noqa: E402
                          build_summary, build_summary_dir, telemetry_summary, read_runs_index,
-                         load_identity, run_exec, system_info, read_inventory, load_conf)
+                         load_identity, run_exec, system_info, read_inventory, load_conf,
+                         power_action)
 
 DEFAULT_GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc",
                   "llm", "fan", "sys", "gfx"]
@@ -247,6 +248,9 @@ class Agent:
                 result = self.do_fan_curve(payload)
             elif kind == "power_limit":
                 result = self.do_power_limit(payload)
+            elif kind in ("shutdown", "reboot"):
+                self.stop_battery()
+                result = power_action(reboot=(kind == "reboot"))
             elif kind in ("exec", "shell"):
                 threading.Thread(target=self._exec_and_ack, args=(cid, payload),
                                  daemon=True).start()

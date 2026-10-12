@@ -109,6 +109,9 @@ else; a local battery needs a toolkit checkout (`--repo` / `$BENCH_REPO`).
   telemetry/log/event/artifact/finish), `runners/<id>/commands` (+`/ack`),
   `schedules`, and the UI side `state`, `stream` (SSE), `runs`, `runs/<id>`,
   `runs/<id>/telemetry`|`telemetry.csv`|`logs`|`stats`|`artifact/<name>`, `trends`.
+  Command kinds: start/stop/update/fan_curve/power_limit/restart/**shutdown**/
+  **reboot**/exec/shell — power commands stop any active run first and are
+  confirmed in the UI.
 - **Telemetry samples** may be a **named dict** (preferred) or a positional list;
   unknown numeric keys are stored in the `extra` JSON column and returned merged.
 - **Closing a dashboard cancels its run**; a server-side reaper fails any run

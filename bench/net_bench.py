@@ -28,6 +28,14 @@ def ping_stats(target, count, interval):
         out = subprocess.run(
             ["ping", "-c", str(count), "-i", str(interval), target],
             capture_output=True, text=True, timeout=count * 3 + 15).stdout
+        m = re.search(r"= ([\d.]+)/([\d.]+)/([\d.]+)/([\d.]+)/", out)
+        if m:
+            stats = {"min": float(m.group(1)), "avg": float(m.group(2)), "max": float(m.group(3)),
+                     "mdev": float(m.group(4))}
+            loss = re.search(r"([\d.]+)% packet loss", out)
+            if loss:
+                stats["loss_pct"] = float(loss.group(1))
+            return stats
         m = re.search(r"= ([\d.]+)/([\d.]+)/([\d.]+)/", out)
         if m:
             return {"min": float(m.group(1)), "avg": float(m.group(2)), "max": float(m.group(3))}
@@ -81,14 +89,16 @@ def main():
 
     ping = ping_stats(a.target, a.ping_count, 0.2)
     if ping:
-        print("ping min/avg/max %.1f/%.1f/%.1f ms (%s)" % (
-            ping["min"], ping["avg"], ping["max"], a.target))
+        print("ping min/avg/max/mdev %.1f/%.1f/%.1f/%.1f ms loss %.0f%% (%s)" % (
+            ping["min"], ping["avg"], ping["max"], ping.get("mdev", 0.0), ping.get("loss_pct", 0.0), a.target))
     down, nbytes = download_mbps(
         "https://speed.cloudflare.com/__down?bytes=%d", a.down_mb)
     print(("download %.1f Mbps" % down) if down is not None else "download failed")
     up = upload_mbps("https://speed.cloudflare.com/__up", a.up_mb)
     print(("upload %.1f Mbps" % up) if up is not None else "upload failed")
     jline({"phase": "bench", "target": a.target, "ping_ms": ping,
+           "ping_avg_ms": ping and ping["avg"], "ping_mdev_ms": ping and ping.get("mdev"),
+           "ping_loss_pct": ping and ping.get("loss_pct"),
            "download_mbps": down, "download_bytes": nbytes, "upload_mbps": up})
     return 0
 

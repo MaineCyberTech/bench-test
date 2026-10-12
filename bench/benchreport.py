@@ -79,6 +79,10 @@ CSV_ALIASES = {
     "throttle": "throttle",
     "throttle_bits": "throttle_bits",
     "clocks_throttle_reasons_active": "throttle_bits",
+    # Linux sampler extras
+    "cpu_pkg_w": "cpu_pkg_w",
+    "cpu_mhz": "cpu_mhz",
+    "psi_io": "psi_io",
 }
 
 
@@ -675,6 +679,29 @@ def run_exec(reporter, cmd, timeout=120, cwd=None):
     return {"rc": rc}
 
 
+def power_action(reboot=False):
+    """Shut down / reboot this machine for the control plane's power commands.
+
+    The caller acks *before* the host goes away, so the reply is best-effort.
+    A short delay gives the ack and any log flush time to land.
+    """
+    if os.name == "nt":
+        choices = [["shutdown", "/r" if reboot else "/s", "/t", "15",
+                    "/c", "bench-test control plane"]]
+    else:
+        choices = [["systemctl", "reboot" if reboot else "poweroff"],
+                   ["shutdown", "-r" if reboot else "-h", "now"]]
+    for c in choices:
+        try:
+            subprocess.Popen(c, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return {"power": "reboot" if reboot else "shutdown", "cmd": " ".join(c)}
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            return {"power": "failed", "error": str(e)}
+    return {"power": "failed", "error": "no power command found"}
+
+
 class TelemetryTail:
     """Tails the newest 1 Hz telemetry CSV and yields canonical sample rows."""
 
@@ -849,6 +876,60 @@ def _merge_into(s, j):
         s["combined"] = {"gpu": j.get("gpu"), "cpu": j.get("cpu")}
 
 
+def _hardware_verdicts(results_dir):
+    """Pass/fail signals from the Windows health report and the Linux inventory."""
+    v = []
+    for p in glob.glob(os.path.join(results_dir, "*.health.json")):
+        try:
+            with open(p, encoding="utf-8-sig") as fh:
+                h = json.load(fh)
+        except Exception:
+            continue
+        summ = h.get("summary") or []
+        whea = sum(int(s.get("count") or 0) for s in summ if "WHEA" in str(s.get("provider", "")))
+        tdr = sum(int(s.get("count") or 0) for s in summ
+                  if "nvlddmkm" in str(s.get("provider", "")) or str(s.get("id")) == "4101")
+        if whea:
+            v.append({"level": "bad", "text": "WHEA hardware errors: %d event(s)" % whea})
+        if tdr:
+            v.append({"level": "bad", "text": "display driver resets (TDR): %d" % tdr})
+        if not whea and not tdr:
+            v.append({"level": "good", "text": "no WHEA / TDR events in the window"})
+        for d in (h.get("disks") or []):
+            if d.get("read_errors") or d.get("write_errors"):
+                v.append({"level": "bad", "text": "disk %s I/O errors r/w=%s/%s"
+                          % (d.get("name"), d.get("read_errors"), d.get("write_errors"))})
+            try:
+                if d.get("wear") is not None and float(d["wear"]) >= 80:
+                    v.append({"level": "warn", "text": "disk %s wear %s%%" % (d.get("name"), d["wear"])})
+            except (TypeError, ValueError):
+                pass
+    for p in glob.glob(os.path.join(results_dir, "*.info.json")) + \
+             glob.glob(os.path.join(results_dir, "*.sysinfo.json")):
+        try:
+            with open(p, encoding="utf-8-sig") as fh:
+                inv = json.load(fh)
+        except Exception:
+            continue
+        inv = inv.get("inventory", inv) if isinstance(inv, dict) else {}
+        hw = inv.get("hardware_errors") or []
+        if hw:
+            v.append({"level": "warn", "text": "hardware error lines since boot: %d" % len(hw)})
+        ecc = inv.get("ecc") or {}
+        if ecc.get("ue"):
+            v.append({"level": "bad", "text": "ECC uncorrectable errors: %d" % ecc["ue"]})
+        elif ecc.get("ce"):
+            v.append({"level": "warn", "text": "ECC correctable errors: %d" % ecc["ce"]})
+        for dev, d in (inv.get("disk_health") or {}).items():
+            me = d.get("media_errors")
+            if isinstance(me, (int, float)) and me > 0:
+                v.append({"level": "bad", "text": "%s media errors: %d" % (dev, me)})
+            up = d.get("used_pct")
+            if isinstance(up, (int, float)) and up >= 80:
+                v.append({"level": "warn", "text": "%s wear %s%%" % (dev, up)})
+    return v
+
+
 def build_summary_dir(results_dir, window_h=8):
     """Merge all of a run's report JSONs (Windows main + per-group) into one row."""
     now = time.time()
@@ -879,6 +960,9 @@ def build_summary_dir(results_dir, window_h=8):
     if main:
         out["host"] = main.get("host")
         out["timestamp"] = main.get("timestamp")
+    verdicts = _hardware_verdicts(results_dir)
+    if verdicts:
+        out["verdicts"] = verdicts
     return out
 
 

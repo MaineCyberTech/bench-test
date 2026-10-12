@@ -70,7 +70,8 @@ def phase_matmul(a):
     n = a.size
     out = {"phase": "matmul", "n": n, "results": {}}
     for dtype, name, tf in [(torch.float16, "fp16", False), (torch.bfloat16, "bf16", False),
-                            (torch.float32, "tf32", True), (torch.float32, "fp32", False)]:
+                            (torch.float32, "tf32", True), (torch.float32, "fp32", False),
+                            (torch.float64, "fp64", False)]:
         torch.backends.cuda.matmul.allow_tf32 = tf
         A = torch.randn(n, n, device=DEV, dtype=dtype)
         B = torch.randn(n, n, device=DEV, dtype=dtype)

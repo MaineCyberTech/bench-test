@@ -540,25 +540,78 @@ class Handler(BaseHTTPRequestHandler):
                             "ORDER BY id LIMIT ?", (run_id, after, limit))
         return self._send(200, {"run_id": run_id, "lines": rows})
 
+    @staticmethod
+    def _pct(sorted_vals, p):
+        """Nearest-rank percentile of an ascending list."""
+        if not sorted_vals:
+            return None
+        k = max(0, min(len(sorted_vals) - 1, int(round((p / 100.0) * (len(sorted_vals) - 1)))))
+        return sorted_vals[k]
+
+    def _derive(self, rows, series, stats):
+        """Metrics computed from the series: energy, clock residency, throttling."""
+        d = {}
+        # energy (J) via trapezoid over power
+        pts = []
+        for r in rows:
+            t = r.get("elapsed")
+            w = None
+            try:
+                w = tele_public(r).get("power_w")
+            except Exception:
+                w = None
+            if t is not None and isinstance(w, (int, float)):
+                pts.append((float(t), float(w)))
+        if len(pts) >= 2:
+            j = 0.0
+            for (t0, w0), (t1, w1) in zip(pts, pts[1:]):
+                dt = t1 - t0
+                if dt > 0:
+                    j += (w0 + w1) / 2.0 * dt
+            d["energy_j"] = round(j, 1)
+            if pts[-1][0] > 0:
+                d["energy_kj_per_hour"] = round(j / 1000.0 / (pts[-1][0] / 3600.0), 2)
+        # clock residency: share of samples at >=95% of the peak SM clock
+        sm = series.get("sm_mhz")
+        if sm:
+            mx = max(sm)
+            if mx > 0:
+                d["clock_residency_pct"] = round(100.0 * sum(1 for x in sm if x >= 0.95 * mx) / len(sm), 1)
+        # time spent throttled (non-idle slowdown reason observed)
+        th = series.get("throttle")
+        if th:
+            d["throttled_pct"] = round(100.0 * sum(1 for x in th if x >= 1) / len(th), 1)
+        # thermal headroom
+        peak = (stats.get("temp_c") or {}).get("max")
+        lim = (stats.get("temp_limit_c") or {}).get("max")
+        if peak is not None and lim:
+            d["thermal_headroom_c"] = round(lim - peak, 1)
+        # power headroom vs the card's max
+        pmax = (stats.get("power_max_w") or {}).get("max")
+        pgpu = (stats.get("power_w") or {}).get("max")
+        if pmax and pgpu:
+            d["power_headroom_w"] = round(pmax - pgpu, 1)
+        return d
+
     def _compute_stats(self, run_id):
         rows = self.store.q("SELECT * FROM telemetry WHERE run_id=? ORDER BY ts", (run_id,))
-        agg = {}
+        series = {}
         for r in rows:
             for k, v in tele_public(r).items():
                 if isinstance(v, (int, float)) and not isinstance(v, bool):
-                    a = agg.get(k)
-                    if a is None:
-                        agg[k] = [1, float(v), float(v), float(v)]
-                    else:
-                        a[0] += 1
-                        a[1] += v
-                        if v < a[2]:
-                            a[2] = v
-                        if v > a[3]:
-                            a[3] = v
-        stats = {k: {"n": a[0], "avg": round(a[1] / a[0], 2), "min": a[2], "max": a[3]}
-                 for k, a in agg.items() if a[0]}
-        return {"samples": len(rows), "stats": stats}
+                    series.setdefault(k, []).append(float(v))
+        stats = {}
+        for k, vals in series.items():
+            vals = sorted(vals)
+            n = len(vals)
+            if not n:
+                continue
+            mean = sum(vals) / n
+            var = sum((x - mean) ** 2 for x in vals) / n
+            stats[k] = {"n": n, "min": vals[0], "max": vals[-1], "avg": round(mean, 2),
+                        "std": round(var ** 0.5, 3), "p50": self._pct(vals, 50),
+                        "p95": self._pct(vals, 95), "p99": self._pct(vals, 99)}
+        return {"samples": len(rows), "stats": stats, "derived": self._derive(rows, series, stats)}
 
     def _run_stats(self, run_id):
         return self._send(200, dict({"run_id": run_id}, **self._compute_stats(run_id)))
@@ -827,7 +880,7 @@ class Handler(BaseHTTPRequestHandler):
         S = self.store
         kind = b.get("kind")
         if kind not in ("start", "stop", "update", "fan_curve", "power_limit", "restart",
-                        "exec", "shell"):
+                        "shutdown", "reboot", "exec", "shell"):
             return self._err(400, "unknown command kind")
         cid = str(uuid.uuid4())
         S.ex("INSERT INTO commands(id,runner_id,kind,payload,status,created) VALUES(?,?,?,?,?,?)",
