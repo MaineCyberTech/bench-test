@@ -31,18 +31,16 @@ def run():
     c.check("VERSION is semver", bool(re.match(r"^\d+\.\d+\.\d+$", v)), v)
 
     rep = _load("benchreport", os.path.join(BENCH, "benchreport.py"))
-    c.check("bench_version is tag-derived in a checkout",
-            rep.bench_version(REPO).split("+")[0] == v or rep.git_describe(REPO)[0] == "",
-            (rep.bench_version(REPO), v))
+    c.check("bench_version is semver wherever it comes from",
+            bool(re.match(r"^\d+\.\d+\.\d+", rep.bench_version(REPO))), rep.bench_version(REPO))
     c.check("bench_version falls back instead of raising",
             rep.bench_version(os.path.join(REPO, "definitely-not-here")) == "0.0.0+unknown", "")
     c.check("toolkit_version carries the version",
             rep.toolkit_version(REPO).get("version") == rep.bench_version(REPO),
             rep.toolkit_version(REPO).get("version"))
-    c.check("version_string starts with the version",
-            rep.version_string(REPO).startswith(v), rep.version_string(REPO))
-    c.check("version_string carries the build commit",
-            "+" in rep.version_string(REPO) or not rep.git_commit(REPO),
+    c.check("version_string is release+build",
+            rep.version_string(REPO) == "%s+%s" % (rep.bench_version(REPO), rep.bench_build(REPO))
+            or rep.version_string(REPO) == rep.bench_version(REPO),
             rep.version_string(REPO))
 
     # a malformed VERSION must be rejected, not passed around as a release
@@ -72,9 +70,9 @@ def run():
         c.check("bench_version follows the tag",
                 rep.bench_version(REPO).split("+")[0] == rel, rep.bench_version(REPO))
         c.check("commits past the tag become build metadata",
-                (n == 0 and "+" not in rep.bench_version(REPO))
-                or rep.bench_version(REPO) == "%s+%d" % (rel, n),
-                (rep.bench_version(REPO), n))
+                (n == 0 and rep.bench_build(REPO) == cm)
+                or rep.bench_build(REPO) == "%d.%s" % (n, cm),
+                (rep.bench_build(REPO), n, cm))
 
     # the control plane reports its own version (it is deployed as a copy)
     srv = Server()

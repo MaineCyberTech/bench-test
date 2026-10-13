@@ -949,20 +949,19 @@ def git_describe(root=None):
 
 
 def bench_version(root=None):
-    """The release version, derived from the git tag where there is one.
+    """The **release** version - bare semver, from the git tag.
 
-    The version is **not** a hand-maintained number that can drift: it comes from
-    ``git describe``, so it changes exactly when you tag a release. Commits past
-    the tag are build metadata (``1.1.0+3`` = three commits after ``v1.1.0``), and
-    the commit itself is appended by ``version_string()``. Only a copy with no git
-    (a live stick) falls back to the VERSION file, which is validated rather than
-    trusted - a malformed value becomes ``0.0.0+invalid`` instead of being passed
-    around as a release.
+    Exactly the tag you are on (`1.1.0`). How far past it you are is build
+    information, not release information, so it lives in ``bench_build()`` and
+    ``version_string()``. Only a copy with no git (a live stick) falls back to the
+    VERSION file it was fetched with, which the release workflow keeps equal to the
+    latest tag. Validated rather than trusted: a malformed value becomes
+    ``0.0.0+invalid`` instead of being passed around as a release.
     """
     root = root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    rel, n, _c = git_describe(root)
+    rel, _n, _c = git_describe(root)
     if rel:
-        return rel if n == 0 else "%s+%d" % (rel, n)
+        return rel
     try:
         with open(os.path.join(root, SEMVER_FILE), encoding="utf-8") as fh:
             v = fh.read().strip().splitlines()[0].strip()
@@ -973,20 +972,30 @@ def bench_version(root=None):
     return v if _SEMVER_RE.match(v) else "0.0.0+invalid"
 
 
-def version_string(root=None):
-    """``1.1.0+abc1234`` - the release version plus the exact build.
+def bench_build(root=None):
+    """The build identity within the release: ``468.d089bab5`` or just the commit.
 
-    The ``+commit`` build metadata is automatic, so every update is a distinct,
-    comparable version even between deliberate releases (a release that ships many
-    commits must not report one identical version for all of them). `VERSION` is
-    the release line and is bumped on purpose; the commit identifies the build.
+    ``<commits-since-tag>.<commit>`` makes two builds of the same release
+    distinguishable and ordered; a copy falls back to the commit (or content hash)
+    recorded in its fetch stamp.
+    """
+    root = root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    rel, n, c = git_describe(root)
+    if rel and c:
+        return ("%d.%s" % (n, c)) if n else c
+    tv = toolkit_version(root)
+    return tv.get("build") or tv.get("commit") or ""
+
+
+def version_string(root=None):
+    """``1.1.0+468.d089bab5`` - release plus the exact build.
+
+    Every commit produces a distinct, comparable version, so a release that ships
+    many commits can never report one identical version for all of them.
     """
     v = bench_version(root)
-    # a live/copy toolkit has no .git, so fall back to the build recorded in its
-    # fetch stamp - otherwise a stick reports a bare version with no build id and
-    # two different sticks look identical
-    c = git_commit(root) or (toolkit_version(root).get("build") or "")
-    return ("%s+%s" % (v, c)) if c else v
+    b = bench_build(root)
+    return ("%s+%s" % (v, b)) if b else v
 
 
 def version_info(root=None):
@@ -999,8 +1008,8 @@ def version_info(root=None):
     rel, n, _c = git_describe(root)
     return {"version": version_string(root),
             "release": bench_version(root),
-            "build": tv.get("build") or tv.get("commit"),
-            "commit": tv.get("commit"),
+            "build": bench_build(root),
+            "commit": tv.get("commit") or git_commit(root),
             "mode": tv.get("mode"),
             "ref": tv.get("ref"),
             "commits_since_tag": n,

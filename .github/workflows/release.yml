@@ -48,28 +48,38 @@ jobs:
             next="1.0.0"
           else
             base=${last#v}
-            # commits since the tag decide the bump, unless the operator forced one
+            subjects=$(git log "$last..HEAD" --format=%s)
             kind="${{ inputs.bump_kind }}"
             if [ -z "$kind" ]; then
-              if git log "$last..HEAD" --format=%s | grep -qE '^feat(\(|!|:)'; then
+              if printf '%s\n' "$subjects" | grep -qE '^feat(\(|!|:)'; then
                 kind=minor
-              else
+              elif printf '%s\n' "$subjects" | grep -qE '^(fix|perf|revert)(\(|!|:)'; then
                 kind=patch
+              else
+                # only chores/docs/ci since the tag: nothing to release. The build
+                # still moves (describe reports <release>+<n>.<commit>); tagging
+                # every push would make every commit a release.
+                kind=skip
               fi
             fi
-            IFS=. read -r major minor patch <<< "$base"
-            case "$kind" in
-              major) major=$((major + 1)); minor=0; patch=0 ;;
-              minor) minor=$((minor + 1)); patch=0 ;;
-              patch) patch=$((patch + 1)) ;;
-              none)  next="$base" ;;
-            esac
-            [ -n "${next:-}" ] || next="${major}.${minor}.${patch}"
+            echo "bump kind: $kind"
+            if [ "$kind" = "skip" ] || [ "$kind" = "none" ]; then
+              next=""
+            else
+              IFS=. read -r major minor patch <<< "$base"
+              case "$kind" in
+                major) major=$((major + 1)); minor=0; patch=0 ;;
+                minor) minor=$((minor + 1)); patch=0 ;;
+                patch) patch=$((patch + 1)) ;;
+              esac
+              next="${major}.${minor}.${patch}"
+            fi
           fi
-          echo "next version: $next"
+          echo "next version: ${next:-<none - no release>}"
           echo "next=$next" >> "$GITHUB_OUTPUT"
 
       - name: Point VERSION at the release
+        if: ${{ steps.ver.outputs.next != '' }}
         run: |
           set -euo pipefail
           printf '%s\n' "${{ steps.ver.outputs.next }}" > VERSION
