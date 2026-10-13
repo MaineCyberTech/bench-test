@@ -945,7 +945,10 @@ def version_string(root=None):
     the release line and is bumped on purpose; the commit identifies the build.
     """
     v = bench_version(root)
-    c = git_commit(root)
+    # a live/copy toolkit has no .git, so fall back to the commit recorded in its
+    # fetch stamp - otherwise a stick reports a bare version with no build id and
+    # two different sticks look identical
+    c = git_commit(root) or (toolkit_version(root).get("commit") or "")
     return ("%s+%s" % (v, c)) if c else v
 
 

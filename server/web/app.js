@@ -336,6 +336,8 @@ function runnerCard(r) {
       : "",
     (caps.toolkit && caps.toolkit.version)
       ? `<span class="badge" title="toolkit release + build">v${esc(caps.toolkit.version)}${caps.toolkit.commit ? "+" + esc(caps.toolkit.commit) : ""}</span>` : "",
+    (caps.toolkit && caps.toolkit.version && !caps.toolkit.commit)
+      ? `<span class="badge stale" title="this copy does not record the commit it was fetched at">build unknown</span>` : "",
     r.update_available
       ? `<span class="badge stale" title="${esc(r.toolkit_status || "behind")}: toolkit ${esc(r.toolkit_commit || "?")} vs latest ${esc(r.latest_commit || STATE.latest_git || "?")}">update available</span>`
       : (r.toolkit_commit
