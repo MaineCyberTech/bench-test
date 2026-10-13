@@ -10,6 +10,12 @@ Walks a results directory and creates one run per completed session:
 
     python3 server/import_results.py --server http://lab:8722 --token XXX --dir results
     python3 server/import_results.py ... --dry-run
+    python3 server/import_results.py ... --reset
+
+Re-running the importer is a no-op: each unit gets a deterministic run id derived
+from its host + start time + source, so a run already on the server is skipped
+instead of inserted again. `--reset` deletes the existing runs first, which
+forces a fresh re-import from scratch.
 
 Stdlib only.
 """
@@ -17,6 +23,7 @@ import argparse
 import base64
 import csv
 import glob
+import hashlib
 import json
 import os
 import re
@@ -92,6 +99,18 @@ def _dur(s):
     s = int(s or 0)
     return ("%dh%02dm" % (s // 3600, (s % 3600) // 60) if s >= 3600
             else "%dm%02ds" % (s // 60, s % 60))
+
+
+def _run_id(kind, host, started, key=""):
+    """A deterministic run id for an imported unit, so a re-import is a no-op.
+
+    The importer used to let the server mint a fresh uuid every time, so running
+    it twice duplicated every run. Hashing the unit's identity (platform, host,
+    start time and source) yields the same id on every pass, which is what lets
+    the importer skip a run it has already created.
+    """
+    raw = "%s|%s|%.3f|%s" % (kind, host or "", float(started or 0.0), key or "")
+    return "imp-" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:20]
 
 
 def _throttle_active(thr):
@@ -376,7 +395,8 @@ def main():
     ap.add_argument("--token", default=os.environ.get("BENCHD_TOKEN", ""))
     ap.add_argument("--dir", default="results")
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--reset", action="store_true", help="delete existing runs first")
+    ap.add_argument("--reset", action="store_true",
+                    help="delete existing runs first, then re-import from scratch")
     a = ap.parse_args()
     if not a.server or not a.token:
         print("need --server and --token"); return 2
@@ -388,6 +408,20 @@ def main():
         for rid in ids:
             post(a.server, a.token, "/api/v1/runs/%s" % rid, method="DELETE")
         print("reset: deleted %d existing runs" % len(ids))
+
+    # ids already on the server: a re-import skips these instead of duplicating
+    existing = set()
+    if not a.dry_run:
+        off, total = 0, None
+        while total is None or off < total:
+            _, r = post(a.server, a.token,
+                        "/api/v1/runs?limit=1000&offset=%d" % off, method="GET")
+            rows = r.get("runs") or []
+            existing |= {x.get("id") for x in rows}
+            total = r.get("total", 0) or 0
+            if not rows:
+                break
+            off += len(rows)
 
     wins = list(windows_units(root))
     win_starts = [w[3] for w in wins] + [float("inf")]
@@ -401,14 +435,19 @@ def main():
                system.get("cpu") or ""))
         if a.dry_run:
             continue
+        rid = _run_id("win", host, started, os.path.basename(man))
+        if rid in existing:
+            print("  skip: already imported (%s)" % rid)
+            continue
         st, r = post(a.server, a.token, "/api/v1/runs",
-                     {"host": host, "label": label, "profile": {"imported": True},
+                     {"id": rid, "host": host, "label": label, "profile": {"imported": True},
                       "started": started, "platform": system.get("platform"),
                       "gpu": system.get("gpu"), "driver": system.get("driver"),
                       "system": system})
         run_id = r.get("run_id")
         if not run_id:
             print("  FAIL create:", r); continue
+        existing.add(rid)
         fail = upload_run(a.server, a.token, run_id, phases, tele, arts, summary,
                           ended=ended, system=system)
         if fail:
@@ -426,8 +465,12 @@ def main():
                system.get("cpu") or ""))
         if a.dry_run:
             continue
+        rid = _run_id("linux", host, started, os.path.relpath(d, root))
+        if rid in existing:
+            print("  skip: already imported (%s)" % rid)
+            continue
         st, r = post(a.server, a.token, "/api/v1/runs",
-                     {"host": host, "label": "Linux battery", "profile": {"imported": True},
+                     {"id": rid, "host": host, "label": "Linux battery", "profile": {"imported": True},
                       "started": started, "platform": system.get("platform"),
                       "gpu": summary.get("gpu") or system.get("gpu"),
                       "driver": summary.get("driver") or system.get("driver"),
@@ -435,6 +478,7 @@ def main():
         run_id = r.get("run_id")
         if not run_id:
             print("  FAIL create:", r); continue
+        existing.add(rid)
         fail = upload_run(a.server, a.token, run_id, phases, tele, arts, summary,
                           ended=ended, system=system)
         if fail:
