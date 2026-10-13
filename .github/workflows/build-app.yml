@@ -56,6 +56,11 @@ jobs:
 
       - name: Build bundles
         shell: bash
+        env:
+          # bake the control-plane config into the bundles so a downloaded app
+          # auto-registers (same secret the live ISO uses). PUBLIC releases - use
+          # a limited, rotatable token.
+          BENCH_BAKE_AGENT_CONF: ${{ secrets.BENCH_AGENT_CONF }}
         run: python packaging/build_app.py --out dist
 
       - name: Package

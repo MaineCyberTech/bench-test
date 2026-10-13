@@ -148,8 +148,16 @@ with **Clean up environment** in the GUI (or `python bench/bootstrap.py clean`);
 repo `.venv` or `$BENCH_REPO` still takes precedence when present. See
 [`bench/bootstrap.py`](bench/bootstrap.py) for `status` / `ensure` / `clean`.
 
+CI also **bakes the control-plane config** into each bundle — the
+`BENCH_AGENT_CONF` secret, the same one the live USB writes to
+`/etc/bench-agent.conf` — so a downloaded app **auto-registers** with no flags
+(the GUI/TUI/agent read `<toolkit>/bench-agent.conf`, ahead of `~/.config`). The
+releases are public, so that token is world-readable: use a limited, rotatable
+one.
+
 Build the bundles yourself with `python packaging/build_app.py` (on Windows also
-`pip install windows-curses` so the TUI can be bundled); CI builds Windows + Linux
+`pip install windows-curses` so the TUI can be bundled); set `BENCH_BAKE_AGENT_CONF`
+(or `BENCH_BAKE_AGENT_CONF_FILE`) to bake your own. CI builds Windows + Linux
 (`.github/workflows/build-app.yml`) and attaches them to each `app-<n>` release.
 
 ## Control plane (`benchd`)

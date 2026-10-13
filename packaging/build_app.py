@@ -50,6 +50,27 @@ def _git(*args):
         return None
 
 
+def write_agent_conf(bundle_dir):
+    """Bake the control-plane config into the bundle (like the live USB).
+
+    Reads BENCH_BAKE_AGENT_CONF (content) or BENCH_BAKE_AGENT_CONF_FILE (path);
+    CI passes the repo's BENCH_AGENT_CONF secret as the former, so a downloaded
+    app auto-registers. NOTE: the app releases are public, so this makes the
+    server URL + token world-readable - use a limited/rotatable token."""
+    content = os.environ.get("BENCH_BAKE_AGENT_CONF")
+    src = os.environ.get("BENCH_BAKE_AGENT_CONF_FILE")
+    if not content and src and os.path.isfile(src):
+        with open(src, encoding="utf-8") as fh:
+            content = fh.read()
+    if not content or not content.strip():
+        return False
+    if not content.endswith("\n"):
+        content += "\n"
+    with open(os.path.join(bundle_dir, "bench-agent.conf"), "w", encoding="utf-8") as fh:
+        fh.write(content)
+    return True
+
+
 def write_version(bundle_dir):
     """Write `.bench-version` so a non-git bundle reports a real identity."""
     commit = _git("rev-parse", "--short", "HEAD")
@@ -97,8 +118,13 @@ def main():
         if subprocess.run(cmd).returncode != 0:
             print("build failed: %s" % name)
             return 1
-        v = write_version(os.path.join(a.out, name))
-        print("   %s version: %s (%s)" % (name, v["commit"] or "?", v["ref"] or "?"))
+        bdir = os.path.join(a.out, name)
+        v = write_version(bdir)
+        baked = write_agent_conf(bdir)
+        print("   %s version: %s (%s)%s" % (
+            name, v["commit"] or "?", v["ref"] or "?",
+            ", control-plane config baked" if baked else
+            " (no control-plane config baked - set BENCH_AGENT_CONF)"))
     print("built %s -> %s" % (", ".join(n for n, _s, _c in APPS), a.out))
     return 0
 

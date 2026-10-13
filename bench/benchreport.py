@@ -126,16 +126,23 @@ def _parse_conf(path):
     return d
 
 
-def load_conf():
+def load_conf(here=None):
     """Resolve (server, token) from the environment or a bench-agent.conf.
 
     Identical search order on Windows and Linux, so the GUI, TUI and agent all
     check in the same way on every platform:
-        $BENCH_AGENT_CONF, ./bench-agent.conf, ~/.config/bench-agent.conf,
+        $BENCH_AGENT_CONF, ./bench-agent.conf,
+        <toolkit>/bench-agent.conf (baked into the packaged app, like the live
+        USB's /etc/bench-agent.conf), ~/.config/bench-agent.conf,
         /etc/bench-agent.conf, /mnt/benchdata/bench-agent.conf
+    `here` (the bench/ dir) is a test seam; callers use the default.
     """
+    here = here or os.path.dirname(os.path.abspath(__file__))  # .../bench
+    repo = os.path.dirname(here)                               # toolkit root / bundle dir
     cands = [os.environ.get("BENCH_AGENT_CONF"),
              os.path.join(os.getcwd(), "bench-agent.conf"),
+             os.path.join(repo, "bench-agent.conf"),           # baked into app bundles
+             os.path.join(here, "bench-agent.conf"),           # baked beside the phases
              os.path.expanduser("~/.config/bench-agent.conf"),
              "/etc/bench-agent.conf",
              "/mnt/benchdata/bench-agent.conf"]
