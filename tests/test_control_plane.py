@@ -97,6 +97,24 @@ def run():
                     {"samples": [[3.0, 62, 50, 252, 97, 0, 30, 8, 2700, 4]]}, token=key)
     c.check("legacy positional telemetry", st == 200 and r.get("accepted") == 1, r)
 
+    # an impossible percentage must not reach the charts: a live stick run recorded
+    # fan_pct 413 from a transient nvidia-smi glitch, and one spike rescales the
+    # whole fan series. Dropped, not clamped - clamping would invent a reading.
+    st, r = cl.call("POST", "/api/v1/runs/%s/telemetry" % run_id, {"samples": [
+        {"elapsed": 4.0, "fan_pct": 413, "gpu_util": 62, "cpu_util": 30, "mem_util": 180},
+        {"elapsed": 5.0, "fan_pct": 55, "gpu_util": 100, "cpu_util": 0}]}, token=key)
+    c.check("out-of-range telemetry accepted", st == 200, r)
+    st, t = cl.call("GET", "/api/v1/runs/%s/telemetry" % run_id)
+    by_el = {x.get("elapsed"): x for x in t["rows"]}
+    c.check("an impossible fan_pct is dropped, not stored",
+            by_el.get(4.0, {}).get("fan_pct") is None, by_el.get(4.0))
+    c.check("a valid fan_pct is kept", by_el.get(5.0, {}).get("fan_pct") == 55, by_el.get(5.0))
+    c.check("the boundary values 0 and 100 are kept",
+            by_el.get(5.0, {}).get("gpu_util") == 100 and by_el.get(5.0, {}).get("cpu_util") == 0,
+            by_el.get(5.0))
+    c.check("mem_util is deliberately unbounded (drivers exceed 100)",
+            by_el.get(4.0, {}).get("mem_util") == 180, by_el.get(4.0))
+
     # ---- logs ----
     st, r = cl.call("POST", "/api/v1/runs/%s/log" % run_id,
                     {"lines": ["[gpu] info", "[gpu] soak"], "stream": "out"}, token=key)

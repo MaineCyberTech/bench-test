@@ -2327,8 +2327,29 @@ def _merge_into(s, j):
 
 
 def _hardware_verdicts(results_dir):
-    """Pass/fail signals from the Windows health report and the Linux inventory."""
-    v = []
+    """Pass/fail signals from the Windows health report and the Linux inventory.
+
+    The results dir accumulates one health/inventory report per phase (and earlier
+    runs), so the same finding arrives many times with a drifting event count - a
+    real desktop run produced ~50 entries for the same four findings. Key each
+    finding by kind and keep the widest window, because this list is a verdict, not
+    an event log.
+    """
+    v = {}          # kind -> {"level", "text", "_n"}
+    order = []
+    rank = {"info": 0, "good": 1, "warn": 2, "bad": 3}
+
+    def add(level, kind, text, n=None):
+        cur = v.get(kind)
+        if cur is None:
+            v[kind] = {"level": level, "text": text, "_n": n}
+            order.append(kind)
+            return
+        if n is not None and (cur["_n"] is None or n > cur["_n"]):
+            cur["text"], cur["_n"] = text, n
+        if rank.get(level, 0) > rank.get(cur["level"], 0):
+            cur["level"] = level
+
     for p in glob.glob(os.path.join(results_dir, "*.health.json")):
         try:
             with open(p, encoding="utf-8-sig") as fh:
@@ -2349,28 +2370,30 @@ def _hardware_verdicts(results_dir):
         therm = sum(int(s.get("count") or 0) for s in summ
                     if "Thermal" in str(s.get("provider", "")))
         if kp:
-            v.append({"level": "bad", "text": "unexpected shutdown (Kernel-Power 41): %d" % kp})
+            add("bad", "kp", "unexpected shutdown (Kernel-Power 41): %d" % kp, kp)
         if bc:
-            v.append({"level": "bad", "text": "bugcheck / BSOD: %d" % bc})
+            add("bad", "bc", "bugcheck / BSOD: %d" % bc, bc)
         if stor:
-            v.append({"level": "warn", "text": "storage events: %d" % stor})
+            add("warn", "stor", "storage events: %d" % stor, stor)
         if therm:
-            v.append({"level": "warn", "text": "thermal events: %d" % therm})
+            add("warn", "therm", "thermal events: %d" % therm, therm)
         if whea:
-            v.append({"level": "bad", "text": "WHEA hardware errors: %d event(s)" % whea})
+            add("bad", "whea", "WHEA hardware errors: %d event(s)" % whea, whea)
         if tdr:
-            v.append({"level": "bad", "text": "display driver resets (TDR): %d" % tdr})
+            add("bad", "tdr", "display driver resets (TDR): %d" % tdr, tdr)
         if not whea and not tdr:
-            v.append({"level": "good", "text": "no WHEA / TDR events in the window"})
+            add("good", "whea_ok", "no WHEA / TDR events in the window")
         if not kp and not bc:
-            v.append({"level": "good", "text": "no unexpected shutdowns or bugchecks"})
+            add("good", "kp_ok", "no unexpected shutdowns or bugchecks")
         for d in (h.get("disks") or []):
             if d.get("read_errors") or d.get("write_errors"):
-                v.append({"level": "bad", "text": "disk %s I/O errors r/w=%s/%s"
-                          % (d.get("name"), d.get("read_errors"), d.get("write_errors"))})
+                add("bad", "disk_io_%s" % d.get("name"),
+                    "disk %s I/O errors r/w=%s/%s"
+                    % (d.get("name"), d.get("read_errors"), d.get("write_errors")))
             try:
                 if d.get("wear") is not None and float(d["wear"]) >= 80:
-                    v.append({"level": "warn", "text": "disk %s wear %s%%" % (d.get("name"), d["wear"])})
+                    add("warn", "disk_wear_%s" % d.get("name"),
+                        "disk %s wear %s%%" % (d.get("name"), d["wear"]))
             except (TypeError, ValueError):
                 pass
     for p in glob.glob(os.path.join(results_dir, "*.info.json")) + \
@@ -2384,33 +2407,36 @@ def _hardware_verdicts(results_dir):
         # Windows inventory: predictive failure + the elevation gap
         for d in (inv.get("Disks") or []):
             if "Pred Fail" in str(d.get("wmi_status") or ""):
-                v.append({"level": "bad", "text": "disk %s reports predictive failure" % d.get("name")})
+                add("bad", "disk_predfail_%s" % d.get("name"),
+                    "disk %s reports predictive failure" % d.get("name"))
             if str(d.get("health") or "").lower() not in ("healthy", "", "none"):
-                v.append({"level": "warn", "text": "disk %s health: %s" % (d.get("name"), d.get("health"))})
+                add("warn", "disk_health_%s" % d.get("name"),
+                    "disk %s health: %s" % (d.get("name"), d.get("health")))
         for sp in (inv.get("SmartPredict") or []):
             if sp.get("predict_failure"):
-                v.append({"level": "bad", "text": "SMART predictive failure: %s" % sp.get("instance")})
+                add("bad", "smart_%s" % sp.get("instance"),
+                    "SMART predictive failure: %s" % sp.get("instance"))
         disks = inv.get("Disks") or []
         if disks and inv.get("Elevated") is False and \
                 all(d.get("wear") is None and d.get("temp_c") is None for d in disks):
-            v.append({"level": "info",
-                      "text": "disk SMART not collected (battery not elevated)"})
+            add("info", "smart_not_elevated",
+                "disk SMART not collected (battery not elevated)")
         hw = inv.get("hardware_errors") or []
         if hw:
-            v.append({"level": "warn", "text": "hardware error lines since boot: %d" % len(hw)})
+            add("warn", "hw_errors", "hardware error lines since boot: %d" % len(hw), len(hw))
         ecc = inv.get("ecc") or {}
         if ecc.get("ue"):
-            v.append({"level": "bad", "text": "ECC uncorrectable errors: %d" % ecc["ue"]})
+            add("bad", "ecc_ue", "ECC uncorrectable errors: %d" % ecc["ue"], ecc["ue"])
         elif ecc.get("ce"):
-            v.append({"level": "warn", "text": "ECC correctable errors: %d" % ecc["ce"]})
+            add("warn", "ecc_ce", "ECC correctable errors: %d" % ecc["ce"], ecc["ce"])
         for dev, d in (inv.get("disk_health") or {}).items():
             me = d.get("media_errors")
             if isinstance(me, (int, float)) and me > 0:
-                v.append({"level": "bad", "text": "%s media errors: %d" % (dev, me)})
+                add("bad", "media_%s" % dev, "%s media errors: %d" % (dev, me), me)
             up = d.get("used_pct")
             if isinstance(up, (int, float)) and up >= 80:
-                v.append({"level": "warn", "text": "%s wear %s%%" % (dev, up)})
-    return v
+                add("warn", "used_%s" % dev, "%s wear %s%%" % (dev, up))
+    return [{"level": v[k]["level"], "text": v[k]["text"]} for k in order]
 
 
 def build_summary_dir(results_dir, window_h=8, since=None):

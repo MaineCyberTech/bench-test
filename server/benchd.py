@@ -52,6 +52,24 @@ DEFAULT_DB = os.path.join(HERE, "data", "benchd.sqlite")
 SAMPLE_FIELDS = ["elapsed", "temp_c", "fan_pct", "power_w", "gpu_util",
                  "gpu_fan_rpm", "cpu_util", "ram_used", "sm_mhz", "mem_used"]
 
+# Fields whose domain really is 0..100. nvidia-smi intermittently reports a
+# nonsense fan speed (a live stick run recorded fan_pct 413 and 137 in one window),
+# and because a chart scales each series to its own max, a single spike flattens
+# the whole fan trace. Out-of-range values are DROPPED rather than clamped:
+# clamping to 100 would invent a plausible-looking reading. mem_util and the
+# encoder percentages are deliberately not bounded - some drivers legitimately
+# report them above 100.
+_PCT_0_100 = ("fan_pct", "gpu_util", "cpu_util")
+
+
+def sanitise_sample(s):
+    """Null out physically impossible percentage readings, in place."""
+    for k in _PCT_0_100:
+        v = s.get(k)
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and not (0 <= v <= 100):
+            s[k] = None
+    return s
+
 METRICS = [
     ("gpu_matmul_tflops.fp16", "GPU matmul fp16 (TFLOPS)"),
     ("gpu_matmul_tflops.bf16", "GPU matmul bf16 (TFLOPS)"),
@@ -1042,6 +1060,7 @@ class Handler(BaseHTTPRequestHandler):
             for s in samples:
                 ts = None
                 if isinstance(s, dict):
+                    s = sanitise_sample(dict(s))
                     core = [s.get(f) for f in SAMPLE_FIELDS]
                     extra = {k: v for k, v in s.items()
                              if k not in SAMPLE_FIELDS and k != "ts"
@@ -1050,9 +1069,12 @@ class Handler(BaseHTTPRequestHandler):
                         ts = float(s["ts"])
                     named.append(dict(s))
                 else:
-                    core = (list(s) + [None] * len(SAMPLE_FIELDS))[:len(SAMPLE_FIELDS)]
+                    d = dict(zip(SAMPLE_FIELDS,
+                                 (list(s) + [None] * len(SAMPLE_FIELDS))[:len(SAMPLE_FIELDS)]))
+                    sanitise_sample(d)
+                    core = [d.get(f) for f in SAMPLE_FIELDS]
                     extra = {}
-                    named.append(dict(zip(SAMPLE_FIELDS, core)))
+                    named.append(dict(d))
                 rows.append([run_id, ts or now()] + core + [json.dumps(extra) if extra else None])
             with S.lock:
                 S.conn.executemany(

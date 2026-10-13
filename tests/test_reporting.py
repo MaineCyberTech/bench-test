@@ -186,6 +186,27 @@ def run():
     c.check("verdicts carry a level",
             bool(vs) and all(v.get("level") in ("good", "info", "warn", "bad") for v in vs), vs)
 
+    # a results dir accumulates one health report per phase, so the same finding
+    # arrives repeatedly with a drifting count - a real desktop run produced ~50
+    # entries for four findings, which made the list unreadable
+    hv2 = tmpdir()
+    for i, (kp, stor) in enumerate(((4, 5), (6, 7), (8, 14))):
+        with open(os.path.join(hv2, "host-20260101-00000%d.health.json" % i), "w") as fh:
+            json.dump({"summary": [
+                {"provider": "Microsoft-Windows-Kernel-Power", "id": "41", "count": kp},
+                {"provider": "disk", "id": "153", "count": stor}]}, fh)
+    vs2 = build_summary_dir(hv2).get("verdicts") or []
+    c.check("repeated findings collapse to one verdict per kind",
+            len([v for v in vs2 if "Kernel-Power 41" in v["text"]]) == 1, vs2)
+    c.check("the surviving verdict keeps the widest window",
+            any(v["text"].endswith(": 8") for v in vs2 if "Kernel-Power 41" in v["text"]), vs2)
+    c.check("the storage verdict keeps its own widest count too",
+            any(v["text"].endswith(": 14") for v in vs2 if "storage events" in v["text"]), vs2)
+    c.check("deduped verdicts keep their level",
+            all(v["level"] == "bad" for v in vs2 if "Kernel-Power 41" in v["text"]), vs2)
+    c.check("no internal bookkeeping leaks into the verdicts",
+            all(set(v) == {"level", "text"} for v in vs2), vs2)
+
     # ---- phase results that used to be dropped are merged into the summary ----
     d2 = tmpdir()
     for name, obj in {
