@@ -12,7 +12,7 @@ mandatory third-party dependency.
 | **summary** | `benchreport.build_summary_dir()` over the phase JSONs | `gpu_matmul_tflops{fp16,bf16,tf32,fp32,fp64}`, `gpu_soak_tflops`, `cpu_matmul_gflops{fp32,fp64}`, `cpu_soak_gflops`, `ram_soak_gbps`, `disk_*`, `net` (+ `ping_mdev_ms`, `ping_loss_pct`), `nvenc`, `pcie`, `combined`, `fullsoak{verdict}`, `verdicts[]`, per-phase `telemetry` |
 | **system / inventory** | `bench/linux_info.py`, `bench/Get-SystemInfo.ps1` | OS/kernel, CPU, RAM (**DIMM slots**: size/speed/mfg/part), GPU (**uuid, vbios, PCIe bus**, compute users), disks (+ health/firmware), volumes, NICs, monitors, BIOS/board, uptime |
 | **health report** | `bench/Get-EventHealth.ps1` (run by the battery) | WHEA, TDR (`nvlddmkm`), disk/power/thermal events; per-disk reliability counters |
-| **telemetry** (1 Hz) | `bench/run_win.py` (Windows), `bench/telemetry_log.py` (Linux) | GPU: util, mem-util, temp, mem-temp, fan, power, power-cap, sm/mem/gr/**video** clocks, VRAM, pstate, enc/dec %, **thermal limit**, **power default/max**, **PCIe gen/width**, **retired pages**, **throttle bitmask**. CPU: util, package/max-core temp, fan RPM, load1, swap, **RAPL package watts**, **avg core MHz**, **PSI io stall**. Disk I/O + net rx/tx MB/s |
+| **telemetry** (4 Hz rows) | `bench/run_win.py` (Windows), `bench/telemetry_log.py` (Linux) | GPU: util, mem-util, temp, mem-temp, fan, power, power-cap, sm/mem/gr/**video** clocks, VRAM, pstate, enc/dec %, **thermal limit**, **power default/max**, **PCIe gen/width**, **retired pages**, **throttle bitmask**. CPU: util, package/max-core temp, fan RPM, load1, swap, **RAPL package watts**, **avg core MHz**, **PSI io stall**. Disk I/O + net rx/tx MB/s |
 | **telemetry stats** | server (`benchd._compute_stats`) | per metric: min/avg/max/**std**/**p50/p95/p99**/n, plus **derived**: energy (J), energy kJ/h, clock residency %, throttled %, thermal headroom, power headroom |
 | **events / logs / artifacts** | reporter + phases | `[group] label` phase trail, console, warn events, report JSON + telemetry CSV |
 
@@ -40,7 +40,7 @@ Both dashboards render the **same** field set from one shared list
 - **Measured-but-hidden results** are now shown (Results table): PCIe H2D/D2H,
   disk seq-read + random **IOPS** + latency **p50/p90/p99**, net upload + ping,
   NVENC fps, RAM copy/add/reduce + latency, the fp16/bf16/tf32/fp32 matrix.
-- **GPU headroom/health** at 1 Hz: thermal limit, power default/max, video clock,
+- **GPU headroom/health** at 4 Hz rows: thermal limit, power default/max, video clock,
   PCIe link gen/width, retired pages, throttle/slowdown bitmask.
 - **Hardware verdicts** from `health.json` (WHEA, TDR, disk I/O errors, wear) and
   the Linux inventory (Xid/MCE/AER lines since boot, EDAC ECC, NVMe SMART) →

@@ -1,7 +1,7 @@
 # Control plane (benchd) — single pane of glass
 
 `benchd` is a dependency-free server that turns a set of bench-test machines into
-one live, controllable fleet: every runner registers, streams its phases and 1 Hz
+one live, controllable fleet: every runner registers, streams its phases and 4 Hz
 telemetry, and can be started / stopped / updated from a web dashboard.
 
 ```
@@ -108,7 +108,7 @@ Runner-facing:
 | POST | `/runners/<id>/commands/<cid>/ack` | acknowledge a command |
 | POST | `/runs` | open a run |
 | POST | `/runs/<id>/phase` | open/close a phase (seq-keyed) |
-| POST | `/runs/<id>/telemetry` | batched 1 Hz samples |
+| POST | `/runs/<id>/telemetry` | batched 4 Hz samples |
 | POST | `/runs/<id>/event` | log/event line |
 | POST | `/runs/<id>/artifact` | attach a report/manifest (base64) |
 | POST | `/runs/<id>/finish` | close a run + attach the summary row |
@@ -123,7 +123,7 @@ UI-facing:
 | GET | `/runs/<id>/telemetry?max=N` | downsampled series (named fields) |
 | GET | `/runs/<id>/logs?after=&limit=` | the run's live console lines |
 | GET | `/runs/<id>/stats` | per-field n / min / avg / max / std / p50 / p95 / p99 (+ derived: energy, clock residency, throttled %, headroom) |
-| GET | `/runs/<id>/telemetry.csv?token=` | full 1 Hz telemetry as CSV (download) |
+| GET | `/runs/<id>/telemetry.csv?token=` | full telemetry as CSV (download) |
 | GET | `/runs/<id>/artifact/<name>?token=` | download an attached artifact (binary-safe) |
 | GET | `/trends?host=&metric=` | metric-over-time series + per-series median/p95/p99 |
 | GET | `/health` | public liveness + the control plane's commit (`git`) |
@@ -191,7 +191,7 @@ pct exec 108 -- systemctl mask tmp.mount run-lock.mount dev-mqueue.mount
 - **Summary** (runs-index-style): GPU matmul (fp16/bf16/tf32/fp32), soak TFLOPS + telemetry,
   CPU matmul/soak, RAM, disk seq write, network, full-system verdict — the same keys on
   Windows and Linux so trends/compare line up.
-- **Telemetry** (1 Hz): GPU util/mem-util/temp(+mem temp)/fan/power(+limit)/SM+mem+gr clocks/
+- **Telemetry** (4 Hz rows; nvidia-smi cached at 2 Hz, sensors at 1 Hz): GPU util/mem-util/temp(+mem temp)/fan/power(+limit)/SM+mem+gr clocks/
   VRAM/pstate/enc+dec, CPU util + package/core temp, RAM + swap, disk read/write, net rx/tx.
 - **Full inventory** per run: CPU, board/BIOS, DIMMs, GPUs + driver, storage, NICs
   (Windows `sysinfo` / Linux `sys` phase) — attached to the run as `system.inventory`.

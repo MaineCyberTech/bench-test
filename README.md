@@ -3,7 +3,7 @@
 A reusable, host-agnostic toolkit to **baseline and stress workstations** the same
 way every time — GPU compute, VRAM, PCIe, tensor-core soak, LLM inference, video
 encode, CPU, RAM, disk, network, thermals, sensors, and a game-like render — with
-live 1 Hz telemetry, a JSON + Markdown report per run, and an optional
+live 4 Hz telemetry, a JSON + Markdown report per run, and an optional
 **control plane** that turns a set of machines into one live, controllable fleet.
 
 Built to compare machines (before/after a GPU, driver, or cooling change) with
@@ -52,7 +52,7 @@ name it too (`ISO <gpu> v1.1.0 #<run>`).
 
 ## Telemetry
 
-1 Hz per run, written to `*.telemetry.csv` and streamed to the control plane.
+4 Hz rows per run (nvidia-smi cached at 2 Hz), written to `*.telemetry.csv` and streamed to the control plane.
 Canonical fields: `elapsed, temp_c, fan_pct, power_w, gpu_util, gpu_fan_rpm,
 cpu_util, ram_used, sm_mhz, mem_used`, plus extras: `mem_util, mem_mhz,
 vram_used_mib, cpu_temp_c, cpu_max_core_c, cpu_fan_rpm, load1, swap_used_gib,
@@ -342,7 +342,7 @@ results/   output (mostly git-ignored; a few runs tracked as history)
 | `Run-WorkstationBench.ps1` / `Run-LinuxBench.sh` | one-command battery (all groups) |
 | `run_win.py` | Windows runner bridging the dashboards/agent to the battery + telemetry |
 | `gpu_bench.py` · `cpu_bench.py` · `ram_bench.py` · `disk_bench.py` · `net_bench.py` · `nvenc_bench.py` | phases |
-| `telemetry_log.py` | 1 Hz telemetry CSV (Linux) |
+| `telemetry_log.py` | telemetry CSV (Linux) |
 | `gui.py` · `tui.py` | Tk / curses dashboards (report + accept remote control) |
 | `fan_curve.py` · `gpu_util.py` · `rawlog.py` | GPU fan-curve tool, AMD/Intel gpu telemetry, raw-slot result writer |
 | `benchreport.py` | control-plane client (Reporter, PhaseTracker, Pump, exec, inventory) |

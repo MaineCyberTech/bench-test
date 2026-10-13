@@ -6,7 +6,8 @@ workstation benchmark & stress toolkit with a fleet control plane.
 ## What this repo is
 
 - **`bench/`** — the runners and phases. PowerShell runners + Python phases for
-  Windows, a Bash runner for Linux, a 1 Hz telemetry logger, and the GUI/TUI
+  Windows, a Bash runner for Linux, a telemetry logger (4 Hz rows, expensive stats
+  cached), and the GUI/TUI
   dashboards. Everything is **stdlib-only** (Python) — no pip installs required to
   run; the venv is only for numpy/PyTorch used by the compute phases.
 - **`server/`** — `benchd`, a dependency-free control plane (HTTP + SSE + SQLite)
@@ -120,7 +121,12 @@ else; a local battery needs a toolkit checkout (`$BENCH_REPO`).
 
 ## Telemetry
 
-1 Hz, per run. Canonical fields: `elapsed, temp_c, fan_pct, power_w, gpu_util,
+4 Hz rows, per run (`--interval 0.25`). Only the **cheap** stats are sampled per
+row: a row's `nvidia-smi` (GPU util/temp/fan/power/clocks/VRAM/pstate, ~66 ms a
+call) is cached at 2 Hz (`--gpu-interval`) and `sensors`/`nvidia-settings` (CPU
+temps, fan RPM) at 1 Hz (`--slow-interval`). Polling everything every row cost
+~0.3 s an iteration, so a 4 Hz request really delivered 2.9 rows/s. Canonical
+fields: `elapsed, temp_c, fan_pct, power_w, gpu_util,
 gpu_fan_rpm, cpu_util, ram_used, sm_mhz, mem_used` plus extras (`mem_util,
 mem_mhz, vram_used_mib, cpu_temp_c, cpu_max_core_c, cpu_fan_rpm, load1,
 swap_used_gib, nvme_c, gpu_enc_pct, gpu_dec_pct, pstate, power_limit_w,
@@ -134,6 +140,13 @@ The dashboards render the same fields from one shared list
 (`benchreport.DASH_FIELDS`) and one hardware line (`benchreport.hardware_line()`),
 so the GUI and TUI cannot drift — add a column there and both surface it (a test
 asserts every `DASH_FIELDS` key is a real telemetry field).
+
+**One writer per row.** A dashboard streams each sample live as the run happens,
+and `upload_telemetry_csv` sends the run's CSV at the end. The dashboards pass what
+they already streamed (`sent={csv: {elapsed, ...}}`) so the upload only fills gaps;
+without it every sample is stored twice and the charts draw each point twice.
+Headless `agent.py` streams nothing and sends every row. Keep it that way when
+touching either path.
 
 ## Testing — required before every commit
 
@@ -180,12 +193,15 @@ you add behaviour. Never commit with a failing suite.
   than being passed around as a release, and a runner whose `PROTOCOL` differs is
   flagged in the fleet view. `tests/test_version.py` keeps this honest.
 - **Tuning knobs beyond the four durations** (`cpu_soak`, `ram_soak`,
-  `disk_seconds`, `gpu_size`, `cpu_size`, `ram_size_mb`, `passes`, `steady_gb`,
-  `stable`) travel in a preset's `tune` field and in the start payload; both
-  runners accept them as flags, and `benchreport.extra_runner_args` is the single
-  mapping. Without them a run falls back to the runner's long defaults (cpu 120 s,
-  ram 120 s, gpu matrix 12288, 10 GiB steady write) — which is why a "Quick check"
-  used to take ~31 min.
+  `disk_seconds`, `disk_size_mb`, `gpu_size`, `cpu_size`, `ram_size_mb`, `passes`,
+  `steady_gb`, `stable`) travel in a preset's `tune` field and in the start payload;
+  both runners accept them as flags, and `benchreport.extra_runner_args` is the
+  single mapping. Without them a run falls back to the runner's long defaults
+  (cpu 120 s, ram 120 s, gpu matrix 12288, 10 GiB steady write, disk 2048 MB) —
+  which is why a "Quick check" used to take ~31 min.
+  **`disk_size_mb` is the disk lever, not `disk_seconds`:** the randread/randwrite/
+  randmix phases are size-bound, so the 2048 MB default cost 226 s of a 1368 s
+  desktop run and `disk_seconds` does not change that.
 - **`--soak-until-stable`** (Linux) / `-SoakUntilStable` (Windows) runs the GPU
   soak until the temperature plateaus; both runners accept it, so keep them in
   step. The plateau test is `gpu_bench._temp_stable` / `_soak_continue`.

@@ -3,8 +3,8 @@
 Per-phase wall-clock durations, to estimate how long a run/preset takes and to see
 which phases dominate. Numbers come from real runs of the **Stabilized full soak
 (15 min)** preset (gpu 180 s ceiling · combined 45 s · fullsoak 90 s · gfx 30 s ·
-cpu soak 45 s · ram soak 30 s · disk 30 s · gpu matrix 4096 · cpu 2048 · ram
-512 MiB · 1 pass · 2 GB steady write · soak-until-stable).
+cpu soak 45 s · ram soak 30 s · disk 30 s / 512 MB · gpu matrix 4096 · cpu 2048 ·
+ram 512 MiB · 1 pass · 2 GB steady write · soak-until-stable).
 
 ## Two reference machines, same preset
 
@@ -81,7 +81,7 @@ preset. Add the hold to the plateau time when budgeting.
 | GPU compute (gpu 60) | ~11 min |
 | CPU + RAM + disk | ~14 min |
 | **Stabilized full soak (15 min)** | **~11.5 min** (live stick) · ~26 min (old desktop, slow disk) |
-| Quick check (short soaks) | ~31 min (uses the runner's long defaults for cpu/ram) |
+| Quick check (short soaks) | ~14 min — it carries lean knobs (cpu 60, ram 30, disk 15 s / 256 MB, matrix 4096); without them it inherits the runner's long defaults and took ~31 min |
 | Full run (defaults) | ~48 min |
 | Full-system soak (long) | ~32 min |
 | Soak only (long) | ~70 min |
@@ -102,8 +102,43 @@ and both runners accept the matching flags.
 | `gfx_engine` | `--gfx-engine` | `furmark` (default) or `valley` |
 
 Without these a run falls back to the runner's long defaults (cpu 120 s, ram
-120 s, gpu matrix 12288, 10 GiB steady write) — that is why "Quick check" is not
-quick.
+120 s, gpu matrix 12288, 10 GiB steady write, disk 2048 MB) — that is why "Quick
+check" is not quick.
+
+### Disk size is the disk lever, not disk seconds
+
+The `randread` / `randwrite` / `randmix` phases are **size-bound**: at the runner's
+2048 MB default they took 41 + 75 + 110 = **226 s** of the desktop's run, and
+raising `disk_seconds` does not change that. The presets now carry `disk_size_mb`
+512 (256 for Quick check), which does the same job in ~57 s. This was the single
+biggest safe saving on the slow desktop.
+
+## Telemetry cadence (per stat, measured)
+
+A row used to call every stat, including three subprocesses, so an iteration cost
+~0.3 s and asking for 4 Hz delivered **2.9 rows/s** — the `sleep` was never the
+limit. Costs measured on a Windows box (nvidia-smi is the same command on Linux):
+
+| Stat | How | Cost | Cadence |
+|---|---|---|---|
+| GPU util/temp/fan/power/clocks/VRAM/pstate | `nvidia-smi` | **66 ms/call** | 2 Hz (`--gpu-interval 0.5`) |
+| CPU package/core temps | `sensors -j` | subprocess | 1 Hz (`--slow-interval 1.0`) |
+| GPU fan RPM | `nvidia-settings` | subprocess | 1 Hz |
+| CPU %/RAM/swap | `psutil`, `GetSystemTimes`, `/proc` | 0.1–3.6 ms | the row rate |
+| disk/net counters | `psutil`, `/proc/diskstats`, `/proc/net/dev` | 0.1 ms | the row rate |
+| core clock | cpufreq sysfs, `/proc/cpuinfo` | 0.1 ms | the row rate |
+| RAPL package power, PSI I/O | `/proc` | ~0.1 ms | the row rate |
+
+Temps have seconds of thermal mass and the GPU query carries util+temp+power in one
+call, so 2 Hz keeps the traces smooth. The A/B (same box, same sampler):
+
+| row interval | before | after |
+|---|---|---|
+| 0.25 s (4 Hz) | 2.9 rows/s | **4.0 rows/s** |
+| 0.10 s | 3.4 rows/s | 9.1 rows/s |
+| 0.05 s | 3.3 rows/s | 15.6 rows/s |
+
+`elapsed_s` is now written with 2 decimals so rows stay distinct above 10 Hz.
 
 ## Caveats
 
@@ -116,7 +151,10 @@ quick.
   (`Monitors: 0`, e.g. a headless live box) FurMark's X probe segfaults and the
   phase falls back to a bounded glmark2 scene subset; on Windows it falls back to
   Valley only if FurMark is not installed.
-- Telemetry is sampled at 2 Hz; a 12-minute run is ~1450 rows.
+- Telemetry rows are written at 4 Hz (`--interval 0.25`), with the GPU query at
+  2 Hz and the `sensors`/`nvidia-settings` stats at 1 Hz; a 12-minute run is
+  ~2900 rows. Each row is stored once — the end-of-run bulk upload skips what the
+  live stream already sent.
 
 Regenerate after a hardware/driver change by running the preset and reading
 `/api/v1/runs/<id>` (per-phase `t0`/`t1`).
