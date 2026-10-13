@@ -29,6 +29,11 @@ import urllib.parse
 import urllib.request
 
 API = "https://api.github.com"
+# Files small enough to inline in the tree request (saves one API call each) and
+# the extensions that are safely text - binary (screenshots) still goes via blobs.
+INLINE_MAX = 512 * 1024
+INLINE_EXTS = {".log", ".txt", ".json", ".jsonl", ".md", ".csv", ".out", ".err",
+               ".yaml", ".yml", ".conf", ".html", ".js", ".css", ".py", ".sh"}
 
 
 def find_conf():
@@ -112,16 +117,26 @@ def _one_commit_once(repo, branch, upath, folder, files, token, log=print):
     for p, rel in sorted(files):
         try:
             with open(p, "rb") as fh:
-                content = base64.b64encode(fh.read()).decode()
+                raw = fh.read()
         except Exception as e:
             log("  skip %s: read: %s" % (rel, e))
             continue
-        st, blob = api("POST", "%s/repos/%s/git/blobs" % (API, repo), token,
-                       {"content": content, "encoding": "base64"})
-        if st not in (200, 201) or not blob.get("sha"):
-            return False
-        entries.append({"path": "%s/%s/%s" % (upath, folder, rel.replace(os.sep, "/")),
-                        "mode": "100644", "type": "blob", "sha": blob["sha"]})
+        path = "%s/%s/%s" % (upath, folder, rel.replace(os.sep, "/"))
+        ext = os.path.splitext(rel)[1].lower()
+        if ext in INLINE_EXTS and len(raw) <= INLINE_MAX:
+            # Inline the content in the tree instead of POSTing a blob per file.
+            # A run uploads 60+ files; that many rapid blob calls trips GitHub's
+            # secondary rate limit, the batched path gives up, and the per-file
+            # fallback then commits them one at a time - which floods main.
+            entries.append({"path": path, "mode": "100644", "type": "blob",
+                            "content": raw.decode("utf-8", "replace")})
+        else:
+            st, blob = api("POST", "%s/repos/%s/git/blobs" % (API, repo), token,
+                           {"content": base64.b64encode(raw).decode(), "encoding": "base64"})
+            if st not in (200, 201) or not blob.get("sha"):
+                return False
+            entries.append({"path": path, "mode": "100644", "type": "blob",
+                            "sha": blob["sha"]})
     if not entries:
         return False
     st, tree = api("POST", "%s/repos/%s/git/trees" % (API, repo), token,
