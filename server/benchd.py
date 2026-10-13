@@ -1487,6 +1487,22 @@ def reap_stale_runs(store, bus):
             rr = store.one("SELECT last_seen FROM runners WHERE id=?", (r["runner_id"],))
             last = rr["last_seen"] if rr else None
         if last is not None and (t - last) <= 45:
+            # The runner is alive, so the run is fine - unless the runner says it is
+            # idle. A runner restarted mid-run (an update, say) comes back, registers
+            # and goes idle, and the heartbeat rule above can never see the run it left
+            # behind: it stayed 'running' for hours with three samples.
+            rr = store.one("SELECT status, current_run FROM runners WHERE id=?",
+                           (r["runner_id"],))
+            if rr and not rr["current_run"] and (rr["status"] or "") != "busy":
+                m = store.one("SELECT MAX(ts) m FROM telemetry WHERE run_id=?", (r["id"],))
+                quiet = (m or {}).get("m") or (r["started"] or t)
+                if t - quiet > 60:
+                    store.ex("UPDATE runs SET status='failed', ended=? WHERE id=?",
+                             (t, r["id"]))
+                    bus.publish({"event": "run", "data": run_public(
+                        store.one("SELECT * FROM runs WHERE id=?", (r["id"],)))})
+                    print("[benchd] reaped orphaned run %s (runner alive but idle)"
+                          % r["id"][:8], flush=True)
             continue  # runner still heartbeating
         store.ex("UPDATE runs SET status='failed', ended=? WHERE id=?", (t, r["id"]))
         if r["runner_id"]:

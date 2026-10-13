@@ -384,6 +384,50 @@ def run():
     c.check("compare_commits still returns just the status",
             B.compare_commits("abc1234", "abc1234") == "identical", "")
 
+    # ---- a run orphaned by a runner restart must not stay 'running' ----
+    # The runner comes back, registers and goes idle; the heartbeat rule cannot see it.
+    import time as _t
+    _orph = {"id": "run-orphan", "runner_id": "r1", "started": _t.time() - 600}
+    _idle = {"id": "r1", "last_seen": _t.time(), "status": "idle", "current_run": None}
+    _busy = {"id": "r1", "last_seen": _t.time(), "status": "busy", "current_run": "run-orphan"}
+
+    class _Store:
+        def __init__(self, runner):
+            self.runner = runner
+            self.sql = []
+
+        def q(self, sql, args=()):
+            return [_orph] if "FROM runs" in sql else []
+
+        def one(self, sql, args=()):
+            self.sql.append(sql)
+            if "FROM runners" in sql:
+                return self.runner
+            if "MAX(ts)" in sql:
+                return {"m": _t.time() - 300}      # quiet for five minutes
+            return {"n": 0}
+
+        def ex(self, sql, args=()):
+            self.sql.append(sql)
+            return None
+
+    class _Bus:
+        def __init__(self):
+            self.events = []
+
+        def publish(self, e):
+            self.events.append(e)
+
+    st1, bus1 = _Store(_busy), _Bus()
+    _bdm.reap_stale_runs(st1, bus1)
+    c.check("a busy runner keeps its run",
+            not any("UPDATE runs" in x for x in st1.sql) and not bus1.events, st1.sql)
+    st2, bus2 = _Store(_idle), _Bus()
+    _bdm.reap_stale_runs(st2, bus2)
+    c.check("an idle runner orphans its run, and the reaper fails it",
+            any("UPDATE runs SET status='failed'" in x for x in st2.sql) and bus2.events,
+            st2.sql)
+
     # ---- the control plane auto-updates itself when it can ----
     _spec_au = importlib.util.spec_from_file_location(
         "benchd_autoupdate", os.path.join(REPO, "server", "benchd.py"))
