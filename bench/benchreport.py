@@ -948,7 +948,7 @@ def version_string(root=None):
     # a live/copy toolkit has no .git, so fall back to the commit recorded in its
     # fetch stamp - otherwise a stick reports a bare version with no build id and
     # two different sticks look identical
-    c = git_commit(root) or (toolkit_version(root).get("commit") or "")
+    c = git_commit(root) or (toolkit_version(root).get("build") or "")
     return ("%s+%s" % (v, c)) if c else v
 
 
@@ -969,18 +969,22 @@ def toolkit_version(root=None):
     ver = bench_version(root)
     if os.path.isdir(os.path.join(root, ".git")):
         return {"mode": "git", "commit": git_commit(root), "ref": None,
-                "sha256": None, "fetched_at": None, "version": ver}
+                "sha256": None, "fetched_at": None, "version": ver,
+                "build": git_commit(root)}
     try:
         with open(os.path.join(root, VERSION_FILE), encoding="utf-8") as fh:
             v = json.load(fh)
         if isinstance(v, dict):
             v.setdefault("mode", "copy")
             v["version"] = ver
+            # resolving the commit needs the GitHub API, which can be rate limited;
+            # the content hash still tells two copies apart, so use it as the build
+            v["build"] = v.get("commit") or (v.get("sha256") or "")[:7] or None
             return v
     except Exception:
         pass
     return {"mode": "copy", "commit": None, "ref": None, "sha256": None,
-            "fetched_at": None, "version": ver}
+            "fetched_at": None, "version": ver, "build": None}
 
 
 def _resolve_commit(ref):
