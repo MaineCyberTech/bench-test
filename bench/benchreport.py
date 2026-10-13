@@ -931,7 +931,11 @@ def git_describe(root=None):
     """
     repo = root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     try:
-        r = run_hidden(["git", "-C", repo, "describe", "--tags", "--long", "--dirty"],
+        # --match: the release workflows also tag `app-<n>` and `iso-<gpu>-<n>`,
+        # which are newer than the version tag and would otherwise be picked as
+        # "the" tag (git describe takes the most recent one reachable from HEAD)
+        r = run_hidden(["git", "-C", repo, "describe", "--tags", "--long", "--dirty",
+                        "--match", "v[0-9]*"],
                        capture_output=True, text=True, timeout=10)
         if r.returncode != 0:
             return ("", 0, "")

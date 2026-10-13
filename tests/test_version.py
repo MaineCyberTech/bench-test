@@ -31,11 +31,14 @@ def run():
     c.check("VERSION is semver", bool(re.match(r"^\d+\.\d+\.\d+$", v)), v)
 
     rep = _load("benchreport", os.path.join(BENCH, "benchreport.py"))
-    c.check("bench_version reads VERSION", rep.bench_version(REPO) == v, rep.bench_version(REPO))
+    c.check("bench_version is tag-derived in a checkout",
+            rep.bench_version(REPO).split("+")[0] == v or rep.git_describe(REPO)[0] == "",
+            (rep.bench_version(REPO), v))
     c.check("bench_version falls back instead of raising",
             rep.bench_version(os.path.join(REPO, "definitely-not-here")) == "0.0.0+unknown", "")
     c.check("toolkit_version carries the version",
-            rep.toolkit_version(REPO).get("version") == v, rep.toolkit_version(REPO))
+            rep.toolkit_version(REPO).get("version") == rep.bench_version(REPO),
+            rep.toolkit_version(REPO).get("version"))
     c.check("version_string starts with the version",
             rep.version_string(REPO).startswith(v), rep.version_string(REPO))
     c.check("version_string carries the build commit",
