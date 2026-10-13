@@ -937,14 +937,16 @@ def bench_version(root=None):
 
 
 def version_string(root=None):
-    """``1.0.0 (abc1234)`` - the release version plus the commit when there is one.
+    """``1.1.0+abc1234`` - the release version plus the exact build.
 
-    This is what a runner registers and the dashboards display, so a fleet view
-    can tell exactly what is running on a box.
+    The ``+commit`` build metadata is automatic, so every update is a distinct,
+    comparable version even between deliberate releases (a release that ships many
+    commits must not report one identical version for all of them). `VERSION` is
+    the release line and is bumped on purpose; the commit identifies the build.
     """
     v = bench_version(root)
     c = git_commit(root)
-    return ("%s (%s)" % (v, c)) if c else v
+    return ("%s+%s" % (v, c)) if c else v
 
 
 def git_commit(repo=None):

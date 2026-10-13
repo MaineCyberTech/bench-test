@@ -38,6 +38,9 @@ def run():
             rep.toolkit_version(REPO).get("version") == v, rep.toolkit_version(REPO))
     c.check("version_string starts with the version",
             rep.version_string(REPO).startswith(v), rep.version_string(REPO))
+    c.check("version_string carries the build commit",
+            "+" in rep.version_string(REPO) or not rep.git_commit(REPO),
+            rep.version_string(REPO))
 
     # the control plane reports its own version (it is deployed as a copy)
     srv = Server()

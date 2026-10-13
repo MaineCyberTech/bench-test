@@ -163,14 +163,18 @@ you add behaviour. Never commit with a failing suite.
 
 - **Presets** live in `gui.PRESETS` (dict), `tui.PRESETS` (list), and
   `ALL_GROUPS`/`gset`/`PRESETS` in `app.js`. Change all three together.
-- **Versions.** `VERSION` (repo root, `MAJOR.MINOR.PATCH`) is the single source of
-  truth. `benchreport.bench_version()` / `version_string()` read it, the GUI/TUI
-  headers show it, runners register `version_string()` (so the fleet view shows
-  what each box runs), the web shows it, and `benchd` reports it in `/health` and
-  `/state` (it is deployed as a copy, so the file ships with it — see
-  `update_ct.py`). Release names carry it (`ISO <gpu> v1.0.0 #<run>`). Bump
-  `VERSION` for a release and keep `tests/test_version.py` green; a copy with no
-  `VERSION` reports `0.0.0+unknown` rather than nothing.
+- **Versions.** `VERSION` (repo root, `MAJOR.MINOR.PATCH`) is the release line and
+  the single source of truth; `benchreport.bench_version()` reads it and
+  `version_string()` returns `1.1.0+<commit>` — the commit is *build metadata*, so
+  every update is a distinct, comparable version even between deliberate releases.
+  A release that ships several commits must not report one identical version for
+  all of them. The GUI/TUI headers, the runner registration, the web and the
+  control plane (`/health`, `/state`; it is deployed as a copy, so the file ships
+  with it — see `update_ct.py`) all report it, and release names carry it
+  (`ISO <gpu> v1.1.0 #<run>`).
+  **Bump `VERSION` on purpose** — minor for features, patch for fixes — and tag the
+  release (`git tag v1.1.0`); a copy with no `VERSION` reports `0.0.0+unknown`
+  rather than nothing. `tests/test_version.py` keeps this honest.
 - **Tuning knobs beyond the four durations** (`cpu_soak`, `ram_soak`,
   `disk_seconds`, `gpu_size`, `cpu_size`, `ram_size_mb`, `passes`, `steady_gb`,
   `stable`) travel in a preset's `tune` field and in the start payload; both

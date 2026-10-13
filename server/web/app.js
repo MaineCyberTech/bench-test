@@ -335,7 +335,7 @@ function runnerCard(r) {
       ? `<span class="badge" title="groups this runner implements">${caps.groups.length}/${ALL_GROUPS.length} groups</span>`
       : "",
     (caps.toolkit && caps.toolkit.version)
-      ? `<span class="badge" title="toolkit release version">v${esc(caps.toolkit.version)}</span>` : "",
+      ? `<span class="badge" title="toolkit release + build">v${esc(caps.toolkit.version)}${caps.toolkit.commit ? "+" + esc(caps.toolkit.commit) : ""}</span>` : "",
     r.update_available
       ? `<span class="badge stale" title="${esc(r.toolkit_status || "behind")}: toolkit ${esc(r.toolkit_commit || "?")} vs latest ${esc(r.latest_commit || STATE.latest_git || "?")}">update available</span>`
       : (r.toolkit_commit
