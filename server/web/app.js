@@ -80,6 +80,13 @@ const FOCUS_BARS = [
   ["disk_write_mbs", "disk W", "MB/s", 2000], ["net_rx_mbs", "net rx", "MB/s", 1250],
 ];
 const HOT_BARS = ["temp_c", "cpu_temp_c", "nvme_c", "temp_mem_c"];
+// small sparkline panel under the main chart, filling the telemetry column
+const FOCUS_MINI = [
+  ["temp_c", "temp °C"], ["power_w", "power W"], ["gpu_util", "GPU %"],
+  ["sm_mhz", "SM MHz"], ["mem_util", "VRAM %"], ["fan_pct", "fan %"],
+  ["cpu_util", "CPU %"], ["cpu_temp_c", "CPU °C"], ["cpu_pkg_w", "CPU W"],
+  ["ram_used", "RAM GiB"], ["disk_write_mbs", "disk W MB/s"], ["net_rx_mbs", "net rx MB/s"],
+];
 
 let SHOW_OFFLINE = localStorage.getItem("benchd_show_offline") === "1";
 let SORT = { key: "started", dir: -1 };
@@ -515,6 +522,10 @@ function focusShell(r, live) {
           <div class="chartrow"><canvas class="runchart" height="300"></canvas>
             <select class="csel" data-chart="${esc(r.id)}">${sel(r.id)}</select></div>
           <div class="chartlegend"></div>
+          <div class="minigrid" data-f="minis">${FOCUS_MINI.map(([k, lbl]) =>
+            `<div class="mini"><div class="ml"><span>${esc(lbl)}</span>
+             <span class="mv" data-m="${k}">—</span></div>
+             <canvas data-mini="${k}" height="56"></canvas></div>`).join("")}</div>
         </div>
       </div>
       <div class="fcard" style="margin-top:14px"><h4>Telemetry stats (min / avg / max · n)</h4>
@@ -568,6 +579,7 @@ function paintFocus(el, r, live) {
   paintFocusHealth(el, v);
   paintFocusStats(el, r.id);
   drawRunChart(el, r.id);
+  drawMiniCharts(el, r.id);
   updatePhases(el, r.phases || []);
   paintConsole(el, r.id);
 }
@@ -577,7 +589,7 @@ function paintFocusSpecs(el, r) {
   const rr = STATE.runners.find((x) => x.id === r.runner_id) || {};
   const rows = [
     ["host", r.host], ["platform", sy.platform || r.platform], ["kernel", sy.kernel],
-    ["cpu", sy.cpu], ["cores / threads", [sy.cores, sy.threads].filter(Boolean).join(" / ")],
+    ["cpu", sy.cpu], ["cores", [sy.cores, sy.threads].filter(Boolean).join(" / ")],
     ["ram", sy.ram_gib ? sy.ram_gib + " GiB" : null],
     ["gpu", sy.gpu || r.gpu], ["driver", sy.driver || r.driver], ["vram", sy.vram],
     ["board", sy.board], ["bios", sy.bios && (sy.bios.version + " " + (sy.bios.date || ""))],
@@ -586,9 +598,9 @@ function paintFocusSpecs(el, r) {
     ["runner", rr.label || rr.name], ["addr", rr.addr], ["kind", rr.kind],
     ["version", rr.version],
     ["toolkit", rr.toolkit_commit ? rr.toolkit_commit + " (" + (rr.toolkit_mode || "?") + ")" : null],
-    ["toolkit version", (rr.capabilities && rr.capabilities.toolkit && rr.capabilities.toolkit.version) || null],
+    ["tk ver", (rr.capabilities && rr.capabilities.toolkit && rr.capabilities.toolkit.version) || null],
     ["started", r.started ? ts(r.started) : null],
-    ["peak temp", (r.latest && r.latest.temp_c != null) ? fmt(r.latest.temp_c, 0) + " °C" : null],
+    ["peak", (r.latest && r.latest.temp_c != null) ? fmt(r.latest.temp_c, 0) + " °C" : null],
   ].filter((x) => x[1] != null && x[1] !== "");
   const tb = el.querySelector("[data-f=specs]");
   if (tb) tb.innerHTML = rows.map(([k, val]) =>
@@ -644,6 +656,24 @@ function paintFocusHealth(el, v) {
   if (v.nvme_c != null) t.push("nvme " + fmt(v.nvme_c, 0) + "°");
   if (v.gpu_fan_rpm != null) t.push("fan " + fmt(v.gpu_fan_rpm, 0) + "rpm");
   temps.textContent = t.join(" · ") || "—";
+}
+
+/* Sparkline panel: one small chart per metric, so the whole picture is visible
+   at once instead of switching the main chart's preset. */
+function drawMiniCharts(el, runId) {
+  const buf = (TEL[runId] || []).slice(-1500);
+  const base = teleBase(buf);
+  const win = runWindow(runId);
+  FOCUS_MINI.forEach(([k]) => {
+    const cv = el.querySelector(`canvas[data-mini="${k}"]`);
+    if (!cv) return;
+    const meta = SERIES[k] || [k, "#4c9aff"];
+    const pts = seriesPoints(buf, k, base, win.start);
+    const out = el.querySelector(`[data-m="${k}"]`);
+    if (out) out.textContent = pts.length ? fmt(pts[pts.length - 1].y, 1) : "—";
+    drawChart(cv, [{ name: meta[0], color: meta[1], points: pts }],
+              { normalize: true, compact: true });
+  });
 }
 
 function paintFocusStats(el, id) {
@@ -899,6 +929,7 @@ function drawChart(cv, series, opt = {}) {
   g.clearRect(0, 0, w, h);
 
   const norm = !!opt.normalize;
+  const compact = !!opt.compact;
   const use = (series || []).filter((s) => s && s.points && s.points.length >= 2);
   use.forEach((s) => {
     const ys = s.points.map((p) => p.y);
@@ -911,7 +942,8 @@ function drawChart(cv, series, opt = {}) {
     s.lo = lo - pad; s.hi = hi + pad;
   });
 
-  const pl = norm ? 32 : 46, pr = 12, pt = 10, pb = 24;
+  const pl = compact ? 3 : (norm ? 32 : 46), pr = compact ? 3 : 12;
+  const pt = compact ? 4 : 10, pb = compact ? 4 : 24;
   const x0 = pl, y0 = h - pb, x1 = w - pr, y1 = pt;
 
   let lo = 0, hi = 1, ticks;
@@ -928,17 +960,21 @@ function drawChart(cv, series, opt = {}) {
   g.font = "10px monospace";
   ticks.forEach((i) => {
     const y = Math.round(y0 - (y0 - y1) * i / 4) + 0.5;
-    g.strokeStyle = "#1c222c"; g.lineWidth = 1;
-    g.beginPath(); g.moveTo(x0, y); g.lineTo(x1, y); g.stroke();
-    g.fillStyle = "#67717f";
-    g.fillText(norm ? (i * 25) + "%" : shortNum(lo + (hi - lo) * i / 4), 3, y + 3);
+    if (!compact) {
+      g.strokeStyle = "#1c222c"; g.lineWidth = 1;
+      g.beginPath(); g.moveTo(x0, y); g.lineTo(x1, y); g.stroke();
+      g.fillStyle = "#67717f";
+      g.fillText(norm ? (i * 25) + "%" : shortNum(lo + (hi - lo) * i / 4), 3, y + 3);
+    }
   });
-  g.strokeStyle = "#2b3442";
-  g.beginPath(); g.moveTo(x0 + 0.5, y1); g.lineTo(x0 + 0.5, y0); g.stroke();
+  if (!compact) {
+    g.strokeStyle = "#2b3442";
+    g.beginPath(); g.moveTo(x0 + 0.5, y1); g.lineTo(x0 + 0.5, y0); g.stroke();
+  }
 
   if (!use.length) {
     g.fillStyle = "#67717f";
-    g.fillText("no data yet", x0 + 8, (y0 + y1) / 2 + 4);
+    if (!compact) g.fillText("no data yet", x0 + 8, (y0 + y1) / 2 + 4);
     cv._chart = { series: [], sx: () => x0, xmin: 0, xmax: 1, opt };
     return;
   }
@@ -966,14 +1002,16 @@ function drawChart(cv, series, opt = {}) {
   });
 
   g.fillStyle = "#67717f";
-  const lab = (x) => opt.xTime
-    ? new Date(x * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-    : fmtElapsed(x);
-  [[xmin, 0], [(xmin + xmax) / 2, 0.5], [xmax, 1]].forEach(([x, f]) => {
-    const t = lab(x), tw = g.measureText(t).width;
-    const tx = Math.max(x0, Math.min(x0 + (x1 - x0) * f - tw * f, x1 - tw));
-    g.fillText(t, tx, h - 7);
-  });
+  if (!compact) {
+    const lab = (x) => opt.xTime
+      ? new Date(x * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      : fmtElapsed(x);
+    [[xmin, 0], [(xmin + xmax) / 2, 0.5], [xmax, 1]].forEach(([x, f]) => {
+      const t = lab(x), tw = g.measureText(t).width;
+      const tx = Math.max(x0, Math.min(x0 + (x1 - x0) * f - tw * f, x1 - tw));
+      g.fillText(t, tx, h - 7);
+    });
+  }
 
   cv._chart = { series: use, sx, xmin, xmax, opt };
   attachHover(cv);
