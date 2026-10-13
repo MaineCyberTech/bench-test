@@ -54,7 +54,8 @@ try:
                              toolkit_version, is_live, update_needs_restart, hardware_line,
                              DASH_FIELDS, auto_update, should_restart_after_update, venv_python,
                          upload_telemetry_csv, persist_root, upload_run_files,
-                         extra_runner_args, tune_summary, bench_version, version_string)
+                         extra_runner_args, tune_summary, bench_version, version_string,
+                         drop_stray_script_arg)
 except Exception:  # reporting is optional
     Reporter = None
 
@@ -1395,6 +1396,8 @@ class BenchTUI:
 
 
 def main():
+    if "drop_stray_script_arg" in globals():     # absent on an older toolkit
+        sys.argv = drop_stray_script_arg(me=__file__)
     ap = argparse.ArgumentParser()
     ap.add_argument("--results-dir",
                     default=os.path.join(persist_root() if is_live() else REPO, "results"))

@@ -579,6 +579,24 @@ def run():
             _lm._app_args(["x.exe", "--demo", "--exit-after", "2"]),
             ["--demo", "--exit-after", "2"])
 
+    # ---- the app itself drops its own path, so a bundle built with the old
+    # restart_self still recovers without a manual relaunch ----
+    _me = os.path.join(BENCH, "tui.py")
+    c.check("an app drops its own path from argv",
+            br.drop_stray_script_arg(["tui.py", _me, "--demo"], me=_me) == ["tui.py", "--demo"], "")
+    c.check("an app keeps its real arguments",
+            br.drop_stray_script_arg(["tui.py", "--demo"], me=_me) == ["tui.py", "--demo"], "")
+    c.check("a real .py argument is not eaten",
+            br.drop_stray_script_arg(["agent.py", "--extra", "run.py"], me=_me)
+            == ["agent.py", "--extra", "run.py"], "")
+    c.check("another app's path is not eaten",
+            br.drop_stray_script_arg(["tui.py", os.path.join(BENCH, "gui.py")], me=_me)
+            == ["tui.py", os.path.join(BENCH, "gui.py")], "")
+    for _f in ("tui.py", "gui.py", "agent.py"):
+        _src = open(os.path.join(BENCH, _f), encoding="utf-8").read()
+        c.check("%s tolerates the stray path (guarded so an old toolkit still runs)" % _f,
+                '"drop_stray_script_arg" in globals()' in _src, "")
+
     httpd.shutdown()
     for k in ("BENCH_TOOLKIT_DIR", "BENCH_PERSIST_DIR", "BENCH_ALLOW_TOOLKIT_SWITCH",
               "BENCH_TOOLKIT_URL", "BENCH_GH_API", "BENCH_REPO_SLUG"):

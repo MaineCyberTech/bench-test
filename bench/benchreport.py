@@ -1498,6 +1498,29 @@ def auto_update(repo=None, log=None, enabled=None):
         return {"kind": "git", "ok": False, "updated": False, "error": str(e)}
 
 
+def drop_stray_script_arg(argv=None, me=None):
+    """Drop this app's own path when an older `restart_self` re-passed it.
+
+    `restart_self` used to spawn `[sys.executable] + sys.argv`, and `sys.argv[0]` is
+    the *script* - so a launcher bundle's successor received its own path as a
+    positional argument, argparse rejected it, and the app exited immediately: a
+    remote update closed the TUI and nothing came back.
+
+    Only a path that is exactly this file is removed, so a real argument can never
+    be eaten (the agent takes a REMAINDER positional, for instance). The launcher
+    drops it too, for a successor started before this fix.
+    """
+    argv = list(sys.argv if argv is None else argv)
+    try:
+        here = os.path.abspath(me or __file__)
+    except Exception:
+        return argv
+    if (len(argv) > 1 and argv[1].lower().endswith(".py") and os.path.isfile(argv[1])
+            and os.path.abspath(argv[1]) == here):
+        return [argv[0]] + argv[2:]
+    return argv
+
+
 def restart_self(delay=1.5, log=None, console=False):
     """Re-exec this runner so it picks up a freshly switched toolkit (live USB).
 

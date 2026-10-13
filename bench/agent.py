@@ -49,7 +49,7 @@ from benchreport import (Reporter, PhaseTracker, TelemetryTail,  # noqa: E402
                          self_update, restart_self,
                          toolkit_version, is_live, update_needs_restart,
                          auto_update, venv_python, upload_telemetry_csv, upload_run_files,
-                         extra_runner_args, version_string)
+                         extra_runner_args, version_string, drop_stray_script_arg)
 import bootstrap  # stdlib-only local env helper (see bench/bootstrap.py)
 
 DEFAULT_GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc",
@@ -394,6 +394,7 @@ def self_test(a):
 
 
 def main():
+    sys.argv = drop_stray_script_arg(me=__file__)
     ap = argparse.ArgumentParser(description="bench-test control-plane agent")
     _srv, _tok = load_conf()
     ap.add_argument("--server", default=_srv)
