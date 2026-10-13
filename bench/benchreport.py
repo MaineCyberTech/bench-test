@@ -822,9 +822,16 @@ def run_exec(reporter, cmd, timeout=120, cwd=None):
             reporter.log(["exec error: %s" % e], stream="exec")
         return {"rc": -1, "error": str(e)}
     buf = []
+    tail = []           # bounded copy for the result: a runner with no active run has
+                        # nowhere to stream to, so the ack has to carry the output or a
+                        # remote diagnostic comes back as "rc 0" and nothing else
     try:
         for ln in p.stdout:
-            buf.append(ln.rstrip("\n"))
+            ln = ln.rstrip("\n")
+            buf.append(ln)
+            tail.append(ln[:400])
+            if len(tail) > 200:
+                del tail[:-200]
             if len(buf) >= 20:
                 if reporter:
                     reporter.log(buf, stream="exec")
@@ -835,11 +842,13 @@ def run_exec(reporter, cmd, timeout=120, cwd=None):
             p.kill()
         except Exception:
             pass
-        buf.append("exec aborted: %s" % e)
+        msg = "exec aborted: %s" % e
+        buf.append(msg)
+        tail.append(msg)
         rc = -9
     if buf and reporter:
         reporter.log(buf, stream="exec")
-    return {"rc": rc}
+    return {"rc": rc, "out": "\n".join(tail)}
 
 
 def power_action(reboot=False):

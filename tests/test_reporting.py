@@ -174,6 +174,8 @@ def run():
     _, logs = cl.call("GET", "/api/v1/runs/%s/logs" % rep2.run_id)
     c.check("run_exec streams output", res.get("rc") == 0
             and any("bench-exec-ok" in l["line"] for l in logs["lines"]), (res, logs))
+    c.check("run_exec returns the output so an idle runner's exec is readable",
+            "bench-exec-ok" in (res.get("out") or ""), res)
     rep2.finish("done", 0, {})
 
     # ---- sampler columns all map to canonical names (no silently dropped data) ----
