@@ -163,18 +163,22 @@ you add behaviour. Never commit with a failing suite.
 
 - **Presets** live in `gui.PRESETS` (dict), `tui.PRESETS` (list), and
   `ALL_GROUPS`/`gset`/`PRESETS` in `app.js`. Change all three together.
-- **Versions.** `VERSION` (repo root, `MAJOR.MINOR.PATCH`) is the release line and
-  the single source of truth; `benchreport.bench_version()` reads it and
-  `version_string()` returns `1.1.0+<commit>` — the commit is *build metadata*, so
-  every update is a distinct, comparable version even between deliberate releases.
-  A release that ships several commits must not report one identical version for
-  all of them. The GUI/TUI headers, the runner registration, the web and the
-  control plane (`/health`, `/state`; it is deployed as a copy, so the file ships
-  with it — see `update_ct.py`) all report it, and release names carry it
-  (`ISO <gpu> v1.1.0 #<run>`).
-  **Bump `VERSION` on purpose** — minor for features, patch for fixes — and tag the
-  release (`git tag v1.1.0`); a copy with no `VERSION` reports `0.0.0+unknown`
-  rather than nothing. `tests/test_version.py` keeps this honest.
+- **Versions are derived from git, not maintained by hand.** `bench_version()`
+  reads `git describe --tags --long`: exactly on a tag it is the release
+  (`1.1.0`), commits past it are build metadata (`1.1.0+3` = three commits after
+  `v1.1.0`), and `version_string()` appends the commit (`1.1.0+3.abc1234`). So the
+  number changes **on every commit** and the *release* changes **when a tag is
+  pushed** — `.github/workflows/release.yml` does that automatically from the
+  commit subjects (`feat:` → minor, otherwise patch) and keeps `VERSION` in step.
+  A copy with no git (a live stick) falls back to the `VERSION` file it was fetched
+  with, which that workflow keeps equal to the latest tag — so a stick and a
+  checkout of the same release agree. `version_info()` is the single authoritative
+  descriptor (release, build, commit, mode, ref, commits_since_tag, protocol) and
+  every surface reads it: GUI/TUI headers, runner registration, the web, and the
+  control plane (`/health`, `/state`; deployed as a copy, so `VERSION` ships with
+  it — see `update_ct.py`). A malformed `VERSION` yields `0.0.0+invalid` rather
+  than being passed around as a release, and a runner whose `PROTOCOL` differs is
+  flagged in the fleet view. `tests/test_version.py` keeps this honest.
 - **Tuning knobs beyond the four durations** (`cpu_soak`, `ram_soak`,
   `disk_seconds`, `gpu_size`, `cpu_size`, `ram_size_mb`, `passes`, `steady_gb`,
   `stable`) travel in a preset's `tune` field and in the start payload; both

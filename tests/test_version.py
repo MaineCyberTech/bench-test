@@ -60,6 +60,18 @@ def run():
     c.check("toolkit_version advertises the protocol",
             rep.toolkit_version(REPO).get("protocol") == rep.PROTOCOL,
             rep.toolkit_version(REPO))
+    # the version is tag-derived, so a checkout that has a tag reports it and the
+    # release only moves when the tag does
+    rel, n, cm = rep.git_describe(REPO)
+    c.check("git_describe finds the release tag", rel == v or rel == "",
+            (rel, n, cm))
+    if rel:
+        c.check("bench_version follows the tag",
+                rep.bench_version(REPO).split("+")[0] == rel, rep.bench_version(REPO))
+        c.check("commits past the tag become build metadata",
+                (n == 0 and "+" not in rep.bench_version(REPO))
+                or rep.bench_version(REPO) == "%s+%d" % (rel, n),
+                (rep.bench_version(REPO), n))
 
     # the control plane reports its own version (it is deployed as a copy)
     srv = Server()

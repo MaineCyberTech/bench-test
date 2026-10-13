@@ -924,14 +924,41 @@ PROTOCOL = 1
 _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.\-]+)?$")
 
 
-def bench_version(root=None):
-    """The toolkit's release version, validated.
+def git_describe(root=None):
+    """``(release, commits_since_tag, commit)`` from ``git describe``.
 
-    A malformed VERSION is a bug, but a dashboard must still start: accept the
-    value only when it is semver, otherwise return a marker that is obviously not
-    a release (and says so) rather than passing a bad string around.
+    Returns ``("", 0, "")`` when this is not a checkout or there is no tag yet.
+    """
+    repo = root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        r = run_hidden(["git", "-C", repo, "describe", "--tags", "--long", "--dirty"],
+                       capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            return ("", 0, "")
+        m = re.match(r"^v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.\-]+)?)-(\d+)-g([0-9a-f]+)",
+                     r.stdout.strip())
+        if not m:
+            return ("", 0, "")
+        return (m.group(1), int(m.group(2)), m.group(3))
+    except Exception:
+        return ("", 0, "")
+
+
+def bench_version(root=None):
+    """The release version, derived from the git tag where there is one.
+
+    The version is **not** a hand-maintained number that can drift: it comes from
+    ``git describe``, so it changes exactly when you tag a release. Commits past
+    the tag are build metadata (``1.1.0+3`` = three commits after ``v1.1.0``), and
+    the commit itself is appended by ``version_string()``. Only a copy with no git
+    (a live stick) falls back to the VERSION file, which is validated rather than
+    trusted - a malformed value becomes ``0.0.0+invalid`` instead of being passed
+    around as a release.
     """
     root = root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    rel, n, _c = git_describe(root)
+    if rel:
+        return rel if n == 0 else "%s+%d" % (rel, n)
     try:
         with open(os.path.join(root, SEMVER_FILE), encoding="utf-8") as fh:
             v = fh.read().strip().splitlines()[0].strip()
@@ -965,12 +992,14 @@ def version_info(root=None):
     this rather than re-deriving a version, so they cannot disagree.
     """
     tv = toolkit_version(root)
+    rel, n, _c = git_describe(root)
     return {"version": version_string(root),
             "release": bench_version(root),
             "build": tv.get("build") or tv.get("commit"),
             "commit": tv.get("commit"),
             "mode": tv.get("mode"),
             "ref": tv.get("ref"),
+            "commits_since_tag": n,
             "protocol": PROTOCOL}
 
 

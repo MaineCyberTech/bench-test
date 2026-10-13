@@ -467,11 +467,20 @@ import json, os, subprocess, sys, platform
 jsonl, json_out, md_out, host, iso, py, root, telemetry_csv, logdir = sys.argv[1:10]
 
 recs = []
+bad = 0
 with open(jsonl) as fh:
     for line in fh:
         line = line.strip()
-        if line:
+        if not line:
+            continue
+        try:
             recs.append(json.loads(line))
+        except ValueError:
+            # one malformed record must not cost the whole summary - it did:
+            # the JSONDecodeError killed the report and left summary.gfx empty
+            bad += 1
+if bad:
+    print("[warn] skipped %d malformed record(s) in %s" % (bad, jsonl))
 
 env = {"python": py}
 try:
