@@ -77,6 +77,14 @@ def run():
             ba.write_agent_conf(out2) is False
             and not os.path.exists(os.path.join(out2, "bench-agent.conf")), "")
 
+    # Windows AMD/Intel GPU telemetry: the LHM sampler exists and run_win uses it
+    ss = os.path.join(BENCH, "Sample-Sensors.ps1")
+    c.check("Sample-Sensors.ps1 exists", os.path.isfile(ss), ss)
+    with open(os.path.join(BENCH, "run_win.py"), encoding="utf-8") as fh:
+        rw = fh.read()
+    c.check("run_win.py wires the LibreHardwareMonitor sampler",
+            "Sample-Sensors.ps1" in rw and "lhm_thread" in rw, "")
+
     return c.fails
 
 

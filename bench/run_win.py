@@ -12,6 +12,7 @@ import argparse
 import csv
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -85,6 +86,10 @@ COLUMNS = ["elapsed_s", "gpu_util_pct", "mem_util_pct", "temp_c", "temp_mem_c", 
 
 _CPU_TEMP = {"v": None}
 _GPU_ENGINE = {"3d": None, "copy": None}
+# LibreHardwareMonitor values (Sample-Sensors.ps1), used when there is no
+# nvidia-smi - i.e. AMD/Intel GPUs on Windows - so the GPU columns are populated.
+_LHM = {}
+_LHM_LOCK = threading.Lock()
 
 
 def _bits(s):
@@ -153,6 +158,60 @@ def gpu_engine_thread(stop_evt):
         except Exception:
             pass
         stop_evt.wait(5.0)
+
+
+def _fnum(s):
+    s = str(s).strip()
+    if s in ("", "None"):
+        return None
+    try:
+        v = float(s)
+        return v if v > 0 else None          # LHM reports 0 when it cannot read
+    except ValueError:
+        return None
+
+
+def lhm_thread(stop_evt):
+    """Stream LibreHardwareMonitor sensors (Sample-Sensors.ps1) into _LHM.
+
+    nvidia-smi carries the GPU telemetry on NVIDIA; on AMD/Intel the library is
+    the only local source for GPU temp/power/clocks/VRAM. Best-effort and off the
+    1 Hz path (a value the library cannot read stays blank)."""
+    if os.name != "nt":
+        return
+    script = os.path.join(BENCH, "Sample-Sensors.ps1")
+    if not os.path.isfile(script):
+        return
+    try:
+        p = subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                              "-File", script, "-IntervalMs", "1000"],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                             bufsize=1, creationflags=subprocess.CREATE_NO_WINDOW)
+    except Exception:
+        return
+    try:
+        for line in p.stdout:
+            if stop_evt.is_set():
+                break
+            d = {}
+            for tok in line.split():
+                if "=" in tok:
+                    k, v = tok.split("=", 1)
+                    d[k] = v
+            upd = {"gpu_temp": _fnum(d.get("gpu_temp")), "gpu_power": _fnum(d.get("gpu_power")),
+                   "gpu_clk": _fnum(d.get("gpu_clk")), "mem_clk": _fnum(d.get("mem_clk")),
+                   "gpu_util": _fnum(d.get("gpu_util")), "vram_used": _fnum(d.get("vram_used")),
+                   "gpu_fan_pct": _fnum(d.get("gpu_fan_pct")), "cpu_temp": _fnum(d.get("cpu_temp")),
+                   "cpu_power": _fnum(d.get("cpu_power"))}
+            with _LHM_LOCK:
+                _LHM.update(upd)
+    except Exception:
+        pass
+    finally:
+        try:
+            p.terminate()
+        except Exception:
+            pass
 
 
 def _gpu_row():
@@ -245,6 +304,8 @@ def sampler(csv_path, stop_evt, interval=0.25, gpu_interval=0.5):
                 gpu_t = tick
             row = [round(tick - t0, 2)]
             g = gpu_v
+            with _LHM_LOCK:
+                lhm = dict(_LHM)
             extra = [None] * 11
             extra[9] = _GPU_ENGINE["3d"]
             extra[10] = _GPU_ENGINE["copy"]
@@ -262,7 +323,13 @@ def sampler(csv_path, stop_evt, interval=0.25, gpu_interval=0.5):
                                  _num(g[18]), _num(g[19]), _flag(g[20]),
                                  (1 if (bits & ~1) else 0) if bits is not None else None, bits]
             else:
-                row += [None] * 14
+                # no nvidia-smi (AMD/Intel GPU): LibreHardwareMonitor values.
+                # util, mem_util, temp, temp_mem, fan, power, power_limit, sm, mem, gr,
+                # vram_mib, pstate, enc, dec
+                row += [lhm.get("gpu_util"), None, lhm.get("gpu_temp"), None,
+                        lhm.get("gpu_fan_pct"), lhm.get("gpu_power"), None,
+                        lhm.get("gpu_clk"), lhm.get("mem_clk"), lhm.get("gpu_clk"),
+                        lhm.get("vram_used"), None, None, None]
             if psutil:
                 try:
                     vm = psutil.virtual_memory()
@@ -274,7 +341,7 @@ def sampler(csv_path, stop_evt, interval=0.25, gpu_interval=0.5):
                         round(vm.used / 1024 ** 3, 2) if vm else None,
                         round(vm.total / 1024 ** 3, 2) if vm else None,
                         round(sm.used / 1024 ** 3, 2) if sm else None,
-                        _CPU_TEMP["v"]]
+                        (_CPU_TEMP["v"] if _CPU_TEMP["v"] is not None else lhm.get("cpu_temp"))]
                 try:
                     dio = psutil.disk_io_counters()
                     nio = psutil.net_io_counters()
@@ -296,7 +363,8 @@ def sampler(csv_path, stop_evt, interval=0.25, gpu_interval=0.5):
                     row += [None, None, None, None]
             else:
                 used, total, swap = _win_mem()
-                row += [_win_cpu_pct(prev), used, total, swap, _CPU_TEMP["v"],
+                row += [_win_cpu_pct(prev), used, total, swap,
+                        (_CPU_TEMP["v"] if _CPU_TEMP["v"] is not None else lhm.get("cpu_temp")),
                         None, None, None, None]
             row += extra
             w.writerow(row)
@@ -321,6 +389,10 @@ def main():
                      daemon=True).start()
     threading.Thread(target=cpu_temp_thread, args=(stop_evt,), daemon=True).start()
     threading.Thread(target=gpu_engine_thread, args=(stop_evt,), daemon=True).start()
+    if os.name == "nt" and not shutil.which("nvidia-smi"):
+        # AMD/Intel GPU on Windows: LibreHardwareMonitor supplies the GPU columns
+        # (temperature/power/clocks/VRAM) that nvidia-smi would otherwise carry.
+        threading.Thread(target=lhm_thread, args=(stop_evt,), daemon=True).start()
 
     ps = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", BATTERY,
           "-OutDir", a.out_dir,
