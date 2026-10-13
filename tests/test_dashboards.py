@@ -131,6 +131,37 @@ def _web(c):
     c.check("TUNE_DEFAULT carries stable_hold (so the payload must gate it)",
             bool(_web_tune) and "stable_hold" in _web_tune.group(1), "")
 
+    # ---- audited fixes: checks the suite can actually make on the sources ----
+    mz = re.search(r"\.modal\{[^}]*z-index:(\d+)", css)
+    fz = re.search(r"\.focuspane\{[^}]*z-index:(\d+)", css)
+    c.check("the modal sits above the focus pane",
+            bool(mz and fz) and int(mz.group(1)) > int(fz.group(1)),
+            (mz and mz.group(1), fz and fz.group(1)))
+    c.check("Escape closes the modal, not the pane behind it",
+            "if (modalOpen()) { e.preventDefault(); closeModal(); }" in js
+            and "else if (FOCUS) closeFocus();" in js, "")
+    c.check("the live tail is kept apart from the downsampled base",
+            "let TAIL = {}" in js and "function telBuf" in js
+            and "slice(-2000)" not in js and "buf.length - 900" not in js, "")
+    c.check("trends normalise their mixed-unit series",
+            'drawChart($("#trendChart"), series, { xTime: true, normalize: true })' in js, "")
+    c.check("the focus pane takes its stats from the server",
+            "/stats" in js and "function ensureStats" in js, "")
+    c.check("a null throttle is not reported as 'no throttle'",
+            '"throttle no data"' in js and "derived.throttled_pct" in js, "")
+    c.check("every active run is refetched on reconnect and on the tick",
+            "for (const a of STATE.active) reloadTel(a.id);" in js, "")
+    c.check("history and fleet deltas need a matching soak size",
+            "String(pn) === String(s.gpu_soak_size)" in js and "gpuCell" in js, "")
+    c.check("the gfx engine picker follows the runner's platform",
+            "function gfxEngines" in js and 'out.push("valley")' in js
+            and 'out.push("glmark2")' in js and "const engines = gfxEngines(runner)" in js, "")
+    with open(os.path.join(REPO, "server", "web", "index.html"), encoding="utf-8") as fh:
+        html = fh.read()
+    c.check("sortable headers are keyboard reachable and carry aria-sort",
+            html.count('class="sortable') == 10 and html.count('tabindex="0"') >= 10
+            and 'setAttribute("aria-sort"' in js, "")
+
 
 def run():
     c = Checker("dashboards")

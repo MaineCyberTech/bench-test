@@ -116,6 +116,15 @@ def run():
     c.check("supported_groups matches the platform",
             ("fan" not in rep.supported_groups()) if os.name == "nt"
             else ("llm" not in rep.supported_groups()), rep.supported_groups())
+    # a toggle for a group the platform cannot run is a silent no-op
+    want_ui = [g for g in GROUPS if g in rep.supported_groups()]
+    c.check("gui group toggles are capability-filtered",
+            [k for k, _ in gui.UI_GROUPS] == want_ui, gui.UI_GROUPS)
+    c.check("tui group toggles are capability-filtered",
+            tui.UI_GROUPS == want_ui, tui.UI_GROUPS)
+    c.check("tui group hotkeys are unique and reach every offered toggle",
+            len(tui._GROUP_KEYS) == len(tui.UI_GROUPS)
+            and len(set(tui._GROUP_KEYS)) == len(tui._GROUP_KEYS), tui._GROUP_KEYS)
 
     # ---- the preset trim: disk size must actually reach the runner ----
     # The randread/randwrite/randmix phases are size-bound, not seconds-bound, so

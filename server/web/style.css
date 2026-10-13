@@ -62,7 +62,7 @@ main{padding:18px 22px 60px}
 .runner .rrow{display:flex;gap:10px;align-items:baseline;font-size:12px;min-width:0}
 .runner .rrow .rk{color:var(--muted);flex:0 0 66px;text-transform:uppercase;letter-spacing:.06em;font-size:10px}
 .runner .rrow .rv{min-width:0;overflow:hidden;text-overflow:ellipsis}
-.runner.off{opacity:.55}
+.runner.off{opacity:.7}
 .runner .rhead{display:flex;align-items:center;gap:9px}
 .runner .rname{font-weight:700;font-size:15px}
 .runner .rtag{font-size:10px;color:var(--muted);border:1px solid var(--border);
@@ -98,7 +98,7 @@ main{padding:18px 22px 60px}
 .phase.ok .ic{color:var(--good)}
 .phase.warn .ic{color:var(--warn)}
 .phase.bad .ic{color:var(--bad)}
-.phase.skip{opacity:.45}
+.phase.skip{opacity:.7}
 .phase.skip .ic{color:var(--muted)}
 .phase .g{color:var(--muted)}
 canvas{width:100%;display:block}
@@ -121,13 +121,14 @@ tbody tr:hover{background:#1a2029}
 .sw{width:10px;height:10px;border-radius:3px;display:inline-block}
 
 .modal{position:fixed;inset:0;background:rgba(6,9,13,.72);display:none;
-  align-items:flex-start;justify-content:center;z-index:50;padding:40px 16px;overflow:auto}
+  align-items:flex-start;justify-content:center;z-index:80;padding:40px 16px;overflow:auto}
 .modal.show{display:flex}
 .modalbox{background:var(--card);border:1px solid var(--border);border-radius:14px;
   padding:22px;max-width:960px;width:100%}
 .modalbox h3{margin-bottom:12px}
 .formrow{display:flex;gap:10px;align-items:center;margin:8px 0;flex-wrap:wrap}
 .formrow label{min-width:120px;color:var(--muted);font-size:12px}
+.formrow label.inline{min-width:0}
 .chk{display:flex;gap:14px;flex-wrap:wrap}
 .chk label{min-width:0;color:var(--text);display:flex;gap:6px;align-items:center}
 .kv{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}

@@ -99,6 +99,13 @@ GROUPS = [
     ("sys", "Inventory"), ("gfx", "Graphics (FurMark)"),
 ]
 
+# Only offer toggles for the groups this platform's battery actually implements
+# (fan is Linux-only, llm is Windows-only): an offered no-op group is a silent lie.
+try:
+    UI_GROUPS = [g for g in GROUPS if g[0] in supported_groups()]
+except Exception:
+    UI_GROUPS = list(GROUPS)
+
 _ALL_G = {k: 1 for k in ("gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc",
                          "llm", "fan", "sys", "gfx")}
 
@@ -338,11 +345,9 @@ class Dashboard:
         ttk.Label(side, text="GROUPS", style="Sect.TLabel").pack(anchor="w")
         grid = ttk.Frame(side, style="Card.TFrame")
         grid.pack(fill="x", pady=(4, 12))
-        self.gvars = {}
-        for i, (key, label) in enumerate(GROUPS):
-            var = tk.BooleanVar(value=True)
-            self.gvars[key] = var
-            ttk.Checkbutton(grid, text=label, variable=var).grid(row=i, column=0, sticky="w", pady=1)
+        self.gvars = {key: tk.BooleanVar(value=True) for key, _ in GROUPS}
+        for i, (key, label) in enumerate(UI_GROUPS):
+            ttk.Checkbutton(grid, text=label, variable=self.gvars[key]).grid(row=i, column=0, sticky="w", pady=1)
 
         ttk.Label(side, text="DURATIONS (SECONDS)", style="Sect.TLabel").pack(anchor="w")
         dgrid = ttk.Frame(side, style="Card.TFrame")

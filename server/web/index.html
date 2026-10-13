@@ -65,16 +65,16 @@
     <div class="card tablecard">
       <table id="histTable">
         <thead><tr>
-          <th class="sortable" data-sort="host">host</th><th>system</th>
-          <th class="sortable" data-sort="preset">preset</th>
-          <th class="sortable" data-sort="label">label</th>
-          <th class="sortable" data-sort="started">started</th>
-          <th class="sortable num" data-sort="dur">duration</th>
-          <th class="sortable" data-sort="status">status</th>
-          <th class="sortable num" data-sort="gpu">GPU soak TF</th>
-          <th class="sortable num" data-sort="cpu">CPU soak GF</th>
-          <th class="sortable num" data-sort="ram">RAM GB/s</th>
-          <th class="sortable num" data-sort="peak">peak °C</th>
+          <th class="sortable" data-sort="host" tabindex="0">host</th><th>system</th>
+          <th class="sortable" data-sort="preset" tabindex="0">preset</th>
+          <th class="sortable" data-sort="label" tabindex="0">label</th>
+          <th class="sortable" data-sort="started" tabindex="0">started</th>
+          <th class="sortable num" data-sort="dur" tabindex="0">duration</th>
+          <th class="sortable" data-sort="status" tabindex="0">status</th>
+          <th class="sortable num" data-sort="gpu" tabindex="0">GPU soak TF</th>
+          <th class="sortable num" data-sort="cpu" tabindex="0">CPU soak GF</th>
+          <th class="sortable num" data-sort="ram" tabindex="0">RAM GB/s</th>
+          <th class="sortable num" data-sort="peak" tabindex="0">peak °C</th>
         </tr></thead>
         <tbody></tbody>
       </table>
@@ -90,7 +90,7 @@
         <select id="trendMetric2"><option value="">+ compare metric…</option></select>
       </div>
     </div>
-    <div class="card"><canvas id="trendChart" height="360"></canvas></div>
+    <div class="card"><canvas id="trendChart" height="360" role="img" aria-label="metric trend chart"></canvas></div>
     <div class="legend" id="trendLegend"></div>
   </section>
 
@@ -112,7 +112,7 @@
     <div class="card tablecard">
       <table id="fleetHosts">
         <thead><tr>
-          <th>machine</th><th>runs</th><th>last run</th><th>median GPU TF</th>
+          <th>machine</th><th>runs</th><th>last run</th><th>median GPU TF (per N)</th>
           <th>median CPU GF</th><th>median RAM GB/s</th><th>median peak °C</th><th>toolkit</th><th>latest</th>
         </tr></thead>
         <tbody></tbody>
@@ -122,7 +122,7 @@
     <div class="card tablecard">
       <table id="fleetGpus">
         <thead><tr>
-          <th>gpu</th><th>runs</th><th>machines</th><th>median GPU TF</th><th>median peak °C</th>
+          <th>gpu</th><th>runs</th><th>machines</th><th>median GPU TF (per N)</th><th>median peak °C</th>
         </tr></thead>
         <tbody></tbody>
       </table>

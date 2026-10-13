@@ -99,13 +99,22 @@ let SHOW_OFFLINE = localStorage.getItem("benchd_show_offline") === "1";
 let SORT = { key: "started", dir: -1 };
 
 let TOKEN = new URLSearchParams(location.search).get("token") || localStorage.getItem("benchd_token") || "";
+// the token is a bearer secret: drop it from the address bar once it is in memory
+if (new URLSearchParams(location.search).has("token")) {
+  history.replaceState(null, "", location.pathname + location.hash);
+}
 let STATE = { runners: [], active: [], recent: [], metrics: [] };
-let TEL = {};               // run_id -> [sample dicts]
+const TEL_MAX = 4000;       // rows the server returns for one telemetry read
+let TEL = {};               // run_id -> server-downsampled base rows
+let TAIL = {};              // run_id -> live SSE rows appended since the last refetch
+let STATS = {};             // run_id -> server-side /runs/{id}/stats payload
 let LOGS = {};              // run_id -> [line strings]
 let CHART = {};             // run_id -> selected chart preset
 let FOCUS = null;           // run_id shown in the full-pane live view
 let HOSTS = [];
 let SCHEDULES = [];
+let SKEW = 0;               // server_time - browser clock, so elapsed/ago match the server
+let DETAIL_REDRAW = null;   // redraw hook for the open run-detail modal's chart
 let es = null;
 
 /* ------------------------------------------------------------------ dom -- */
@@ -117,11 +126,11 @@ const fmt = (v, d = 1) => (v == null || isNaN(v)) ? "—" : (+v).toFixed(d);
 const dur = (s) => s == null ? "-" : (s < 60 ? s.toFixed(0) + "s"
   : s < 3600 ? Math.floor(s / 60) + "m" + String(Math.round(s % 60)).padStart(2, "0") + "s"
   : Math.floor(s / 3600) + "h" + String(Math.round((s % 3600) / 60)).padStart(2, "0") + "m");
-const ago = (t) => { if (!t) return "—"; const d = Date.now() / 1000 - t;
+const ago = (t) => { if (!t) return "—"; const d = nowS() - t;
   return d < 60 ? Math.round(d) + "s ago" : d < 3600 ? Math.round(d / 60) + "m ago" : Math.round(d / 3600) + "h ago"; };
 const ts = (t) => t ? new Date(t * 1000).toLocaleString() : "—";
 const runDur = (r) => {
-  if (!r.ended) return dur(Date.now() / 1000 - r.started);
+  if (!r.ended) return dur(nowS() - r.started);
   const d = r.ended - r.started;
   return d > 0 ? dur(d) : "—";
 };
@@ -133,6 +142,10 @@ const sysLine = (r) => {
   return parts.join(" · ");
 };
 const numOrNull = (v) => (v == null || v === "" || isNaN(v)) ? null : +v;
+const nowS = () => Date.now() / 1000 + SKEW;   // server-aligned wall clock
+function modalOpen() { const m = $("#modal"); return !!m && m.classList.contains("show"); }
+function telBuf(id) { return (TEL[id] || []).concat(TAIL[id] || []); }
+function telDownsampled(id) { return (TEL[id] || []).length >= TEL_MAX; }
 function median(vals) {
   const v = vals.filter((x) => x != null).map(Number).sort((a, b) => a - b);
   if (!v.length) return null;
@@ -160,9 +173,12 @@ async function api(path, method = "GET", body) {
 
 /* -------------------------------------------------------------- token --- */
 function askToken() {
+  // a 401 storm must not rebuild the modal while the operator is typing in it
+  if (modalOpen()) return;
   openModal(`<h3>Access token</h3>
     <p class="muted">This control plane requires a bearer token.</p>
-    <div class="formrow"><input id="tokInput" style="flex:1" placeholder="paste token"
+    <div class="formrow"><label for="tokInput">token</label>
+      <input id="tokInput" style="flex:1" placeholder="paste token"
       value="${esc(TOKEN)}"/></div>
     <div class="formrow" style="justify-content:flex-end">
       <button class="accent" id="tokSave">save</button></div>`);
@@ -177,7 +193,12 @@ function askToken() {
 function connect() {
   if (es) es.close();
   es = new EventSource("/api/v1/stream?token=" + encodeURIComponent(TOKEN));
-  es.onopen = () => setConn(true);
+  es.onopen = () => {
+    setConn(true);
+    // a reconnect can have missed telemetry: refetch every active run's buffer,
+    // not just the focused one
+    for (const a of STATE.active) reloadTel(a.id);
+  };
   es.onerror = () => setConn(false);
   es.addEventListener("snapshot", () => { setConn(true); refresh(); });
   es.addEventListener("runner", () => queueRefresh());
@@ -186,7 +207,7 @@ function connect() {
   es.addEventListener("telemetry", (e) => onTelemetry(JSON.parse(e.data)));
   es.addEventListener("command", () => queueRefresh());
   es.addEventListener("log", (e) => onLog(JSON.parse(e.data)));
-  es.addEventListener("schedule", () => renderSchedules());
+  es.addEventListener("schedule", () => { if (paneActive("schedules")) renderSchedules(); });
   es.addEventListener("event", () => {});
 }
 function onLog(d) {
@@ -236,12 +257,22 @@ async function refresh() {
   try {
     const s = await api("/state");
     STATE = s;
+    if (s.server_time != null) SKEW = s.server_time - Date.now() / 1000;
     HOSTS = (s.hosts && s.hosts.length) ? s.hosts
       : [...new Set(STATE.recent.map((r) => r.host).filter(Boolean))].sort();
     for (const a of STATE.active) {
       ensureTel(a.id);
       if (!LOGS[a.id] && a.logs_tail) LOGS[a.id] = a.logs_tail.map((l) => l.line);
     }
+    // prune per-run buffers: /state only carries the active runs plus the latest
+    // 25, so keep exactly those (a focused run that has fallen out of the window
+    // cannot be shown any more either)
+    const keep = new Set([...STATE.active.map((a) => a.id), ...STATE.recent.map((r) => r.id)]);
+    for (const k of Object.keys(TEL)) if (!keep.has(k)) { delete TEL[k]; delete TAIL[k]; }
+    for (const k of Object.keys(LOGS)) if (!keep.has(k)) delete LOGS[k];
+    for (const k of Object.keys(CHART)) if (!keep.has(k)) delete CHART[k];
+    for (const k of Object.keys(STATS)) if (!keep.has(k)) delete STATS[k];
+    if (FOCUS && !keep.has(FOCUS)) closeFocus();
     const st = _scrollState();
     renderAll();
     _restoreScroll(st);
@@ -251,33 +282,52 @@ async function refresh() {
 function ensureTel(id) {
   if (TEL[id]) return;
   TEL[id] = [];
-  api("/runs/" + id + "/telemetry?max=4000").then((d) => {
+  api("/runs/" + id + "/telemetry?max=" + TEL_MAX).then((d) => {
     TEL[id] = (d.rows || []).filter((x) => x.elapsed != null);
+    TAIL[id] = [];
     renderActive();
   }).catch(() => {});
 }
 
-/* Re-read a run's telemetry while the live view is open: the SSE stream is the
-   fast path, this is the authoritative one (a batch can be missed). */
+/* Re-read a run's telemetry: the SSE stream is the fast path, this is the
+   authoritative one (a batch can be missed). The fetched rows replace the
+   downsampled base; the live tail is folded in and cleared so nothing doubles. */
 function reloadTel(id) {
-  api("/runs/" + id + "/telemetry?max=4000").then((d) => {
+  api("/runs/" + id + "/telemetry?max=" + TEL_MAX).then((d) => {
     const rows = (d.rows || []).filter((x) => x.elapsed != null);
-    if (rows.length) TEL[id] = rows;
+    if (rows.length) { TEL[id] = rows; TAIL[id] = []; }
+    const card = document.querySelector(`[data-active="${id}"]`);
+    if (card) drawRunChart(card, id);
     if (FOCUS === id) {
       const f = $("#focus");
-      if (f) { paintFocusStats(f, id); drawRunChart(f, id); }
+      if (f) { paintFocusStats(f, id); drawRunChart(f, id); drawMiniCharts(f, id); }
     }
   }).catch(() => {});
 }
 
+/* Server-side whole-run stats for the focus pane (same source as the detail
+   modal), so the pane does not summarise a short client buffer. */
+function ensureStats(id) {
+  if (id in STATS) return;
+  STATS[id] = null;   // in flight
+  api("/runs/" + id + "/stats").then((d) => {
+    STATS[id] = d;
+    if (FOCUS === id) renderFocus();
+  }).catch(() => { delete STATS[id]; });
+}
+
 function onTelemetry(d) {
-  const buf = TEL[d.run_id] || (TEL[d.run_id] = []);
+  // the live batch goes to the tail; the downsampled base is left intact so a
+  // long run's charts still start at t=0
+  const buf = TAIL[d.run_id] || (TAIL[d.run_id] = []);
   // the server publishes the whole posted batch ("samples"); fall back to a
   // single "sample" for compatibility
   const batch = (d.samples && d.samples.length) ? d.samples : (d.sample ? [d.sample] : []);
   if (!batch.length) return;
   for (const s of batch) if (s && typeof s === "object") buf.push(s);
-  if (buf.length > 900) buf.splice(0, buf.length - 900);
+  // the 15 s refetch is the real bound; cap an extreme gap at the intended
+  // window instead of silently dropping most of the run
+  if (buf.length > TEL_MAX) buf.splice(0, buf.length - TEL_MAX);
   const last = batch[batch.length - 1];
   const card = document.querySelector(`[data-active="${d.run_id}"]`);
   if (card) { paintGauges(card, last); drawRunChart(card, d.run_id); }
@@ -293,11 +343,20 @@ function onPhase(p) {
 }
 
 /* -------------------------------------------------------------- render -- */
+function paneActive(name) {
+  const p = $("#tab-" + name);
+  return !!p && p.classList.contains("active");
+}
 function renderAll() {
-  renderTop(); renderRunners(); renderActive(); renderHistory(); renderTrends();
-  renderCompareOptions(); renderSchedules(); renderFocus();
-  const fp = $("#tab-fleet");
-  if (fp && fp.classList.contains("active")) renderFleet();
+  renderTop(); renderRunners(); renderActive();
+  // only the visible pane is rendered (and fetched) on a refresh; clicking a tab
+  // renders its pane (see the tab handler)
+  if (paneActive("history")) renderHistory();
+  if (paneActive("trends")) renderTrends();
+  if (paneActive("compare")) renderCompareOptions();
+  if (paneActive("fleet")) renderFleet();
+  if (paneActive("schedules")) renderSchedules();
+  renderFocus();
 }
 
 function machineKey(r) { return r.machine_id || ("name:" + (r.name || "")); }
@@ -347,7 +406,7 @@ function runnerInfo(r) {
                  v.cpu_util != null ? fmt(v.cpu_util, 0) + "% cpu" : null]
       .filter(Boolean).join(" · ");
     if (now) {
-      rows.push(["current run", `${esc(live.label || "run")} · ${dur(Date.now() / 1000 - (live.started || 0))} elapsed`
+      rows.push(["current run", `${esc(live.label || "run")} · ${dur(nowS() - (live.started || 0))} elapsed`
         + `<div class="muted mono">${esc(now)}</div>`]);
     }
   }
@@ -398,9 +457,9 @@ function runnerCard(r) {
   ].join("");
   const dev = [caps.gpu || "no GPU", caps.cpu, caps.ram_gib ? caps.ram_gib + " GiB" : "",
                caps.driver ? "driver " + caps.driver : ""].filter(Boolean).join(" · ");
-  return `<div class="runner ${r.online ? "" : "off"} ${r.status === "busy" ? "busy" : ""}" data-runner="${esc(r.id)}">
+  return `<div class="runner ${r.online ? "" : "off"} ${r.status === "busy" ? "busy" : ""}" data-runner="${esc(r.id)}" tabindex="0">
       <div class="rhead">
-        <span class="statusp ${cls}"></span>
+        <span class="statusp ${cls}" role="img" aria-label="status: ${cls}"></span>
         <div style="flex:1;min-width:0"><div class="rname">${esc(r.label || r.name)}</div></div>
       </div>
       <div class="rmeta row">${badges}</div>
@@ -444,7 +503,7 @@ function runCardHTML(a) {
   const preset = CHART[a.id] || Object.keys(CHART_PRESETS)[0];
   return `<div class="runbox" data-active="${esc(a.id)}">
       <div class="rh">
-        <span class="statusp busy"></span>
+        <span class="statusp busy" role="img" aria-label="status: running"></span>
         <div class="h">${esc(a.host)} · ${esc(a.label || "run")}</div>
         <span class="muted mono elapsed"></span>
         <span class="muted mono sysline">${esc(sysLine(a))}</span>
@@ -462,7 +521,7 @@ function runCardHTML(a) {
         <select class="csel" data-chart="${a.id}">${Object.keys(CHART_PRESETS).map((k) => `<option${k === preset ? " selected" : ""}>${esc(k)}</option>`).join("")}</select>
       </div>
       <div class="chartrow">
-        <canvas class="runchart" height="180"></canvas>
+        <canvas class="runchart" height="180" role="img" aria-label="telemetry chart"></canvas>
       </div>
       <div class="chartlegend"></div>
       <div class="phases"></div>
@@ -480,7 +539,7 @@ function runCardHTML(a) {
 
 function paintHeader(card, a) {
   const el = card.querySelector(".rh .elapsed");
-  if (el && a.started) el.textContent = dur(Date.now() / 1000 - a.started) + " elapsed";
+  if (el && a.started) el.textContent = dur(nowS() - a.started) + " elapsed";
 }
 function updatePhases(card, phases) {
   const el = card.querySelector(".phases");
@@ -527,7 +586,7 @@ function phaseRow(p) {
     bad ? "✕" : "✓";
   const cls = skipped ? "skip" : p.status === "running" ? "run" :
     p.status === "warn" ? "warn" : bad ? "bad" : "ok";
-  const t = skipped ? "" : ((p.t0 && p.t1) ? dur(p.t1 - p.t0) : (p.t0 ? dur(Date.now() / 1000 - p.t0) : ""));
+  const t = skipped ? "" : ((p.t0 && p.t1) ? dur(p.t1 - p.t0) : (p.t0 ? dur(nowS() - p.t0) : ""));
   return `<div class="phase ${cls}">
     <span class="ic">${ic}</span><span class="g">${esc(p.grp)}</span>
     <span>${esc(p.label || "")}</span><span class="muted">${t}</span></div>`;
@@ -590,7 +649,7 @@ function focusShell(r, live) {
     `<option${k === (CHART[id] || Object.keys(CHART_PRESETS)[0]) ? " selected" : ""}>${esc(k)}</option>`).join("");
   return `<div class="rtabs" data-f="rtabs">${focusTabsInner(r)}</div>
     <div class="focushead">
-      <span class="statusp ${live ? "busy" : "idle"}"></span>
+      <span class="statusp ${live ? "busy" : "idle"}" role="img" aria-label="status: ${live ? "running" : "finished"}"></span>
       <div class="h">${esc(r.host)} · ${esc(r.label || "run")}</div>
       <span class="pill ${esc(r.status || "")}">${esc(r.status || "")}</span>
       <span class="muted mono" data-f="elapsed"></span>
@@ -616,15 +675,15 @@ function focusShell(r, live) {
         </div>
         <div class="fcard"><h4>Telemetry</h4>
           <div class="charthead"><select class="csel" data-chart="${esc(r.id)}">${sel(r.id)}</select></div>
-          <div class="chartrow"><canvas class="runchart" height="200"></canvas></div>
+          <div class="chartrow"><canvas class="runchart" height="200" role="img" aria-label="telemetry chart"></canvas></div>
           <div class="chartlegend"></div>
           <div class="minigrid" data-f="minis">${FOCUS_MINI.map(([k, lbl]) =>
             `<div class="mini"><div class="ml"><span>${esc(lbl)}</span>
              <span class="mv" data-m="${k}">—</span></div>
-             <canvas data-mini="${k}" height="56"></canvas></div>`).join("")}</div>
+             <canvas data-mini="${k}" height="56" role="img" aria-label="${esc(lbl)} sparkline"></canvas></div>`).join("")}</div>
         </div>
       </div>
-      <div class="fcard" style="margin-top:14px"><h4>Telemetry stats (min / avg / max · n)</h4>
+      <div class="fcard" style="margin-top:14px"><h4>Telemetry stats — whole run, server-side (min / avg / max · n)</h4>
         <div class="statcols" data-f="stats"></div>
       </div>
       <div class="fgrid two">
@@ -655,7 +714,7 @@ function renderFocus() {
 }
 
 function paintFocus(el, r, live) {
-  const now = Date.now() / 1000;
+  const now = nowS();
   const e = el.querySelector("[data-f=elapsed]");
   if (e) e.textContent = r.started ? dur((r.ended || now) - r.started) + (live ? " elapsed" : " total") : "";
   const pill = el.querySelector(".pill");
@@ -681,7 +740,7 @@ function paintFocus(el, r, live) {
   paintFocusSpecs(el, r);
   paintGauges(el, v);
   paintFocusBars(el, v);
-  paintFocusHealth(el, v);
+  paintFocusHealth(el, v, (STATS[r.id] || {}).derived);
   paintFocusStats(el, r.id);
   drawRunChart(el, r.id);
   drawMiniCharts(el, r.id);
@@ -708,7 +767,7 @@ function paintFocusSpecs(el, r) {
     ["peak", (() => {
       // the true peak of this run's samples, not the newest one: r.latest is a
       // single row, so calling it "peak" disagreed with the details panel
-      const rows = TEL[r.id] || [];
+      const rows = telBuf(r.id);
       let mx = null;
       for (const x of rows) if (x.temp_c != null && (mx == null || x.temp_c > mx)) mx = x.temp_c;
       return mx != null ? fmt(mx, 0) + " °C" : null;
@@ -735,9 +794,18 @@ function paintFocusBars(el, v) {
 
 /* One line summarising the things that indicate trouble, shared by the live card
  * and the focus view (the TUI's "health" line). */
-function healthBits(v) {
-  const hot = !!numOrNull(v.throttle);
-  const bits = [hot ? "THROTTLED" : "no throttle"];
+function healthBits(v, derived) {
+  const th = numOrNull(v.throttle);
+  let bits;
+  if (th != null) bits = [th ? "THROTTLED" : "no throttle"];
+  else if (derived && derived.throttled_pct != null) {
+    // a finished run has no live sample any more: use the whole-run derived stat
+    bits = [derived.throttled_pct > 0 ? "THROTTLED " + fmt(derived.throttled_pct, 0) + "%"
+                                      : "no throttle"];
+  } else {
+    bits = ["throttle no data"];   // null means "not measured", not "not throttled"
+  }
+  const hot = th != null ? !!th : !!(derived && derived.throttled_pct > 0);
   if (v.temp_limit_c != null) bits.push("limit " + fmt(v.temp_limit_c, 0) + "°C");
   if (v.power_limit_w != null) bits.push("cap " + fmt(v.power_limit_w, 0) + "W");
   if (v.cpu_pkg_w != null) bits.push("cpu " + fmt(v.cpu_pkg_w, 0) + "W");
@@ -750,15 +818,15 @@ function healthBits(v) {
   return { text: bits.join(" · "), hot };
 }
 
-function paintHealth(node, v) {
+function paintHealth(node, v, derived) {
   if (!node) return;
-  const h = healthBits(v);
+  const h = healthBits(v, derived);
   node.textContent = h.text;
   node.className = "fhealth" + (h.hot ? " hot" : "");
 }
 
-function paintFocusHealth(el, v) {
-  paintHealth(el.querySelector("[data-f=health]"), v);
+function paintFocusHealth(el, v, derived) {
+  paintHealth(el.querySelector("[data-f=health]"), v, derived);
   const temps = el.querySelector("[data-f=temps]");
   if (!temps) return;
   const t = [];
@@ -774,7 +842,7 @@ function paintFocusHealth(el, v) {
 /* Sparkline panel: one small chart per metric, so the whole picture is visible
    at once instead of switching the main chart's preset. */
 function drawMiniCharts(el, runId) {
-  const buf = (TEL[runId] || []).slice(-2000);
+  const buf = telBuf(runId);
   const base = teleBase(buf);
   const win = runWindow(runId);
   FOCUS_MINI.forEach(([k]) => {
@@ -792,16 +860,22 @@ function drawMiniCharts(el, runId) {
 function paintFocusStats(el, id) {
   const host = el.querySelector("[data-f=stats]");
   if (!host) return;
-  const buf = TEL[id] || [];
-  const keys = orderedStatKeys(Object.keys(SERIES).filter((k) => buf.some((b) => numOrNull(b[k]) != null)));
+  const st = STATS[id];
+  if (!st) {
+    // first paint (or a just-started refetch): ask the server, then repaint
+    host.innerHTML = `<div class="muted">loading telemetry stats…</div>`;
+    ensureStats(id);
+    return;
+  }
+  const stats = st.stats || {};
+  const keys = orderedStatKeys(Object.keys(stats).filter((k) => k !== "elapsed" && k !== "ts"));
   if (!keys.length) { host.innerHTML = `<div class="muted">no telemetry yet</div>`; return; }
   const row = (k) => {
-    const vals = buf.map((b) => numOrNull(b[k])).filter((x) => x != null);
-    const mn = Math.min.apply(null, vals), mx = Math.max.apply(null, vals);
-    const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
-    return `<tr><th>${esc(SERIES[k][0])}</th><td class="num">${fmt(mn)}</td>
-      <td class="num">${fmt(avg)}</td><td class="num">${fmt(mx)}</td>
-      <td class="num muted">${vals.length}</td></tr>`;
+    const a = stats[k] || {};
+    const meta = SERIES[k] || [k, "#8592a6"];
+    return `<tr><th>${esc(meta[0])}</th><td class="num">${fmt(a.min)}</td>
+      <td class="num">${fmt(a.avg)}</td><td class="num">${fmt(a.max)}</td>
+      <td class="num muted">${a.n}</td></tr>`;
   };
   const head = `<thead><tr><th>metric</th><th>min</th><th>avg</th><th>max</th><th>n</th></tr></thead>`;
   // two side-by-side tables: 27 metrics in one narrow column is unreadable
@@ -869,26 +943,33 @@ async function renderHistory() {
       if (typeof x === "string" || typeof y === "string") return String(x).localeCompare(String(y)) * SORT.dir;
       return (x - y) * SORT.dir;
     });
-    $("#histCount").textContent = `${rows.length} run${rows.length === 1 ? "" : "s"}`;
+    $("#histCount").textContent = `${rows.length} run${rows.length === 1 ? "" : "s"}`
+      + (d.total > d.runs.length ? ` · latest ${d.runs.length} of ${d.total}` : "");
     $$("#histTable th.sortable").forEach((th) => {
       th.innerHTML = th.textContent.replace(/[▲▼]\s*$/, "").trim() + sortArrow(th.dataset.sort);
+      th.setAttribute("aria-sort", SORT.key === th.dataset.sort
+        ? (SORT.dir < 0 ? "descending" : "ascending") : "none");
     });
     const tb = $("#histTable tbody");
     tb.innerHTML = rows.map((r) => {
       const s = r.summary || {};
       const peak = peakTemp(r);
-      // ▲/▼ vs the previous run of the same preset on the same host (>=3%)
+      // ▲/▼ vs the previous run of the same preset on the same host — only when the
+      // GPU soak matrix size matches too, since TFLOPS is not comparable across sizes
       let vsBadge = "";
       const pg = numOrNull(r.__prev && r.__prev.summary && r.__prev.summary.gpu_soak_tflops);
       const cg = numOrNull(s.gpu_soak_tflops);
-      if (pg && cg) {
+      const pn = r.__prev && r.__prev.summary && r.__prev.summary.gpu_soak_size;
+      if (pg && cg && pn != null && s.gpu_soak_size != null && String(pn) === String(s.gpu_soak_size)) {
         const dd = (cg - pg) / Math.abs(pg) * 100;
         if (Math.abs(dd) >= 3) {
-          vsBadge = ` <span class="delta ${dd > 0 ? "up" : "down"}" title="vs previous run on this host">`
+          vsBadge = ` <span class="delta ${dd > 0 ? "up" : "down"}" title="vs previous run on this host at the same GPU soak size N=${esc(String(s.gpu_soak_size))}">`
             + `${dd > 0 ? "▲" : "▼"}${Math.abs(dd).toFixed(0)}%</span>`;
         }
       }
-      return `<tr data-detail="${esc(r.id)}">
+      const sizeTag = s.gpu_soak_size != null
+        ? ` <span class="muted" title="GPU soak matrix size">@${fmt(s.gpu_soak_size, 0)}</span>` : "";
+      return `<tr tabindex="0" data-detail="${esc(r.id)}">
         <td>${esc(r.host)}</td>
         <td class="syscol" title="${esc(sysLine(r))}">${esc(sysLine(r))}</td>
         <td>${esc(r.preset || "—")}</td>
@@ -896,7 +977,7 @@ async function renderHistory() {
         <td class="muted" title="${ts(r.started)}">${ago(r.started)}</td>
         <td class="num">${runDur(r)}</td>
         <td><span class="pill ${esc(r.status)}">${esc(r.status)}</span></td>
-        <td class="num">${fmt(s.gpu_soak_tflops)}${vsBadge}</td>
+        <td class="num">${fmt(s.gpu_soak_tflops)}${sizeTag}${vsBadge}</td>
         <td class="num">${fmt(s.cpu_soak_gflops, 0)}</td>
         <td class="num">${fmt(s.ram_soak_gbps)}</td>
         <td class="num">${fmt(peak, 0)}</td></tr>`;
@@ -907,8 +988,12 @@ async function renderHistory() {
 
 /* -------------------------------------------------------------- fleet --- */
 async function renderFleet() {
-  let runs = [];
-  try { runs = (await api("/runs?limit=500")).runs; } catch (e) { return; }
+  let runs = [], total = 0;
+  try {
+    const d = await api("/runs?limit=500");
+    runs = d.runs || [];
+    total = d.total || runs.length;
+  } catch (e) { return; }
   const done = runs.filter((r) => r.status !== "running");
   const byHost = {}, byGpu = {};
   for (const r of done) {
@@ -916,11 +1001,24 @@ async function renderFleet() {
     (byGpu[gpuOf(r)] = byGpu[gpuOf(r)] || []).push(r);
   }
   const agg = (rs) => ({
-    gpu: median(rs.map((r) => numOrNull(r.summary && r.summary.gpu_soak_tflops))),
     cpu: median(rs.map((r) => numOrNull(r.summary && r.summary.cpu_soak_gflops))),
     ram: median(rs.map((r) => numOrNull(r.summary && r.summary.ram_soak_gbps))),
     peak: median(rs.map(peakTemp)),
   });
+  // TFLOPS is only comparable at the same soak matrix size N, so aggregate the
+  // GPU medians per size instead of across the whole fleet
+  const gpuCell = (rs) => {
+    const by = {};
+    for (const r of rs) {
+      const v = numOrNull(r.summary && r.summary.gpu_soak_tflops);
+      if (v == null) continue;
+      const n = (r.summary && r.summary.gpu_soak_size) != null ? String(r.summary.gpu_soak_size) : "?";
+      (by[n] = by[n] || []).push(v);
+    }
+    const parts = Object.entries(by).sort((a, b) => b[1].length - a[1].length)
+      .map(([n, v]) => `${fmt(median(v))} <span class="muted" title="GPU soak matrix size">@${esc(n)}</span>`);
+    return parts.length ? parts.join(" · ") : "—";
+  };
   const latest = (rs) => rs.slice().sort((a, b) => (b.started || 0) - (a.started || 0))[0];
   const tkState = (rs) => {
     let seen = "";
@@ -931,15 +1029,16 @@ async function renderFleet() {
     }
     return seen || "—";
   };
-  $("#fleetCount").textContent = `${Object.keys(byHost).length} machines · ${done.length} finished runs` +
-    (STATE.server_git ? ` · control plane ${STATE.server_git}` : "");
+  $("#fleetCount").textContent = `${Object.keys(byHost).length} machines · ${done.length} finished runs`
+    + (total > runs.length ? ` · latest ${runs.length} of ${total}` : "")
+    + (STATE.server_git ? ` · control plane ${STATE.server_git}` : "");
   $("#fleetHosts tbody").innerHTML = Object.entries(byHost).sort().map(([h, rs]) => {
     const a = agg(rs), L = latest(rs), tk = tkState(rs);
     const stale = tk === "update available";
-    return `<tr data-detail="${esc(L.id)}">
+    return `<tr tabindex="0" data-detail="${esc(L.id)}">
       <td>${esc(h)}</td><td class="num">${rs.length}</td>
       <td class="muted">${ago(L.started)}</td>
-      <td class="num">${fmt(a.gpu)}</td><td class="num">${fmt(a.cpu, 0)}</td>
+      <td class="num">${gpuCell(rs)}</td><td class="num">${fmt(a.cpu, 0)}</td>
       <td class="num">${fmt(a.ram)}</td><td class="num">${fmt(a.peak, 0)}</td>
       <td class="${stale ? "delta down" : "muted"}">${esc(tk)}</td>
       <td><span class="pill ${esc(L.status)}">${esc(L.status)}</span></td></tr>`;
@@ -949,7 +1048,7 @@ async function renderFleet() {
       const a = agg(rs);
       const hosts = new Set(rs.map((r) => r.host)).size;
       return `<tr><td>${esc(g)}</td><td class="num">${rs.length}</td><td class="num">${hosts}</td>
-        <td class="num">${fmt(a.gpu)}</td><td class="num">${fmt(a.peak, 0)}</td></tr>`;
+        <td class="num">${gpuCell(rs)}</td><td class="num">${fmt(a.peak, 0)}</td></tr>`;
     }).join("") || `<tr><td colspan="5" class="empty">No GPU data.</td></tr>`;
 }
 
@@ -974,7 +1073,9 @@ async function renderTrends() {
       name: labelFor(m), color: colors[i % colors.length],
       points: d.series[m].map((p) => ({ x: p.t, y: p.v })),
     }));
-    drawChart($("#trendChart"), series, { xTime: true, yLabel: metrics.map(labelFor).join(" / ") });
+    // mixed-unit metrics share this chart, so normalise per series (the legend
+    // carries the real numbers), exactly like the run charts
+    drawChart($("#trendChart"), series, { xTime: true, normalize: true });
     const tstats = d.stats || {};
     $("#trendLegend").innerHTML = series.map((s, i) => {
       const q = tstats[metrics[i]] || {};
@@ -986,15 +1087,21 @@ async function renderTrends() {
 function labelFor(m) { const f = STATE.metrics.find((x) => x[0] === m); return f ? f[1] : m; }
 
 /* ------------------------------------------------------------ compare --- */
-function renderCompareOptions() {
-  const finished = STATE.recent.filter((r) => r.status !== "running");
+async function renderCompareOptions() {
+  let runs = STATE.recent;
+  try { runs = (await api("/runs?limit=300")).runs; } catch (e) { /* offline fallback */ }
+  const finished = runs.filter((r) => r.status !== "running");
+  const a = $("#cmpA"), b = $("#cmpB");
+  if (!a || !b) return;
+  // keyed on the run ids, not the count: a new run replaces one past the limit of
+  // /state (25) without changing the number of options
+  const key = finished.map((r) => r.id).join(",");
+  if (a.dataset.filled === key) return;
   const opts = finished.slice(0, 60).map((r) =>
     `<option value="${esc(r.id)}">${esc(r.host)} · ${esc(r.label || "")} · ${ts(r.started)}</option>`).join("");
-  const a = $("#cmpA"), b = $("#cmpB");
-  if (a.dataset.filled === String(finished.length)) return;
   a.innerHTML = opts; b.innerHTML = opts;
   if (finished.length > 1) { a.selectedIndex = 1; b.selectedIndex = 0; }
-  a.dataset.filled = String(finished.length);
+  a.dataset.filled = key;
 }
 async function runCompare() {
   const A = $("#cmpA").value, B = $("#cmpB").value;
@@ -1242,7 +1349,7 @@ function runWindow(runId) {
 function drawRunChart(card, runId) {
   const cv = card.querySelector(".runchart");
   if (!cv) return;
-  const buf = (TEL[runId] || []).slice(-2000);
+  const buf = telBuf(runId);
   const base = teleBase(buf);
   const win = runWindow(runId);
   const preset = CHART[runId] || Object.keys(CHART_PRESETS)[0];
@@ -1253,14 +1360,31 @@ function drawRunChart(card, runId) {
   });
   drawChart(cv, series, { normalize: true, xElapsed: true });
   const lg = card.querySelector(".chartlegend");
-  if (lg) lg.innerHTML = chartLegendHTML(series);
+  if (lg) {
+    // say so when the plotted points are a uniform sample of the run, not every row
+    lg.innerHTML = chartLegendHTML(series) + (telDownsampled(runId)
+      ? `<span class="cl nodata" title="the server returns a uniform sample of the whole run">server-downsampled · 4000 pts across the full run</span>`
+      : "");
+  }
 }
 
 /* ------------------------------------------------------------ actions --- */
+// Engine choices the runner's platform actually implements: the Windows battery
+// offers FurMark + Valley, the Linux runner FurMark + the glmark2 fallback (any
+// other value is treated as FurMark by the Linux runner, so valley must not show).
+function gfxEngines(runner) {
+  const osName = String((((runner || {}).capabilities || {}).os) || "").toLowerCase();
+  const out = ["furmark"];
+  if (osName === "windows") out.push("valley");
+  else if (osName === "linux") out.push("glmark2");
+  return out;
+}
+
 async function startRun(runnerId) {
   const runner = STATE.runners.find((r) => r.id === runnerId) || {};
   const sup = (runner.capabilities && runner.capabilities.groups) || GROUPS;
   const presetKeys = Object.keys(PRESETS);
+  const engines = gfxEngines(runner);
   const usable = (k) => {
     const p = PRESETS[k];
     if (!p || !p.groups) return true;
@@ -1268,7 +1392,7 @@ async function startRun(runnerId) {
     return GROUPS.some((g) => p.groups[g] && g !== "sys" && sup.includes(g));
   };
   openModal(`<h3>Start run</h3>
-    <div class="formrow"><label>Preset</label>
+    <div class="formrow"><label for="mPreset">Preset</label>
       <select id="mPreset">${presetKeys.map((k) =>
         `<option${usable(k) ? "" : " disabled"}>${esc(k)}</option>`).join("")}</select>
       <span class="muted" id="mPresetInfo"></span></div>
@@ -1279,24 +1403,25 @@ async function startRun(runnerId) {
           + `<input type="checkbox" value="${g}"${ok ? "" : " disabled"}>${esc(g)}</label>`;
       }).join("")}</div></div>
     <div class="formrow"><label>Durations (s)</label>
-      GPU soak <input id="mGpu" type="number" value="600" style="width:80px">
-      combined <input id="mComb" type="number" value="300" style="width:80px">
-      full soak <input id="mFull" type="number" value="300" style="width:80px">
-      graphics <input id="mGfx" type="number" value="60" style="width:80px"></div>
+      <label class="inline" for="mGpu">GPU soak</label> <input id="mGpu" type="number" value="600" style="width:80px">
+      <label class="inline" for="mComb">combined</label> <input id="mComb" type="number" value="300" style="width:80px">
+      <label class="inline" for="mFull">full soak</label> <input id="mFull" type="number" value="300" style="width:80px">
+      <label class="inline" for="mGfx">graphics</label> <input id="mGfx" type="number" value="60" style="width:80px"></div>
     <div class="formrow"><label>Tuning</label>
-      GPU size <input id="mGpuSize" type="number" value="12288" style="width:80px">
-      CPU size <input id="mCpuSize" type="number" value="4096" style="width:80px">
-      RAM MB <input id="mRamSize" type="number" value="1024" style="width:80px">
-      CPU soak <input id="mCpuSoak" type="number" value="120" style="width:80px">
-      RAM soak <input id="mRamSoak" type="number" value="120" style="width:80px">
-      disk s <input id="mDiskSec" type="number" value="15" style="width:80px">
-      disk MB <input id="mDiskSize" type="number" value="2048" style="width:80px">
-      steady GB <input id="mSteady" type="number" value="10" style="width:80px">
-      passes <input id="mPasses" type="number" value="2" style="width:80px">
+      <label class="inline" for="mGpuSize">GPU size</label> <input id="mGpuSize" type="number" value="12288" style="width:80px">
+      <label class="inline" for="mCpuSize">CPU size</label> <input id="mCpuSize" type="number" value="4096" style="width:80px">
+      <label class="inline" for="mRamSize">RAM MB</label> <input id="mRamSize" type="number" value="1024" style="width:80px">
+      <label class="inline" for="mCpuSoak">CPU soak</label> <input id="mCpuSoak" type="number" value="120" style="width:80px">
+      <label class="inline" for="mRamSoak">RAM soak</label> <input id="mRamSoak" type="number" value="120" style="width:80px">
+      <label class="inline" for="mDiskSec">disk s</label> <input id="mDiskSec" type="number" value="15" style="width:80px">
+      <label class="inline" for="mDiskSize">disk MB</label> <input id="mDiskSize" type="number" value="2048" style="width:80px">
+      <label class="inline" for="mSteady">steady GB</label> <input id="mSteady" type="number" value="10" style="width:80px">
+      <label class="inline" for="mPasses">passes</label> <input id="mPasses" type="number" value="2" style="width:80px">
       <label><input type="checkbox" id="mStable"> soak until stable, hold</label>
-      <input id="mStableHold" type="number" value="60" style="width:70px"> s after plateau
-      <label>gfx engine</label>
-      <select id="mGfxEngine"><option>furmark</option><option>valley</option></select></div>
+      <input id="mStableHold" type="number" value="60" style="width:70px">
+      <label class="inline" for="mStableHold">s after plateau</label>
+      <label for="mGfxEngine">gfx engine</label>
+      <select id="mGfxEngine">${engines.map((e) => `<option>${esc(e)}</option>`).join("")}</select></div>
     <div class="formrow" style="justify-content:flex-end">
       <button class="ghost" id="mCancel">cancel</button>
       <button class="accent" id="mGo">start</button></div>`);
@@ -1314,7 +1439,8 @@ async function startRun(runnerId) {
     $("#mDiskSize").value = tune.disk_size_mb;
     $("#mSteady").value = tune.steady_gb; $("#mPasses").value = tune.passes;
     $("#mStable").checked = !!tune.stable; $("#mStableHold").value = tune.stable_hold;
-    $("#mGfxEngine").value = tune.gfx_engine || "furmark";
+    const eng = $("#mGfxEngine");
+    if (eng) eng.value = engines.includes(tune.gfx_engine) ? tune.gfx_engine : "furmark";
     const want = GROUPS.filter((g) => groups[g]);
     const un = want.filter((g) => !sup.includes(g));
     const info = $("#mPresetInfo");
@@ -1401,21 +1527,21 @@ function runnerUpdate(runnerId) {
       `<p class="muted">This runner runs a <b>git checkout</b>: use <b>update (git pull)</b>, then
         <b>restart</b> if the badge persists — a process started before an update keeps running the
         old code until it is restarted (a build from recent main restarts itself).</p>`}
-    <div class="formrow"><label>ref</label>
+    <div class="formrow"><label for="uRef">ref</label>
       <input id="uRef" value="main" style="width:190px" placeholder="main | tag | sha" ${live ? "" : "disabled"}>
-      <input id="uSha" placeholder="(optional) expected tarball sha256" style="flex:1" ${live ? "" : "disabled"}></div>
+      <input id="uSha" aria-label="expected tarball sha256" placeholder="(optional) expected tarball sha256" style="flex:1" ${live ? "" : "disabled"}></div>
     <div class="formrow" style="justify-content:flex-end">
       <button class="accent" id="uGo" ${live ? "" : "disabled"}>update toolkit</button>
       <button id="uGit">update (git pull) + restart</button>
       <button id="uRestart" title="re-exec the runner so it loads the code on disk">restart runner</button></div>
     <div class="sechead">ISO — kernel, drivers, packages</div>
-    <div class="formrow"><label>release</label>
+    <div class="formrow"><label for="uTag">release</label>
       <input id="uTag" placeholder="iso-nvidia-legacy-50" style="width:190px">
-      <select id="uGpu"><option>nvidia-legacy</option><option>nvidia</option><option>amd</option></select>
+      <select id="uGpu" aria-label="gpu family"><option>nvidia-legacy</option><option>nvidia</option><option>amd</option></select>
       <button id="uFetch">fetch + verify</button></div>
-    <div class="formrow"><label>iso path</label>
+    <div class="formrow"><label for="uIso">iso path</label>
       <input id="uIso" placeholder="/mnt/benchdata/iso/bench-live-*.iso" style="flex:1"></div>
-    <div class="formrow"><label>device</label>
+    <div class="formrow"><label for="uDev">device</label>
       <input id="uDev" placeholder="/dev/sdX" style="width:120px">
       <label class="chk"><input type="checkbox" id="uOk"> confirm destructive write</label>
       <button class="danger" id="uWrite">write ISO</button>
@@ -1547,7 +1673,7 @@ async function showDetail(runId) {
     <div class="kv" style="margin:0 0 14px">
       ${derived.map(([k, val]) => `<div class="kvitem"><div class="k">${esc(k)}</div><div class="v">${esc(val)}</div></div>`).join("")}
     </div>
-    <div class="chartrow"><canvas id="dChart" height="220"></canvas>
+    <div class="chartrow"><canvas id="dChart" height="220" role="img" aria-label="run telemetry chart"></canvas>
       <select class="csel" id="dChartSel">${Object.keys(CHART_PRESETS).map((k) => `<option>${esc(k)}</option>`).join("")}</select></div>
     <div class="chartlegend" id="dChartLegend"></div>
     <h4 class="sechead">Results</h4>
@@ -1606,6 +1732,7 @@ async function showDetail(runId) {
     if (lg) lg.innerHTML = chartLegendHTML(series);
   };
   drawDetail();
+  DETAIL_REDRAW = drawDetail;
   $("#dChartSel").onchange = (e) => { dpreset = e.target.value; drawDetail(); };
 }
 
@@ -1630,15 +1757,25 @@ function humanVal(v) {
 function resultSections(summary) {
   const skip = new Set(["host", "timestamp", "telemetry", "samples", "gpu_soak_telemetry"]);
   const groups = new Map();
+  // arrays of dicts used to stringify as "[object Object]": render the item's own
+  // text when it has one (verdicts), otherwise skip the item
+  const itemVal = (x) => {
+    if (x && typeof x === "object") return x.text != null ? String(x.text) : null;
+    return humanVal(x);
+  };
   const walk = (path, obj) => {
     for (const [k, v] of Object.entries(obj || {})) {
       if (skip.has(k)) continue;
       const key = path ? path + "." + k : k;
       if (v && typeof v === "object" && !Array.isArray(v)) { walk(key, v); continue; }
       if (v === null || v === undefined || v === "") continue;
+      const val = Array.isArray(v)
+        ? v.map(itemVal).filter((x) => x != null).join(" / ")
+        : itemVal(v);
+      if (val === "") continue;
       const group = key.split(".")[0];
       if (!groups.has(group)) groups.set(group, []);
-      groups.get(group).push([humanKey(key), Array.isArray(v) ? v.join(" / ") : humanVal(v)]);
+      groups.get(group).push([humanKey(key), val]);
     }
   };
   walk("", summary);
@@ -1678,13 +1815,14 @@ async function renderSchedules() {
 function newSchedule() {
   const opts = STATE.runners.map((r) => `<option value="${esc(r.id)}">${esc(r.label || r.name)}</option>`).join("");
   openModal(`<h3>New schedule</h3>
-    <div class="formrow"><label>runner</label><select id="scRunner" style="flex:1">${opts}</select></div>
-    <div class="formrow"><label>label</label><input id="scLabel" style="flex:1" value="scheduled run"></div>
-    <div class="formrow"><label>repeat</label>
+    <div class="formrow"><label for="scRunner">runner</label><select id="scRunner" style="flex:1">${opts}</select></div>
+    <div class="formrow"><label for="scLabel">label</label><input id="scLabel" style="flex:1" value="scheduled run"></div>
+    <div class="formrow"><label for="scKind">repeat</label>
       <select id="scKind"><option value="every">every…</option><option value="daily">daily at…</option></select>
-      <input id="scEvery" type="number" value="3600" style="width:90px"> seconds
-      <input id="scAt" type="time" value="03:00" style="display:none"></div>
-    <div class="formrow"><label>preset</label>
+      <input id="scEvery" type="number" value="3600" style="width:90px">
+      <label class="inline" for="scEvery">seconds</label>
+      <input id="scAt" type="time" value="03:00" style="display:none" aria-label="daily at"></div>
+    <div class="formrow"><label for="scPreset">preset</label>
       <select id="scPreset">${Object.keys(PRESETS).map((k) => `<option>${esc(k)}</option>`).join("")}</select></div>
     <div class="formrow" style="justify-content:flex-end">
       <button class="ghost" onclick="closeModal()">cancel</button>
@@ -1716,21 +1854,50 @@ async function deleteSchedule(id) {
 }
 
 /* -------------------------------------------------------------- modal --- */
+let _lastFocus = null;
 function openModal(html) {
+  const m = $("#modal");
+  if (!modalOpen()) _lastFocus = document.activeElement;
+  m.setAttribute("role", "dialog");
+  m.setAttribute("aria-modal", "true");
   $("#modalbox").innerHTML = html;
-  $("#modal").classList.add("show");
-  const f = $("#modalbox input, #modalbox select");
+  m.classList.add("show");
+  const f = $("#modalbox input, #modalbox select, #modalbox textarea, #modalbox button");
   if (f) setTimeout(() => { try { f.focus(); } catch (e) { /* ignore */ } }, 0);
 }
-function closeModal() { $("#modal").classList.remove("show"); }
+function closeModal() {
+  $("#modal").classList.remove("show");
+  DETAIL_REDRAW = null;
+  if (_lastFocus && document.contains(_lastFocus)) {
+    try { _lastFocus.focus(); } catch (e) { /* ignore */ }
+  }
+  _lastFocus = null;
+}
 window.closeModal = closeModal;
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { if ($("#modal").classList.contains("show")) closeModal(); return; }
+  if (e.key === "Escape") {
+    // one handler decides: a modal is closed first, and the focus pane only
+    // closes when no modal is open
+    if (modalOpen()) { e.preventDefault(); closeModal(); }
+    else if (FOCUS) closeFocus();
+    return;
+  }
   if (e.key === "/" && !/^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName)) {
     e.preventDefault();
     $$("#tabs button").find((b) => b.dataset.tab === "history")?.click();
     const s = $("#histSearch"); if (s) s.focus();
   }
+});
+// keep Tab inside the open dialog
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Tab" || !modalOpen()) return;
+  const f = $$("#modalbox a[href],#modalbox button:not([disabled]),#modalbox input:not([disabled])," +
+               "#modalbox select:not([disabled]),#modalbox textarea:not([disabled])," +
+               "#modalbox [tabindex]:not([tabindex='-1'])").filter((el) => el.offsetParent !== null);
+  if (!f.length) return;
+  const first = f[0], last = f[f.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
 });
 $("#modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
 
@@ -1786,6 +1953,7 @@ document.addEventListener("click", (e) => {
     $$(".tabpane").forEach((p) => p.classList.toggle("active", p.id === "tab-" + t.dataset.tab));
     if (t.dataset.tab === "history") renderHistory();
     if (t.dataset.tab === "trends") renderTrends();
+    if (t.dataset.tab === "compare") renderCompareOptions();
     if (t.dataset.tab === "fleet") renderFleet();
     if (t.dataset.tab === "schedules") renderSchedules();
     return;
@@ -1806,6 +1974,17 @@ document.addEventListener("click", (e) => {
     const a = STATE.active.find((x) => x.id === FOCUS) || STATE.recent.find((x) => x.id === FOCUS);
     if (a) return cmd(a.runner_id, "update");
   }
+});
+
+/* keyboard activation for the click-only controls: sortable headers, history /
+   fleet rows, runner panels (Enter or Space) */
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
+  if (!e.target.closest || e.target.closest("button,input,select,textarea,a,form,label")) return;
+  const t = e.target.closest("th.sortable,[data-detail],[data-runner]");
+  if (!t) return;
+  e.preventDefault();
+  t.click();
 });
 
 $("#tokenBtn").onclick = askToken;
@@ -1840,8 +2019,17 @@ document.addEventListener("submit", async (e) => {
     toast("sent to runner: " + cmd);
   } catch (err) { toast("exec failed: " + err, "err"); }
 });
-window.addEventListener("resize", () => { renderActive(); renderFocus(); });
-document.addEventListener("keydown", (e) => { if (e.key === "Escape" && FOCUS) closeFocus(); });
+// a resize invalidates every canvas: redraw the live cards, the focus pane, the
+// trends chart and the open detail modal's chart (debounced)
+let _rsz = null;
+window.addEventListener("resize", () => {
+  clearTimeout(_rsz);
+  _rsz = setTimeout(() => {
+    renderActive(); renderFocus();
+    if (paneActive("trends")) renderTrends();
+    if (DETAIL_REDRAW) { try { DETAIL_REDRAW(); } catch (e) { /* modal closed */ } }
+  }, 150);
+});
 
 /* ---------------------------------------------------------------- boot -- */
 /* Connect first and only prompt on a real 401: benchd can run with no token at
@@ -1854,4 +2042,9 @@ setInterval(() => {
   if (STATE.active.length) { const st = _scrollState(); renderActive(); _restoreScroll(st); }
   if (FOCUS) renderFocus();
 }, 5000);
-setInterval(() => { if (FOCUS) reloadTel(FOCUS); }, 15000);
+// authoritative telemetry refresh for every active run (the SSE stream can miss a
+// batch); the focused run's whole-run stats are refreshed on the same tick
+setInterval(() => {
+  for (const a of STATE.active) reloadTel(a.id);
+  if (FOCUS) { delete STATS[FOCUS]; ensureStats(FOCUS); }
+}, 15000);

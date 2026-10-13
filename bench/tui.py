@@ -109,6 +109,19 @@ def _kill_tree(proc):
 
 GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "llm", "fan", "sys", "gfx"]
 
+# Only offer toggles for the groups this platform's battery actually implements
+# (fan is Linux-only, llm is Windows-only): an offered no-op group is a silent lie.
+try:
+    UI_GROUPS = [g for g in GROUPS if g in supported_groups()]
+except Exception:
+    UI_GROUPS = list(GROUPS)
+
+# one unique hotkey per offered toggle (1-9, 0, then - / =): the old 1-0 map
+# wrapped at ten, so sys and gfx were unreachable and their labels collided
+_GROUP_KEYS = list("1234567890-=")[:len(UI_GROUPS)]
+_KEY_HINT = {11: "1-9,0,-", 12: "1-9,0,-,="}.get(len(_GROUP_KEYS), ",".join(_GROUP_KEYS))
+
+
 def _g(*on):
     return [g for g in GROUPS if g in on]
 
@@ -1044,12 +1057,12 @@ class BenchTUI:
             attr = curses.color_pair(2) | curses.A_BOLD if i == self.preset else curses.color_pair(8)
             self._put(top + 1 + i, 2, "%s %s" % (mark, name), attr)
         gy = top + 2 + len(PRESETS)
-        self._put(gy, 2, "groups (1-0 toggle)", curses.color_pair(8))
-        for i, g in enumerate(GROUPS):
+        self._put(gy, 2, "groups (%s toggle)" % _KEY_HINT, curses.color_pair(8))
+        for i, g in enumerate(UI_GROUPS):
             row = gy + 1 + (i % 5)
             col = 2 + (i // 5) * 16
             on = self.groups[g]
-            self._put(row, col, "%d%s %s" % ((i + 1) % 10, "◉" if on else "○", g),
+            self._put(row, col, "%s%s %s" % (_GROUP_KEYS[i], "◉" if on else "○", g),
                       curses.color_pair(1) if on else curses.color_pair(8) | curses.A_DIM)
         dy = gy + 7
         self._put(dy, 2, "soaks: gpu %ss · comb %ss" % (self.dur["gpu"], self.dur["combined"]),
@@ -1321,9 +1334,8 @@ class BenchTUI:
         elif ch == ord("p") and not self.running:
             self._apply_preset((self.preset + 1) % len(PRESETS))
             self._set("preset: %s" % PRESETS[self.preset][0], 2)
-        elif ord("0") <= ch <= ord("9") and not self.running:
-            idx = (ch - ord("0") - 1) % 10
-            g = GROUPS[idx]
+        elif not self.running and chr(ch) in _GROUP_KEYS:
+            g = UI_GROUPS[_GROUP_KEYS.index(chr(ch))]
             self.groups[g] = not self.groups[g]
             self._set("%s: %s" % (g, "on" if self.groups[g] else "off"), 2)
         elif ch == curses.KEY_PPAGE:
