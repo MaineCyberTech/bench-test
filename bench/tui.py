@@ -183,7 +183,7 @@ class BenchTUI:
             res = auto_update(REPO, log=lambda m: self.log.append(m))
             if res.get("updated"):
                 self.log.append("[update] restarting into the newer checkout")
-                restart_self(1.0, lambda m: self.log.append(m))
+                self._restart(1.0)
         threading.Thread(target=work, daemon=True).start()
 
     # ---------------------------------------------------------- reporting ---
@@ -244,7 +244,23 @@ class BenchTUI:
             self._update_remote(cmd.get("id"), kind, payload)
         elif kind == "restart":
             self.rep.ack(cmd.get("id"), "done", {"restart": "scheduled"})
-            threading.Thread(target=restart_self, args=(0.5,), daemon=True).start()
+            self._restart()
+
+    def _restart(self, delay=0.5):
+        """Re-exec for a toolkit switch.
+
+        Drop curses first: execv replaces the process image, so without endwin()
+        the successor inherits a terminal left in raw mode / alt screen (the UI
+        then never comes back). `console=True` because on Windows a successor
+        spawned hidden has no console at all - it runs with no UI.
+        """
+        def work():
+            try:
+                curses.endwin()
+            except Exception:
+                pass
+            restart_self(delay, lambda m: self.log.append(m), console=True)
+        threading.Thread(target=work, daemon=True).start()
         elif kind in ("exec", "shell"):
             self._exec_remote(cmd.get("id"), payload)
         else:
@@ -279,7 +295,7 @@ class BenchTUI:
             self.rep.ack(cid, "done" if res.get("ok") else "failed", res)
             if should_restart_after_update(res, running=self.running,
                                            requested=bool(payload.get("restart"))):
-                threading.Thread(target=restart_self, args=(1.5, log), daemon=True).start()
+                self._restart(1.5)
         threading.Thread(target=work, daemon=True).start()
 
     def _exec_remote(self, cid, payload):

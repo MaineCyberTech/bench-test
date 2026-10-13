@@ -1238,20 +1238,27 @@ def auto_update(repo=None, log=None, enabled=None):
         return {"kind": "git", "ok": False, "updated": False, "error": str(e)}
 
 
-def restart_self(delay=1.5, log=None):
+def restart_self(delay=1.5, log=None, console=False):
     """Re-exec this runner so it picks up a freshly switched toolkit (live USB).
 
     Windows has no real execv: spawn a successor with the same argv and exit, or
     the process is left running with a dead worker thread (which is what made a
     remote 'restart' silent the runner).
+
+    `console` is for the dashboards: a successor spawned with CREATE_NO_WINDOW has
+    no console, so the TUI kept running with no UI at all. Dashboards ask for a
+    real console (and drop curses first, or the new process inherits a terminal
+    left in raw mode/alt screen).
     """
     log = log or (lambda _m: None)
     time.sleep(max(0.0, delay))
     log("[update] restarting to run the new toolkit")
     try:
         if os.name == "nt":
-            popen_hidden([sys.executable] + list(sys.argv), cwd=os.getcwd(),
-                         close_fds=True)
+            flags = (subprocess.CREATE_NEW_CONSOLE if console
+                     else getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            subprocess.Popen([sys.executable] + list(sys.argv), cwd=os.getcwd(),
+                             close_fds=True, creationflags=flags)
             os._exit(0)
         os.execv(sys.executable, [sys.executable] + list(sys.argv))
     except Exception as e:
