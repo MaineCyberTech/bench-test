@@ -368,7 +368,6 @@ def run():
                 up.upload_as_one_commit("o/r", "main", "results", "folder", ufiles, "tok") is True, "")
         c.check("exactly one commit call for three files",
                 len([x for x in calls if x[0] == "POST" and x[1].endswith("/git/commits")]) == 1, calls)
-        c.check("one blob per file",
         # small text files ride along in the tree request: one API call for the
         # whole batch instead of a blob POST each (which tripped the secondary
         # rate limit and pushed the uploader onto its per-file fallback)
