@@ -55,8 +55,13 @@ main{padding:18px 22px 60px}
 .tablecard{padding:0;overflow:auto}
 
 .runner{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:15px;
-  transition:.15s}
+  transition:.15s;cursor:pointer}
 .runner:hover{border-color:#3b475c}
+/* the at-a-glance block: what it is doing now, and what its last run achieved */
+.runner .rinfo{margin-top:11px;border-top:1px solid var(--border);padding-top:9px;display:grid;gap:5px}
+.runner .rrow{display:flex;gap:10px;align-items:baseline;font-size:12px;min-width:0}
+.runner .rrow .rk{color:var(--muted);flex:0 0 66px;text-transform:uppercase;letter-spacing:.06em;font-size:10px}
+.runner .rrow .rv{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .runner.off{opacity:.55}
 .runner .rhead{display:flex;align-items:center;gap:9px}
 .runner .rname{font-weight:700;font-size:15px}
@@ -200,6 +205,20 @@ table td.num{font-family:var(--mono);text-align:right}
    telemetry charts/stats, phases and the console — the TUI's panels, wider */
 .focuspane{position:fixed;inset:0;background:var(--bg);display:none;overflow:auto;z-index:55}
 .focuspane.show{display:block}
+/* runner tabs inside the live view: switch machines without leaving the pane */
+.rtabs{display:flex;gap:6px;overflow-x:auto;padding:14px 22px 10px;border-bottom:1px solid var(--border);
+  position:sticky;top:0;background:var(--bg);z-index:2}
+.rtabs .rtab{display:inline-flex;align-items:center;gap:7px;background:transparent;color:var(--muted);
+  border:1px solid transparent;border-radius:8px;padding:6px 12px;white-space:nowrap}
+.rtabs .rtab:hover{color:var(--text);background:var(--card2)}
+.rtabs .rtab.on{color:var(--accent);background:var(--card);border-color:var(--border)}
+.rtabs .rtab:disabled{opacity:.4;cursor:default}
+.rtabs .rtab:disabled:hover{background:transparent;color:var(--muted)}
+.rtabs .rtab .dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex:0 0 auto}
+.rtabs .rtab .dot.up{background:var(--good)}
+.rtabs .rtab .dot.down{background:var(--bad)}
+.rtabs .rtab.live .dot{background:var(--accent);animation:pulse 1.2s infinite}
+.rtabs .rtab .muted{font-size:10px;text-transform:uppercase;letter-spacing:.06em}
 .focushead{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:12px;
   flex-wrap:wrap;background:var(--card);border-bottom:1px solid var(--border);padding:10px 16px}
 .focushead .h{font-weight:700;font-size:16px}

@@ -320,6 +320,46 @@ function renderTop() {
   $("#activeCount").textContent = `${STATE.active.length} running`;
 }
 
+function lastRunOf(rid) {
+  // a finished run: the running one is the "now" row, and calling it the last run
+  // reads as if the machine had already stopped
+  return STATE.recent.filter((a) => a.runner_id === rid && a.status !== "running")
+    .sort((a, b) => (b.started || 0) - (a.started || 0))[0] || null;
+}
+
+/* The at-a-glance block on a runner panel: what it is doing right now, and what its
+   last run achieved. Both come from data the page already has, so nothing extra is
+   fetched to render the fleet. */
+function runnerInfo(r) {
+  const rows = [];
+  const live = STATE.active.find((a) => a.id === r.current_run);
+  if (live) {
+    const v = live.latest || {};
+    const now = [v.temp_c != null ? fmt(v.temp_c, 0) + " °C" : null,
+                 v.gpu_util != null ? fmt(v.gpu_util, 0) + "% gpu" : null,
+                 v.power_w != null ? fmt(v.power_w, 0) + " W" : null,
+                 v.cpu_util != null ? fmt(v.cpu_util, 0) + "% cpu" : null]
+      .filter(Boolean).join(" · ");
+    if (now) rows.push(["now", `<span class="mono">${esc(now)}</span>`]);
+  }
+  const last = lastRunOf(r.id);
+  if (last) {
+    const s = last.summary || {};
+    const bits = [];
+    if (s.gpu_soak_tflops != null) bits.push(fmt(s.gpu_soak_tflops, 1) + " TFLOPS soak");
+    if (s.cpu_soak_gflops != null) bits.push(fmt(s.cpu_soak_gflops, 0) + " GFLOPS cpu");
+    if (s.gfx && s.gfx.score != null) bits.push("gfx " + fmt(s.gfx.score, 0));
+    if (s.ram_soak_gbps != null) bits.push(fmt(s.ram_soak_gbps, 1) + " GB/s ram");
+    rows.push(["last run", `${esc(last.label || "run")} · ${esc(last.status || "")} · `
+      + `${ago(last.ended || last.started)}${bits.length ? `<div class="muted mono">${bits.join(" · ")}</div>` : ""}`]);
+  } else {
+    rows.push(["last run", "none yet"]);
+  }
+  rows.push([r.online ? "seen" : "offline", r.online ? "now" : ago(r.last_seen)]);
+  return `<div class="rinfo">${rows.map(([k, v]) =>
+    `<div class="rrow"><span class="rk">${esc(k)}</span><span class="rv">${v}</span></div>`).join("")}</div>`;
+}
+
 function runnerCard(r) {
   const cls = r.status === "busy" ? "busy" : (r.online ? "online" : "offline");
   const caps = r.capabilities || {};
@@ -355,7 +395,9 @@ function runnerCard(r) {
       <div class="rmeta row">${badges}</div>
       <div class="rmeta">${esc(dev || "no hardware detail")}</div>
       ${phase ? `<div class="phasechip"><span class="d"></span>${esc(phase.grp)} · ${esc(phase.label || "")}</div>` : ""}
+      ${runnerInfo(r)}
       <div class="ract" style="margin-top:12px">
+        <button class="accent" data-rtab="${esc(r.id)}" title="Open the live view for this runner">live view</button>
         <button class="accent" data-start="${esc(r.id)}" ${disabled}>Start run</button>
         <button data-stop="${esc(r.id)}" ${run ? "" : "disabled"}>Stop</button>
         <button class="ghost" data-update="${esc(r.id)}" ${disabled}>Update</button>
@@ -501,11 +543,40 @@ function closeFocus() {
   if (el) { el.classList.remove("show"); el.innerHTML = ""; el.dataset.run = ""; }
 }
 
+/* Which run a runner tab should show: its live run when it has one, otherwise its
+   most recent, so the pane stays useful for a machine that has just finished. */
+function runnerRun(rid) {
+  const live = STATE.active.find((a) => a.runner_id === rid);
+  if (live) return { run: live, live: true };
+  const past = STATE.recent.filter((a) => a.runner_id === rid)
+    .sort((a, b) => (b.started || 0) - (a.started || 0))[0];
+  return past ? { run: past, live: false } : null;
+}
+
+/* The runner tabs: switch the live view between machines without going back to the
+   fleet table. Rebuilt on every paint so a run finishing/starting updates the dots. */
+function focusTabsInner(cur) {
+  const order = [...STATE.runners].sort((a, b) =>
+    (b.online ? 1 : 0) - (a.online ? 1 : 0) || String(a.name).localeCompare(String(b.name)));
+  return order.map((rr) => {
+    const found = runnerRun(rr.id);
+    const on = found && cur && found.run.id === cur.id;
+    const title = found
+      ? `${rr.name} — ${found.live ? "live run" : "last run"}: ${found.run.label || ""}`
+      : `${rr.name} — no run yet`;
+    return `<button class="rtab${on ? " on" : ""}${found && found.live ? " live" : ""}"
+      data-rtab="${esc(rr.id)}" title="${esc(title)}"${found ? "" : " disabled"}>
+      <span class="dot ${rr.online ? "up" : "down"}"></span>${esc(rr.name)}
+      ${found && !found.live ? `<span class="muted">last</span>` : ""}</button>`;
+  }).join("");
+}
+
 function focusShell(r, live) {
   const preset = CHART[r.id] || Object.keys(CHART_PRESETS)[0];
   const sel = (id) => Object.keys(CHART_PRESETS).map((k) =>
     `<option${k === (CHART[id] || Object.keys(CHART_PRESETS)[0]) ? " selected" : ""}>${esc(k)}</option>`).join("");
-  return `<div class="focushead">
+  return `<div class="rtabs" data-f="rtabs">${focusTabsInner(r)}</div>
+    <div class="focushead">
       <span class="statusp ${live ? "busy" : "idle"}"></span>
       <div class="h">${esc(r.host)} · ${esc(r.label || "run")}</div>
       <span class="pill ${esc(r.status || "")}">${esc(r.status || "")}</span>
@@ -584,6 +655,8 @@ function paintFocus(el, r, live) {
                          ? "v" + rr.capabilities.toolkit.version : null]
       .filter(Boolean).join(" · ");
   }
+  const tabs = el.querySelector("[data-f=rtabs]");
+  if (tabs) tabs.innerHTML = focusTabsInner(r);
   const ph = el.querySelector("[data-f=phase]");
   if (ph) {
     const ps = r.phases || [];
@@ -1653,8 +1726,22 @@ document.addEventListener("click", (e) => {
     renderHistory();
     return;
   }
-  const t = e.target.closest("[data-tab],[data-start],[data-stop],[data-update],[data-fan],[data-detail],[data-sched-del],[data-toggle-off],[data-forget],[data-power],[data-iso],[data-focus],[data-f]");
+  const t = e.target.closest("[data-tab],[data-start],[data-stop],[data-update],[data-fan],[data-detail],[data-sched-del],[data-toggle-off],[data-forget],[data-power],[data-iso],[data-focus],[data-rtab],[data-runner],[data-f]");
   if (!t) return;
+  if (t.dataset.rtab) {
+    const found = runnerRun(t.dataset.rtab);
+    if (!found) return toast("that runner has no runs yet");
+    if (FOCUS !== found.run.id) focusRun(found.run.id);
+    return;
+  }
+  // clicking a runner panel opens its live view; a control inside the panel still
+  // does its own thing (closest() finds the nearer match first)
+  if (t.dataset.runner && !e.target.closest("button,input,select,textarea,a,form,label")) {
+    const found = runnerRun(t.dataset.runner);
+    if (!found) return toast("that runner has no runs yet");
+    if (FOCUS !== found.run.id) focusRun(found.run.id);
+    return;
+  }
   if (t.dataset.toggleOff !== undefined) {
     SHOW_OFFLINE = !SHOW_OFFLINE;
     localStorage.setItem("benchd_show_offline", SHOW_OFFLINE ? "1" : "0");
