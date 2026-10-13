@@ -130,22 +130,24 @@ def load_conf(here=None):
     """Resolve (server, token) from the environment or a bench-agent.conf.
 
     Identical search order on Windows and Linux, so the GUI, TUI and agent all
-    check in the same way on every platform:
-        $BENCH_AGENT_CONF, ./bench-agent.conf,
-        <toolkit>/bench-agent.conf (baked into the packaged app, like the live
-        USB's /etc/bench-agent.conf), ~/.config/bench-agent.conf,
-        /etc/bench-agent.conf, /mnt/benchdata/bench-agent.conf
+    check in the same way on every platform. Explicit config wins over the copy
+    baked into the packaged app (like the live USB), so a machine can point at a
+    different control plane without rebuilding:
+        $BENCH_AGENT_CONF, ./bench-agent.conf, ~/.config/bench-agent.conf,
+        /etc/bench-agent.conf, /mnt/benchdata/bench-agent.conf,
+        <toolkit>/bench-agent.conf (baked app default), <bench>/bench-agent.conf
+    `$BENCHD_SERVER` / `$BENCHD_TOKEN` in the environment override everything.
     `here` (the bench/ dir) is a test seam; callers use the default.
     """
     here = here or os.path.dirname(os.path.abspath(__file__))  # .../bench
     repo = os.path.dirname(here)                               # toolkit root / bundle dir
     cands = [os.environ.get("BENCH_AGENT_CONF"),
              os.path.join(os.getcwd(), "bench-agent.conf"),
-             os.path.join(repo, "bench-agent.conf"),           # baked into app bundles
-             os.path.join(here, "bench-agent.conf"),           # baked beside the phases
              os.path.expanduser("~/.config/bench-agent.conf"),
              "/etc/bench-agent.conf",
-             "/mnt/benchdata/bench-agent.conf"]
+             "/mnt/benchdata/bench-agent.conf",
+             os.path.join(repo, "bench-agent.conf"),           # baked default (app bundle)
+             os.path.join(here, "bench-agent.conf")]           # baked beside the phases
     conf = {}
     for c in cands:
         if c and os.path.isfile(c):

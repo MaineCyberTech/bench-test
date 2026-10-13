@@ -31,13 +31,31 @@ def run():
         fh.write("BENCHD_SERVER=http://lab.test:8722\nBENCHD_TOKEN=tok123\n")
     env_keys = ("BENCH_AGENT_CONF", "BENCHD_SERVER", "BENCHD_TOKEN")
     saved = {k: os.environ.pop(k, None) for k in env_keys}
+    # point HOME at a clean dir so a real ~/.config can't shadow the baked copy
+    saved.update({k: os.environ.get(k) for k in ("HOME", "USERPROFILE")})
+    os.environ["HOME"] = root
+    os.environ["USERPROFILE"] = root
     try:
         server, token = rep.load_conf(here=here)
         c.check("load_conf reads the baked bench-agent.conf next to the toolkit",
                 server == "http://lab.test:8722" and token == "tok123", (server, token))
+        # an explicit config wins over the baked default
+        cwd2 = tempfile.mkdtemp(prefix="bench-cwd-")
+        with open(os.path.join(cwd2, "bench-agent.conf"), "w", encoding="utf-8") as fh:
+            fh.write("BENCHD_SERVER=http://override:9999\nBENCHD_TOKEN=over\n")
+        oldcwd = os.getcwd()
+        os.chdir(cwd2)
+        try:
+            s2, t2 = rep.load_conf(here=here)
+            c.check("an explicit ./bench-agent.conf overrides the baked one",
+                    s2 == "http://override:9999" and t2 == "over", (s2, t2))
+        finally:
+            os.chdir(oldcwd)
     finally:
         for k, v in saved.items():
-            if v is not None:
+            if v is None:
+                os.environ.pop(k, None)
+            else:
                 os.environ[k] = v
 
     # write_agent_conf bakes content from BENCH_BAKE_AGENT_CONF
