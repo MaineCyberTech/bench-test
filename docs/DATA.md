@@ -111,3 +111,25 @@ The run row, its phases, artifacts and summary stay, because that is what Histor
 Trends, Compare and Fleet read. Only the per-sample tables grow with run length and
 sample rate (4 Hz is ~4.5 MB per 15-minute run), so only those are swept — hourly,
 from the control plane's scheduler loop.
+
+## 6. Schema and integrity
+
+The control-plane database (`server/benchd.py`) is stdlib SQLite with no migration
+framework; one integer and a few pragmas carry its integrity guarantees.
+
+- **Schema version** — `SCHEMA_VERSION` is written to `PRAGMA user_version` on a
+  fresh database. On startup a **newer** version is refused with a clear message and
+  a non-zero exit (the process never touches a schema it does not understand); an
+  **older** one is upgraded in place and logged.
+- **Foreign keys** — `PRAGMA foreign_keys=ON` on every connection. The run-dependent
+  tables (`phases`, `telemetry`, `logs`, `events`, `artifacts`, `commands`) declare
+  `REFERENCES runs(id) ON DELETE CASCADE` in `CREATE TABLE`, so a fresh database
+  clears dependents at the storage layer as well as in `Store.delete_run`.
+- **Atomic phase writes** — `phases(run_id, seq)` has a unique index and writes use
+  `INSERT OR REPLACE`, so a replayed phase is idempotent. A legacy database that
+  already holds duplicates logs a warning and keeps the old behaviour.
+- **Per-runner keys at rest** — a runner's API key is stored only as its `sha256`
+  digest; what a client presents is hashed before comparison. Any plaintext key in
+  an existing database is migrated to its digest on startup, so old keys keep
+  working. (Operators and the join token are separate shared secrets, unchanged.)
+
