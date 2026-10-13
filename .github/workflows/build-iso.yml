@@ -20,7 +20,7 @@ on:
       gpu:
         description: "GPU variant"
         type: choice
-        options: [nvidia-legacy, nvidia, amd]
+        options: [nvidia-legacy, nvidia, amd, hybrid]
         default: nvidia-legacy
       compression:
         description: "squashfs compression (zstd = faster build, larger ISO)"

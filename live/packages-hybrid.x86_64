@@ -1,0 +1,16 @@
+# Hybrid variant: ONE stick for AMD and modern NVIDIA machines.
+#
+#   - AMD: Mesa/RADV graphics (common packages) + the system ROCm PyTorch.
+#   - NVIDIA (Turing -> RTX 50): the open kernel modules; CUDA PyTorch is baked
+#     to /opt/bench-pypackages and selected at run time by the live launcher
+#     (see bench/Run-LinuxBench.sh) - no static .pth, so AMD keeps ROCm.
+#
+# Legacy NVIDIA (Maxwell/Pascal/Volta) needs the 580 branch and stays its own
+# variant; it cannot coexist with nvidia-open (both own the nvidia module).
+python-pytorch-rocm
+rocm-smi-lib
+rocminfo
+hsa-rocr
+nvidia-open
+nvidia-utils
+nvidia-settings
