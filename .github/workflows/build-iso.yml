@@ -59,7 +59,9 @@ jobs:
     # to live here; splitting the release out would move the multi-GB ISO through
     # artifact storage, which is deliberately avoided. Everything else is read-only.
     permissions:
-      contents: write
+      contents: write       # softprops/action-gh-release
+      id-token: write       # SBOM-P2-003: OIDC token for build provenance
+      attestations: write   # SBOM-P2-003: persist the provenance attestation
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -202,6 +204,14 @@ jobs:
           sha256sum -c dist/SHA256SUMS
           echo "smoke ok: $iso ($size bytes) matches SHA256SUMS"
           rm -f "$iso"
+
+      - name: Attest ISO parts (SBOM-P2-003)
+        # SBOM-P2-003: the released ISO had no build provenance. Sign the exact
+        # <2 GiB parts that are attached below (the reassembled ISO is covered by
+        # their provenance + SHA256SUMS) so a download traces back to this run.
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/bench-live-*.iso.part.*
 
       - name: Attach to release
         if: ${{ inputs.upload_release == '' || inputs.upload_release }}
