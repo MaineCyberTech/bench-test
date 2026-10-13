@@ -781,7 +781,7 @@ if sysrec and sysrec.get("result"):
     rows.append("| errors since boot | %s |" % r.get("errors_since_boot"))
     table("System", rows)
 
-gfx = by("gfx", "furmark")
+gfx = by("gfx", "furmark") or by("gfx", "glmark2") or by("gfx", "glmark2-es2")
 if gfx and gfx.get("result"):
     r = gfx["result"]
     if r.get("skipped"):
