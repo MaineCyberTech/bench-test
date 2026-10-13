@@ -248,6 +248,18 @@ you add behaviour. Never commit with a failing suite.
   `$BENCH_REPO` → next to the frozen exe → cwd → repo root — so keep that helper
   when changing their top-of-file path setup. The bundle ships `bench/` next to the
   exe, so `_repo_dir()` finds it and a local battery needs no checkout.
+  **A bundle can update itself fully, in place.** The build freezes only
+  `packaging/launcher.py`; the dashboard and runners run from `<bundle>/bench/` on
+  disk, so refreshing that directory updates the *whole* app - which is what the
+  server's `update` command and the `auto_update()` startup check both do (the
+  latter throttled, `BENCH_APP_UPDATE_HOURS`, default 6; `0` checks every launch).
+  Keep it that way when touching the build: freezing `benchreport`/`tui.py` into the
+  exe would shadow the on-disk copies and silently pin the app to the download's
+  version. The toolkit's stdlib deps are bundled explicitly by `stdlib_imports()`
+  because PyInstaller can only see what the launcher imports - and a missing one
+  fails inside `except Exception`, so the failure is invisible. A dashboard update
+  restarts the app (`update_needs_restart` honours `kind=app`), which is how the
+  refreshed code actually takes effect.
   **A bundle carries two version files, deliberately:** `VERSION` (the release, read
   by `bench_version()`) and `.bench-version` (the build, read by
   `toolkit_version()`). With only the stamp a downloaded app reported

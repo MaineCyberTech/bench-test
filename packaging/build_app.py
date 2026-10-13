@@ -8,13 +8,21 @@ Produces `dist/bench-gui`, `dist/bench-tui` and `dist/bench-agent` (one-folder
 bundles) that run **without a Python install** — the dashboards/agent are
 stdlib-only (tkinter / curses), so the bundle carries its own interpreter.
 
-Each bundle also carries the whole `bench/` toolkit next to the exe, so a *local*
-battery runs with no checkout: on first run `bench/bootstrap.py` provisions a
-runner interpreter + the compute deps (numpy/psutil, plus DirectML for AMD/Intel
-or CUDA PyTorch for NVIDIA) into a per-user cache. A repo `.venv` or `$BENCH_REPO`
-still wins when present. Both `VERSION` and `.bench-version` are baked in: the
-dashboard reads `VERSION` for the release and the stamp for the build, so a
-non-git bundle reports `1.7.0+<commit>` instead of `0.0.0+unknown`.
+Each bundle carries the whole `bench/` toolkit next to the exe, and - since the
+launcher - **runs the app from that toolkit instead of freezing it in**. Only
+`packaging/launcher.py` and the interpreter are frozen, so refreshing `bench/`
+updates the dashboard *and* the runners together: that is what makes a downloaded
+app fully updatable in place, from the server's `update` command or from the
+`auto_update()` check at startup (throttled, `BENCH_APP_UPDATE_HOURS`, default 6).
+The toolkit's stdlib dependencies are still bundled (see `stdlib_imports`), because
+a missing one fails inside an `except Exception` that swallows it.
+
+On first run `bench/bootstrap.py` provisions a runner interpreter + the compute deps
+(numpy/psutil, plus DirectML for AMD/Intel or CUDA PyTorch for NVIDIA) into a
+per-user cache. A repo `.venv` or `$BENCH_REPO` still wins when present. Both
+`VERSION` and `.bench-version` are baked in: the dashboard reads `VERSION` for the
+release and the stamp for the build, so a non-git bundle reports `1.7.0+<commit>`
+instead of `0.0.0+unknown`.
 
 CI builds these for Windows and Linux and attaches them to a release
 (`.github/workflows/build-app.yml`).
@@ -28,10 +36,14 @@ import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BENCH = os.path.join(REPO, "bench")
+LAUNCHER = os.path.join(REPO, "packaging", "launcher.py")
 # GUI + TUI dashboards and the agent. On Windows the TUI needs the windows-curses
 # wheel installed at build time (CPython on Windows ships no _curses).
-APPS = [("bench-gui", "gui.py", True), ("bench-tui", "tui.py", False),
-        ("bench-agent", "agent.py", False)]
+# `extra` lists what each app imports but the launcher does not, so PyInstaller
+# still bundles it (the app code itself runs from `bench/` on disk, on purpose).
+APPS = [("bench-gui", "gui.py", True, ["tkinter"]),
+        ("bench-tui", "tui.py", False, ["curses", "_curses"]),
+        ("bench-agent", "agent.py", False, [])]
 
 
 def _curses_ok():
@@ -104,6 +116,33 @@ def write_version(bundle_dir):
     return v
 
 
+def stdlib_imports(paths):
+    """Stdlib module names to bundle inside the exe.
+
+    The bundle runs the app from `bench/` on disk (see launcher.py), so the toolkit
+    modules themselves must NOT be frozen - that would shadow the on-disk copies and
+    a toolkit refresh would change nothing. Their stdlib dependencies do have to be
+    inside the exe, and PyInstaller can only see what the launcher imports.
+
+    Scanning the toolkit source for top-level names is not enough: `import
+    urllib.request` needs `http.client`, `ssl` and `email` too, and a missing one
+    fails at import time inside a try/except that swallows it. So the whole stdlib
+    is requested; names that do not exist on this platform are filtered out here so
+    the build log is not full of "Hidden import not found" noise.
+    """
+    import importlib.util
+    out = []
+    for name in sorted(set(getattr(sys, "stdlib_module_names", ()))
+                       | set(sys.builtin_module_names)):
+        try:
+            if importlib.util.find_spec(name) is None:
+                continue
+        except (ImportError, ValueError, AttributeError):
+            continue
+        out.append(name)
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(REPO, "dist"))
@@ -118,17 +157,29 @@ def main():
               "(pip install windows-curses on Windows, or the system curses)")
         return 2
     os.makedirs(a.out, exist_ok=True)
-    for name, script, noconsole in APPS:
+    # what the apps import, so the frozen stdlib is complete even though the app
+    # code itself is not frozen
+    toolkit_src = [os.path.join(BENCH, f) for f in
+                   ("tui.py", "gui.py", "agent.py", "benchreport.py", "bootstrap.py",
+                    "gpu_util.py", "linux_info.py")]
+    stdlib = stdlib_imports(toolkit_src)
+    print("== stdlib modules to bundle: %d" % len(stdlib), flush=True)
+    for name, script, noconsole, extra in APPS:
         cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
-               "--name", name, "--paths", BENCH,
-               "--hidden-import", "benchreport", "--hidden-import", "bootstrap",
+               "--name", name,
                # ship the whole toolkit next to the exe so a local battery needs no
                # checkout; bootstrap.py provisions the interpreter + deps on first run.
                "--add-data", "%s%sbench" % (BENCH, os.pathsep),
                "--contents-directory", ".",
                "--distpath", a.out, "--workpath", os.path.join(a.out, "_work"),
                "--specpath", os.path.join(a.out, "_spec"),
-               os.path.join(BENCH, script)]
+               # the LAUNCHER is what gets frozen; the app code is run from bench/ so
+               # a toolkit refresh updates the dashboard too (see launcher.py)
+               LAUNCHER]
+        for mod in extra:
+            cmd += ["--hidden-import", mod]
+        for mod in stdlib:
+            cmd += ["--hidden-import", mod]
         if noconsole and sys.platform == "win32":
             cmd.append("--noconsole")
         print("== building %s" % name, flush=True)
@@ -142,7 +193,7 @@ def main():
             name, v["commit"] or "?", v["ref"] or "?",
             ", control-plane config baked" if baked else
             " (no control-plane config baked - set BENCH_AGENT_CONF)"))
-    print("built %s -> %s" % (", ".join(n for n, _s, _c in APPS), a.out))
+    print("built %s -> %s" % (", ".join(n for n, _s, _c, _e in APPS), a.out))
     return 0
 
 

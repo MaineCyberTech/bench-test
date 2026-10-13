@@ -13,8 +13,9 @@ import subprocess
 import sys
 import tarfile
 import threading
+import time
 
-from harness import Checker, tmpdir, BENCH
+from harness import Checker, tmpdir, BENCH, REPO
 import benchreport as br
 
 
@@ -464,6 +465,78 @@ def run():
             os.environ["BENCH_ALLOW_TOOLKIT_SWITCH"] = _switch
     c.check("a plain non-live copy is still refused",
             not r6.get("ok") and "not a live runner" in (r6.get("error") or ""), r6)
+
+    # ---- a bundle update must actually apply (restart, not just refresh) ----
+    c.check("an app-bundle update asks for a restart",
+            br.update_needs_restart({"ok": True, "kind": "app"}) is True, "")
+    c.check("a switched copy still asks for a restart",
+            br.update_needs_restart({"ok": True, "kind": "copy", "switched": True}) is True, "")
+    c.check("a no-op update does not restart",
+            br.update_needs_restart({"ok": True, "kind": "app", "updated": False}) is True
+            and br.update_needs_restart({"ok": False, "kind": "app"}) is False, "")
+
+    # ---- the app's own code must be seen as running from disk ----
+    # (that is what lets a toolkit refresh update the dashboard, not just the runners)
+    c.check("_code_runs_from_disk is true for the toolkit's own dir",
+            br._code_runs_from_disk(os.path.dirname(BENCH)) is True, "")
+    c.check("_code_runs_from_disk is false for an unrelated dir",
+            br._code_runs_from_disk(tmpdir()) is False, "")
+
+    # ---- startup update for an app bundle: throttled, and offline-safe ----
+    bdir2 = tmpdir()
+    os.makedirs(os.path.join(bdir2, "bench"))
+    with open(os.path.join(bdir2, ".bench-version"), "w") as fh:
+        json.dump({"mode": "app", "commit": "aa6ca7c", "checked_at": time.time()}, fh)
+    t0 = time.time()
+    r7 = br.auto_update(bdir2, enabled=True)
+    c.check("a recently checked bundle does not re-download at startup",
+            r7.get("kind") == "app" and not r7.get("updated") and time.time() - t0 < 2.0, r7)
+    with open(os.path.join(bdir2, ".bench-version"), "w") as fh:
+        json.dump({"mode": "app", "commit": "aa6ca7c"}, fh)
+    os.environ["BENCH_OFFLINE"] = "1"
+    try:
+        r8 = br.auto_update(bdir2, enabled=True)
+    finally:
+        os.environ.pop("BENCH_OFFLINE", None)
+    c.check("an offline startup check is a no-op, not an error",
+            r8.get("kind") == "app" and not r8.get("updated") and r8.get("skipped") == "offline", r8)
+    c.check("a git checkout still uses the git path",
+            br.auto_update(os.path.dirname(BENCH), enabled=False).get("kind") == "none", "")
+
+    # ---- the packaged launcher runs the app from bench/, not from the exe ----
+    import importlib.util as _ilu
+    _spec = _ilu.spec_from_file_location("pkg_launcher",
+                                         os.path.join(REPO, "packaging", "launcher.py"))
+    _lm = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_lm)
+    c.check("launcher maps bench-tui.exe -> tui.py", _lm._target("bench-tui.exe") == "tui.py", "")
+    c.check("launcher maps bench-gui.exe -> gui.py", _lm._target(r"C:\x\bench-gui.exe") == "gui.py", "")
+    c.check("launcher maps bench-agent.exe -> agent.py",
+            _lm._target("/usr/bin/bench-agent") == "agent.py", "")
+    os.environ["BENCH_APP"] = "gui"
+    try:
+        c.check("launcher honours BENCH_APP", _lm._target("whatever.exe") == "gui.py", "")
+    finally:
+        os.environ.pop("BENCH_APP", None)
+    _bsrc = open(os.path.join(REPO, "packaging", "build_app.py"), encoding="utf-8").read()
+    c.check("the build freezes the launcher, not the app code",
+            "LAUNCHER]" in _bsrc and "os.path.join(BENCH, script)]" not in _bsrc, "")
+    c.check("the build does not freeze benchreport into the exe",
+            '"--hidden-import", "benchreport"' not in _bsrc, "")
+    _spec2 = _ilu.spec_from_file_location("pkg_build",
+                                          os.path.join(REPO, "packaging", "build_app.py"))
+    _bm = _ilu.module_from_spec(_spec2)
+    _spec2.loader.exec_module(_bm)
+    _std = _bm.stdlib_imports([])
+    # stdlib_module_names holds top-level names only; PyInstaller follows each into
+    # its submodules, which is why the check is on the packages
+    c.check("the frozen stdlib is complete (packages the toolkit needs)",
+            all(m in _std for m in ("glob", "http", "ssl", "email", "urllib", "ctypes",
+                                    "json", "subprocess", "tarfile", "winreg" if os.name == "nt"
+                                    else "termios")),
+            [m for m in ("glob", "http", "ssl", "email", "urllib") if m not in _std])
+    c.check("the frozen stdlib does not include the toolkit itself",
+            not any(m in _std for m in ("benchreport", "bootstrap", "tui", "gui")), "")
 
     httpd.shutdown()
     for k in ("BENCH_TOOLKIT_DIR", "BENCH_PERSIST_DIR", "BENCH_ALLOW_TOOLKIT_SWITCH",

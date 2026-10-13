@@ -1230,6 +1230,46 @@ def _app_bundle_root(root):
         return False
 
 
+def _read_version_stamp(root):
+    """The `.bench-version` stamp as a dict ({} when absent or unreadable)."""
+    try:
+        with open(os.path.join(root, VERSION_FILE), encoding="utf-8") as fh:
+            v = json.load(fh)
+        return v if isinstance(v, dict) else {}
+    except Exception:
+        return {}
+
+
+def _touch_version_stamp(root, **fields):
+    """Merge fields into the `.bench-version` stamp, keeping what is already there.
+
+    Replacing the whole stamp would drop the app's own bookkeeping (e.g. when the
+    startup update check last ran).
+    """
+    stamp = _read_version_stamp(root)
+    stamp.update(fields)
+    try:
+        with open(os.path.join(root, VERSION_FILE), "w", encoding="utf-8") as fh:
+            json.dump(stamp, fh, indent=1)
+    except OSError:
+        pass
+    return stamp
+
+
+def _code_runs_from_disk(root):
+    """True when this app's own modules live in `root/bench` (the launcher shape).
+
+    A bundle built before the launcher froze the dashboard into the exe, so a
+    toolkit refresh there only updates the files that get *executed* - the note must
+    not promise a dashboard update that cannot happen.
+    """
+    try:
+        return os.path.abspath(os.path.join(root, "bench")) == \
+            os.path.dirname(os.path.abspath(__file__))
+    except Exception:
+        return False
+
+
 def _install_into_bundle(bundle, src, ref, commit, sha256, nbytes, log=None):
     """Refresh the toolkit copy that ships next to a bundled dashboard's exe.
 
@@ -1257,18 +1297,20 @@ def _install_into_bundle(bundle, src, ref, commit, sha256, nbytes, log=None):
                 fh.write(ver + "\n")
         except OSError:
             pass
-    try:
-        with open(os.path.join(bundle, VERSION_FILE), "w", encoding="utf-8") as fh:
-            json.dump({"mode": "app", "ref": ref, "commit": commit, "sha256": sha256,
-                       "fetched_at": time.time(), "version": ver or None}, fh, indent=1)
-    except OSError:
-        pass
+    # merge, so the stamp keeps any bookkeeping the app already had (mode stays
+    # 'app' so the bundle keeps being recognised as one)
+    _touch_version_stamp(bundle, mode="app", ref=ref, commit=commit, sha256=sha256,
+                         updated_at=time.time(), version=ver or None)
     log("[update] refreshed the bundled toolkit in %s" % dst)
-    return {"ok": True, "kind": "app", "ref": ref, "bytes": nbytes, "sha256": sha256,
-            "dest": dst, "commit": commit, "version": ver or None,
-            "restart_required": True,
-            "note": "the bundled toolkit (runners + phases) was refreshed; download a "
-                    "new app bundle to update the dashboard itself"}
+    if _code_runs_from_disk(bundle):
+        note = ("the app runs from this toolkit, so the dashboard and the runners "
+                "were both updated - restarting applies it")
+    else:
+        note = ("this bundle froze its dashboard into the exe, so only the runners "
+                "and phases were updated; download a new app bundle for the UI")
+    return {"ok": True, "kind": "app", "updated": True, "ref": ref, "bytes": nbytes,
+            "sha256": sha256, "dest": dst, "commit": commit, "version": ver or None,
+            "restart_required": True, "note": note}
 
 
 def update_toolkit(ref="main", sha256=None, log=None, root=None):
@@ -1401,8 +1443,33 @@ def auto_update(repo=None, log=None, enabled=None):
     repo = repo or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if enabled is None:
         enabled = os.environ.get("BENCH_NO_UPDATE") != "1"
-    if not enabled or not os.path.isdir(os.path.join(repo, ".git")):
+    if not enabled:
         return {"kind": "none", "ok": True, "updated": False}
+    if not os.path.isdir(os.path.join(repo, ".git")):
+        # An app bundle ships the toolkit next to its exe and (since the launcher)
+        # RUNS the app code from it, so refreshing bench/ updates the dashboard and
+        # the runners together. Throttled, because a launch must not always be a
+        # download; BENCH_APP_UPDATE_HOURS=0 checks on every launch.
+        if not _app_bundle_root(repo):
+            return {"kind": "none", "ok": True, "updated": False}
+        if os.environ.get("BENCH_OFFLINE") == "1":
+            return {"kind": "app", "ok": True, "updated": False, "skipped": "offline"}
+        try:
+            hours = float(os.environ.get("BENCH_APP_UPDATE_HOURS") or 6)
+        except ValueError:
+            hours = 6.0
+        last = float(_read_version_stamp(repo).get("checked_at") or 0)
+        age = time.time() - last
+        if last and hours > 0 and age < hours * 3600:
+            return {"kind": "app", "ok": True, "updated": False,
+                    "skipped": "checked %.1fh ago" % (age / 3600.0)}
+        log("[update] checking the app's toolkit (%s)" % (os.environ.get("BENCH_APP_REF") or "main"))
+        res = update_toolkit(os.environ.get("BENCH_APP_REF") or "main", log=log, root=repo)
+        # record the attempt either way, or a failing download retries every launch
+        _touch_version_stamp(repo, checked_at=time.time(),
+                             last_update_ok=bool(res.get("ok")),
+                             last_update_error=res.get("error"))
+        return res
     if os.environ.get("BENCH_OFFLINE") == "1":
         return {"kind": "git", "ok": True, "updated": False, "skipped": "offline"}
 
