@@ -1,0 +1,4 @@
+ping min/avg/max/mdev 33.2/35.9/37.8/0.0 ms loss 0% (1.1.1.1)
+download 226.2 Mbps
+upload 41.6 Mbps
+RESULT_JSON:{"phase": "bench", "target": "1.1.1.1", "ping_ms": {"min": 33.189, "avg": 35.863, "max": 37.812}, "ping_avg_ms": 35.863, "ping_mdev_ms": null, "ping_loss_pct": null, "download_mbps": 226.2, "download_bytes": 104857600, "upload_mbps": 41.6}

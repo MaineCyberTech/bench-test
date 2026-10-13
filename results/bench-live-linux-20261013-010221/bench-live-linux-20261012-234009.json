@@ -1,0 +1,65 @@
+{
+  "host": "bench-live",
+  "timestamp": "2026-10-12T23:40:09+00:00",
+  "platform": "Linux-7.2.9-arch1-1-x86_64-with-glibc2.44",
+  "env": {
+    "python": "/usr/bin/python3",
+    "torch": "2.14.1+cu126",
+    "torch_cuda": "12.6",
+    "cuda_available": true,
+    "git_commit": "",
+    "git_dirty": false
+  },
+  "fan_curve": "35:26 45:34 55:44 60:52 68:64 75:76 82:90 88:100",
+  "telemetry": {
+    "file": "bench-live-linux-20261012-234009.telemetry.csv",
+    "samples": 8,
+    "duration_s": 7.2,
+    "temp_c": [
+      32.0,
+      32.0,
+      32.0
+    ],
+    "fan_pct": [
+      29.0,
+      29.0,
+      29.0
+    ],
+    "power_w": [
+      7.4,
+      8.45
+    ]
+  },
+  "log_dir": "/mnt/benchdata/results/bench-live-linux-20261012-234009-logs",
+  "phases": [
+    {
+      "group": "gfx",
+      "phase": "glmark2",
+      "result": {
+        "score": 0,
+        "furmark_rc": 139
+      }
+    },
+    {
+      "group": "gfx",
+      "phase": "furmark",
+      "result": {
+        "phase": "furmark",
+        "demo": "furmark-gl",
+        "width": 1920,
+        "height": 1080,
+        "seconds": 20,
+        "exit": 139,
+        "score": null,
+        "fps_min": null,
+        "fps_avg": null,
+        "fps_max": null,
+        "temp_max_c": null,
+        "api": null,
+        "gpu_csv": null,
+        "skipped": true,
+        "reason": "furmark exited 139"
+      }
+    }
+  ]
+}
