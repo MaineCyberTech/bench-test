@@ -1,0 +1,1 @@
+Oct 12 23:36:33 bench-live kernel: perf: interrupt took too long (3920 > 3916), lowering kernel.perf_event_max_sample_rate to 51000

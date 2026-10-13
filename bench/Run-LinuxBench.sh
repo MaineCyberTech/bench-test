@@ -10,6 +10,7 @@
 #   [--skip-gpu] [--skip-cpu] [--skip-ram] [--skip-disk]
 #   [--skip-combined] [--skip-fullsoak] [--skip-net] [--skip-nvenc] [--skip-sys]
 #   [--skip-gfx] [--skip-fan]
+#   [--soak-until-stable] [--stable-hold S] [--gfx-engine furmark|glmark2]
 #
 # Env: BENCH_PY overrides the Python interpreter (default: .venv/bin/python, else python3).
 #      FURMARK overrides the FurMark 2 binary path (default: tools/furmark/FurMark_linux64/furmark).
@@ -29,7 +30,7 @@ DISK_PATH="${TMPDIR:-/tmp}"; DISK_SIZE_MB=2048; DISK_SECONDS=15; STEADY_GB=10
 DISK_PATH_SET=0
 DO_GPU=1; DO_CPU=1; DO_RAM=1; DO_DISK=1
 DO_COMBINED=1; DO_FULLSOAK=1; DO_NET=1; DO_NVENC=1; DO_SYS=1; DO_GFX=1; DO_FAN=1
-STABLE_ARG=""
+STABLE_ARG=""; STABLE_HOLD=60; GFX_ENGINE=furmark
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -62,7 +63,9 @@ while [ $# -gt 0 ]; do
         --skip-sys)        DO_SYS=0; shift ;;
         --skip-gfx)        DO_GFX=0; shift ;;
         --skip-fan)        DO_FAN=0; shift ;;
-    --soak-until-stable) STABLE_ARG="--until-stable"; shift ;;
+    --soak-until-stable) STABLE_ARG="--until-stable --stable-hold $STABLE_HOLD"; shift ;;
+    --stable-hold)     STABLE_HOLD="$2"; STABLE_ARG="--until-stable --stable-hold $STABLE_HOLD"; shift 2 ;;
+    --gfx-engine)      GFX_ENGINE="$2"; shift 2 ;;
         -h|--help)         sed -n '2,19p' "$0"; exit 0 ;;
         *)                 echo "unknown option: $1" >&2; exit 1 ;;
     esac
@@ -79,11 +82,11 @@ TELEMETRY="$BASE.telemetry.csv"
 JSONL="$(mktemp)"
 mkdir -p "$LOGDIR"
 TELE_PID=""
-trap 'rm -f "$JSONL"; [ -n "$TELE_PID" ] && kill "$TELE_PID" 2>/dev/null' EXIT
+trap 'cp -f "$JSONL" "$LOGDIR/records.jsonl" 2>/dev/null; rm -f "$JSONL"; [ -n "$TELE_PID" ] && kill "$TELE_PID" 2>/dev/null' EXIT
 
 echo "[env] python: $($PY -c 'import sys; print(sys.version.split()[0])')  out: $BASE.json|.md"
-echo "[telemetry] $PY $BENCH/telemetry_log.py --out $TELEMETRY --interval 1"
-"$PY" "$BENCH/telemetry_log.py" --out "$TELEMETRY" --interval 1 &
+echo "[telemetry] $PY $BENCH/telemetry_log.py --out $TELEMETRY --interval 0.25"
+"$PY" "$BENCH/telemetry_log.py" --out "$TELEMETRY" --interval 0.25 &
 TELE_PID=$!
 nvidia-smi -q > "$LOGDIR/nvidia-smi-q.start.txt" 2>&1 || true
 sensors -j > "$LOGDIR/sensors.start.json" 2>&1 || true
@@ -184,19 +187,30 @@ if [ "$DO_SYS" = 1 ]; then
 fi
 
 if [ "$DO_GFX" = 1 ]; then
-    echo "[gfx] FurMark 2 (furmark-gl, 1920x1080, ${GFX_SECONDS}s)"
-    FM="${FURMARK:-}"
-    if [ -z "$FM" ]; then
-        for c in "$ROOT/tools/furmark/FurMark_linux64/furmark" \
-                 "${BENCH_PERSIST_DIR:-/mnt/benchdata}/tools/FurMark_linux64/furmark" \
-                 /opt/bench-tools/furmark/FurMark_linux64/furmark; do
-            [ -x "$c" ] && FM="$c" && break
-        done
+    FM=""
+    if [ "$GFX_ENGINE" != "glmark2" ]; then
+        echo "[gfx] FurMark 2 (furmark-gl, 1920x1080, ${GFX_SECONDS}s)"
+        FM="${FURMARK:-}"
+        if [ -z "$FM" ]; then
+            for c in "$ROOT/tools/furmark/FurMark_linux64/furmark" \
+                     "${BENCH_PERSIST_DIR:-/mnt/benchdata}/tools/FurMark_linux64/furmark" \
+                     /opt/bench-tools/furmark/FurMark_linux64/furmark; do
+                [ -x "$c" ] && FM="$c" && break
+            done
+        fi
     fi
     if [ -z "$FM" ] || [ ! -x "$FM" ]; then
-        echo "    furmark not found (looked in the toolkit, \$BENCH_PERSIST_DIR/tools and /opt/bench-tools) -- download FurMark 2 (linux64) from geeks3d.com into tools/, or set \$FURMARK"
-        printf '{"group":"gfx","phase":"furmark","result":{"skipped":true,"reason":"furmark not installed"}}\n' >> "$JSONL"
-    else
+        if [ "$GFX_ENGINE" = "glmark2" ]; then
+            echo "[gfx] glmark2 (engine requested; FurMark skipped)"
+        else
+            echo "    furmark not found (looked in the toolkit, \$BENCH_PERSIST_DIR/tools and /opt/bench-tools) -- download FurMark 2 (linux64) from geeks3d.com into tools/, or set \$FURMARK"
+            printf '{"group":"gfx","phase":"furmark","result":{"skipped":true,"reason":"furmark not installed"}}\n' >> "$JSONL"
+        fi
+        # no FurMark to run: still set up the display for the glmark2 fallbacks
+        GFRC=${GFRC:-1}
+        mkdir -p "$LOGDIR"
+    fi
+    if [ -n "$FM" ] && [ -x "$FM" ]; then
         # live consoles have no X; start a headless one on :9 (nvidia
         # UseDisplayDevice=none) so GL works without blanking the console and
         # without stealing the GUI's :0 display
@@ -219,11 +233,28 @@ if [ "$DO_GFX" = 1 ]; then
         if [ -n "$(command -v xrandr 2>/dev/null)" ]; then
             xrandr -display "$DISPLAY" --setmonitor bench 1920/597x1080/336+0+0 none 2>/dev/null || true
         fi
-        for i in 1 2 3 4 5; do
-            xprop -display "$DISPLAY" -root -f RESOURCE_MANAGER 8s -set RESOURCE_MANAGER '*dpi: 96' 2>/dev/null || true
-            xprop -display "$DISPLAY" -root RESOURCE_MANAGER 2>/dev/null | grep -q dpi && break
-            sleep 0.5
-        done
+        if [ -n "$(command -v xprop 2>/dev/null)" ]; then
+            for i in 1 2 3 4 5; do
+                xprop -display "$DISPLAY" -root -f RESOURCE_MANAGER 8s -set RESOURCE_MANAGER '*dpi: 96' 2>/dev/null || true
+                xprop -display "$DISPLAY" -root RESOURCE_MANAGER 2>/dev/null | grep -q dpi && break
+                sleep 0.5
+            done
+        fi
+        # report what the probe actually saw - FurMark dies on a zero-monitor or
+        # missing-RESOURCE_MANAGER display, and this is how we find out why
+        MON="$(xrandr -display "$DISPLAY" --listmonitors 2>/dev/null | head -1)"
+        RM="$(xprop -display "$DISPLAY" -root RESOURCE_MANAGER 2>/dev/null | head -1)"
+        [ -z "$RM" ] && echo "    WARNING: no RESOURCE_MANAGER on $DISPLAY"
+        # FurMark's X11 probe walks the monitor list and dies (SIGSEGV) on a
+        # display that reports none - a live box with no monitor attached. Detect
+        # that instead of burning the timeout on a core dump: glmark2 does not
+        # need a monitor (it just needs a GLX surface, which :9 has).
+        FM_RUN=1
+        case "$MON" in
+            *"Monitors: 0"*)
+                echo "    no monitor on $DISPLAY - skipping FurMark (its probe needs one), using glmark2"
+                FM_RUN=0 ;;
+        esac
         # diagnostic snapshot: uploaded with the run logs for gfx post-mortems
         {
             echo "display: $DISPLAY"
@@ -233,30 +264,53 @@ if [ "$DO_GFX" = 1 ]; then
             if command -v glxinfo >/dev/null 2>&1; then glxinfo -B 2>&1 | head -12; fi
         } > "$LOGDIR/gfx-diag.txt" 2>&1
         mkdir -p "$LOGDIR/furmark"
-        GFX_OUT="$(cd "$(dirname "$FM")" && timeout $((GFX_SECONDS * 2 + 120)) ./furmark --demo furmark-gl \
-            --width 1920 --height 1080 --benchmark --duration-ms "$((GFX_SECONDS * 1000))" \
-            --no-score-box --vsync 0 --log-gpu-data --gpu-monitor-print \
-            --export-dir "$LOGDIR/furmark" --hw-polling-interval 1000 2>&1)"; GFRC=$?
-        printf '%s\n' "$GFX_OUT" > "$LOGDIR/gfx-furmark.log"
-        printf '%s\n' "$GFX_OUT" | grep -a -v '^$' | sed 's/^/    /'
+        if [ "$FM_RUN" = 1 ]; then
+            GFX_OUT="$(cd "$(dirname "$FM")" && timeout $((GFX_SECONDS * 2 + 120)) ./furmark --demo furmark-gl \
+                --width 1920 --height 1080 --benchmark --duration-ms "$((GFX_SECONDS * 1000))" \
+                --no-score-box --vsync 0 --log-gpu-data --gpu-monitor-print \
+                --export-dir "$LOGDIR/furmark" --hw-polling-interval 1000 2>&1)"; GFRC=$?
+            printf '%s\n' "$GFX_OUT" > "$LOGDIR/gfx-furmark.log"
+            printf '%s\n' "$GFX_OUT" | grep -a -v '^$' | sed 's/^/    /'
+        else
+            GFRC=1
+            printf '{"group":"gfx","phase":"furmark","result":{"skipped":true,"reason":"no monitor on the X display"}}\n' >> "$JSONL"
+        fi
+        # glmark2's default is ~10s per scene (25 scenes ~= 4 min, which can run
+        # past the timeout and lose the final Score line), so the fallback below
+        # runs a bounded scene subset instead of the whole suite.
         # if FurMark still dies, fall back to glmark2 so the gfx phase always
-        # produces a score (glmark2 ships in the live image)
+        # produces a score (glmark2 ships in the live image). Note: glmark2's -b
+        # takes a benchmark NAME, so a bare "-b" is an error - run the default suite.
+        # glmark2's -d is --debug (it floods the log and does not shorten the run);
+        # the per-scene duration is a scene option, and its default of ~10s per
+        # scene over the full suite runs past any sane timeout. Run a fixed,
+        # representative subset with a short per-scene duration so the phase is
+        # bounded and comparable run to run.
+        GLD=2
+        GL_SCENES="-b build:duration=$GLD -b texture:duration=$GLD -b shading:duration=$GLD \
+-b bump:duration=$GLD -b effect2d:duration=$GLD -b jellyfish:duration=$GLD \
+-b terrain:duration=$GLD -b shadow:duration=$GLD"
         if [ "$GFRC" -ne 0 ] && command -v glmark2 >/dev/null 2>&1; then
-            echo "    furmark failed (rc=$GFRC) - falling back to glmark2"
-            GM_OUT="$(timeout $((GFX_SECONDS * 2 + 120)) glmark2 -b 2>&1)"; GMRC=$?
+            echo "    running glmark2 (8 scenes, ${GLD}s each)"
+            GM_OUT="$(timeout $((GFX_SECONDS + 120)) glmark2 $GL_SCENES 2>&1)"; GMRC=$?
             printf '%s\n' "$GM_OUT" > "$LOGDIR/gfx-glmark2.log"
             printf '%s\n' "$GM_OUT" | grep -E "glmark2 Score|FPS:" | tail -3 | sed 's/^/    /'
-            GSCORE="$(printf '%s\n' "$GM_OUT" | grep -oE "glmark2 Score: [0-9]+" | tail -1 | grep -oE "[0-9]+")"
-            printf '{"group":"gfx","phase":"glmark2","result":{"score":%s,"furmark_rc":%s}}\n' "${GSCORE:-0}" "$GFRC" >> "$JSONL"
+            # the last numeric token, whitespace-stripped: grep -oE emits one line
+            # PER MATCH, so two matches became "2\n31596" inside the JSON record and
+            # split it across lines (which killed the whole summary)
+            GSCORE="$(printf '%s\n' "$GM_OUT" | grep -oE "glmark2 Score: [0-9]+" | tail -1 \
+                      | grep -oE "[0-9]+" | tail -1 | tr -d '[:space:]')"
+            printf '{"group":"gfx","phase":"glmark2","result":{"score":%s,"furmark_rc":%s,"scenes":8,"per_scene_s":%s,"exit":%s}}\n' "${GSCORE:-0}" "$GFRC" "$GLD" "$GMRC" >> "$JSONL"
         fi
         # last resort: EGL/GLES off-screen, which needs no X output/CRTC (the
         # headless NVIDIA server has none, which is what kills the GL apps above)
         if [ "${GSCORE:-0}" = "0" ] && command -v glmark2-es2 >/dev/null 2>&1; then
             echo "    trying glmark2-es2 --off-screen (EGL, no X output needed)"
-            GME_OUT="$(DISPLAY= timeout $((GFX_SECONDS * 2 + 120)) glmark2-es2 --off-screen -b 2>&1)"; GMERC=$?
+            GME_OUT="$(DISPLAY= timeout 90 glmark2-es2 --off-screen 2>&1)"; GMERC=$?
             printf '%s\n' "$GME_OUT" > "$LOGDIR/gfx-glmark2-es2.log"
             printf '%s\n' "$GME_OUT" | grep -E "glmark2 Score|FPS:" | tail -3 | sed 's/^/    /'
-            GESCORE="$(printf '%s\n' "$GME_OUT" | grep -oE "glmark2 Score: [0-9]+" | tail -1 | grep -oE "[0-9]+")"
+            GESCORE="$(printf '%s\n' "$GME_OUT" | grep -oE "glmark2 Score: [0-9]+" | tail -1 \
+                       | grep -oE "[0-9]+" | tail -1 | tr -d '[:space:]')"
             printf '{"group":"gfx","phase":"glmark2-es2","result":{"score":%s,"exit":%s,"furmark_rc":%s}}\n' "${GESCORE:-0}" "$GMERC" "$GFRC" >> "$JSONL"
         fi
         cp "$(dirname "$FM")/_furmark_log.txt" "$LOGDIR/" 2>/dev/null || true
@@ -413,16 +467,25 @@ sensors -j > "$LOGDIR/sensors.end.json" 2>&1 || true
 journalctl -k --since "$ISO" --no-pager > "$LOGDIR/kernel-since-start.log" 2>&1 || true
 journalctl -p err --since "$ISO" --no-pager > "$LOGDIR/errors-since-start.log" 2>&1 || true
 
-"$PY" - "$JSONL" "$BASE.json" "$BASE.md" "$HOST" "$ISO" "$PY" "$ROOT" "$TELEMETRY" "$LOGDIR" <<'PYEOF'
+"$PY" - "$JSONL" "$BASE.json" "$BASE.md" "$HOST" "$ISO" "$PY" "$ROOT" "$TELEMETRY" "$LOGDIR" <<'PYEOF' 2> "$LOGDIR/summary-error.txt"
 import json, os, subprocess, sys, platform
 jsonl, json_out, md_out, host, iso, py, root, telemetry_csv, logdir = sys.argv[1:10]
 
 recs = []
+bad = 0
 with open(jsonl) as fh:
     for line in fh:
         line = line.strip()
-        if line:
+        if not line:
+            continue
+        try:
             recs.append(json.loads(line))
+        except ValueError:
+            # one malformed record must not cost the whole summary - it did:
+            # the JSONDecodeError killed the report and left summary.gfx empty
+            bad += 1
+if bad:
+    print("[warn] skipped %d malformed record(s) in %s" % (bad, jsonl))
 
 env = {"python": py}
 try:
@@ -732,7 +795,16 @@ if sysrec and sysrec.get("result"):
     rows.append("| errors since boot | %s |" % r.get("errors_since_boot"))
     table("System", rows)
 
-gfx = by("gfx", "furmark")
+def _with_score(rec):
+    """A gfx record only counts if it produced a score (a 'skipped' furmark record
+    is truthy and used to short-circuit past the glmark2 fallback's real result)."""
+    r = (rec or {}).get("result") or {}
+    return rec if (r.get("score") is not None and not r.get("skipped")) else None
+
+
+gfx = (_with_score(by("gfx", "furmark")) or _with_score(by("gfx", "glmark2"))
+       or _with_score(by("gfx", "glmark2-es2"))
+       or by("gfx", "furmark") or by("gfx", "glmark2") or by("gfx", "glmark2-es2"))
 if gfx and gfx.get("result"):
     r = gfx["result"]
     if r.get("skipped"):
@@ -813,3 +885,16 @@ with open(md_out, "w") as fh:
 
 print("[done] wrote %s and %s" % (json_out, md_out))
 PYEOF
+# The battery itself is done at this point; if the report writer throws we must not
+# report the whole run as failed (it also loses the summary). Surface it loudly,
+# keep the traceback next to the logs, and exit 0 - the phases really did run.
+SUMMARY_RC=$?
+if [ "$SUMMARY_RC" -ne 0 ]; then
+    echo "[warn] summary generation failed (rc=$SUMMARY_RC) - phases completed, report missing"
+    {
+        echo ""
+        echo "Run-LinuxBench.sh: summary step exited $SUMMARY_RC"
+        echo "results dir: $OUT"
+    } >> "$LOGDIR/summary-error.txt" 2>/dev/null || true
+fi
+exit 0

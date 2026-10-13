@@ -43,6 +43,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# Wire format this control plane speaks. Runners advertise theirs; a mismatch is
+# flagged in the fleet view instead of silently producing wrong data.
+PROTOCOL = 1
 WEB_DIR = os.path.join(HERE, "web")
 DEFAULT_DB = os.path.join(HERE, "data", "benchd.sqlite")
 
@@ -201,6 +204,7 @@ def online(last_seen):
 
 
 _SERVER_GIT = {"v": None}
+_SERVER_VER = {"v": None}
 
 
 def server_git():
@@ -235,6 +239,24 @@ def server_git():
                     break
         _SERVER_GIT["v"] = val
     return _SERVER_GIT["v"]
+
+
+def server_version():
+    """The control plane's release version, from the VERSION file next to it.
+
+    The server is deployed as a copy (no .git), so the version is what identifies
+    a deployment; ``0.0.0+unknown`` when the file was not shipped.
+    """
+    if _SERVER_VER["v"] is None:
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        val = ""
+        try:
+            with open(os.path.join(repo, "VERSION"), encoding="utf-8") as fh:
+                val = fh.read().strip().splitlines()[0].strip()
+        except (OSError, IndexError):
+            val = ""
+        _SERVER_VER["v"] = val or "0.0.0+unknown"
+    return _SERVER_VER["v"]
 
 
 REPO_SLUG = os.environ.get("BENCH_REPO_SLUG") or "MaineCyberTech/bench-test"
@@ -572,6 +594,8 @@ class Handler(BaseHTTPRequestHandler):
         path, q = u.path, parse_qs(u.query)
         if path == "/health":
             return self._send(200, {"ok": True, "time": now(), "git": server_git(),
+                                    "version": server_version(),
+                                    "protocol": PROTOCOL,
                                     "latest": latest_git(),
                                     "runners": len(self.store.q("SELECT id FROM runners"))})
         if path.startswith("/api/"):
@@ -655,6 +679,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"runners": runners, "active": active, "recent": recent,
                                     "metrics": METRICS, "hosts": hosts,
                                     "server_git": server_git(), "latest_git": latest_git(),
+                            "version": server_version(), "protocol": PROTOCOL,
                                     "server_time": now()})
         if path == "/api/v1/metrics":
             return self._send(200, {"metrics": METRICS})
@@ -1013,21 +1038,21 @@ class Handler(BaseHTTPRequestHandler):
             run_id = m.group(1)
             samples = b.get("samples") or []
             rows = []
-            last_named = None
+            named = []
             for s in samples:
                 ts = None
                 if isinstance(s, dict):
                     core = [s.get(f) for f in SAMPLE_FIELDS]
                     extra = {k: v for k, v in s.items()
                              if k not in SAMPLE_FIELDS and k != "ts"
-                             and isinstance(v, (int, float)) and not isinstance(v, bool)}
+                             and isinstance(v, (int, float, str)) and not isinstance(v, bool)}
                     if isinstance(s.get("ts"), (int, float)):
                         ts = float(s["ts"])
-                    last_named = dict(s)
+                    named.append(dict(s))
                 else:
                     core = (list(s) + [None] * len(SAMPLE_FIELDS))[:len(SAMPLE_FIELDS)]
                     extra = {}
-                    last_named = dict(zip(SAMPLE_FIELDS, core))
+                    named.append(dict(zip(SAMPLE_FIELDS, core)))
                 rows.append([run_id, ts or now()] + core + [json.dumps(extra) if extra else None])
             with S.lock:
                 S.conn.executemany(
@@ -1035,9 +1060,13 @@ class Handler(BaseHTTPRequestHandler):
                     "gpu_fan_rpm,cpu_util,ram_used,sm_mhz,mem_used,extra) "
                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
                 S.conn.commit()
-            if last_named is not None:
+            if named:
+                # publish the WHOLE batch: a runner posts telemetry in chunks, and
+                # sending only the last sample made the live web view undersample
+                # (one point per chunk instead of per second)
                 self.bus.publish({"event": "telemetry",
-                                  "data": {"run_id": run_id, "sample": last_named, "n": len(rows)}})
+                                  "data": {"run_id": run_id, "sample": named[-1],
+                                           "samples": named[-1000:], "n": len(rows)}})
             return self._send(200, {"ok": True, "accepted": len(rows)})
         m = re.match(r"^/api/v1/runs/([^/]+)/event$", path)
         if m:

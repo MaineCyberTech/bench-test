@@ -93,6 +93,10 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+      - name: Read version
+        id: ver
+        run: echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -100,11 +104,11 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: app-${{ github.run_number }}
-          name: "App bundles #${{ github.run_number }}"
+          name: "App bundles v${{ steps.ver.outputs.version }} #${{ github.run_number }}"
           files: dist/*.zip
           make_latest: false
           body: |
-            Standalone bench-test app bundles (PyInstaller) — run the GUI/TUI/agent
+            bench-test v${{ steps.ver.outputs.version }} standalone app bundles (PyInstaller) — run the GUI/TUI/agent
             without installing Python.
             Built from commit `${{ github.sha }}` on `${{ github.ref_name }}`.
             - `bench-app-windows.zip` · `bench-app-linux.zip`

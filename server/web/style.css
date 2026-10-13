@@ -195,3 +195,68 @@ table td.num{font-family:var(--mono);text-align:right}
   font:11px/1.45 var(--mono);white-space:pre;box-shadow:0 6px 20px rgba(0,0,0,.45)}
 .chartrow,.card{position:relative}
 .empty{color:var(--muted);padding:14px;text-align:center}
+
+/* full-pane live view for an active run: box status + specs, live bars, gauges,
+   telemetry charts/stats, phases and the console — the TUI's panels, wider */
+.focuspane{position:fixed;inset:0;background:var(--bg);display:none;overflow:auto;z-index:55}
+.focuspane.show{display:block}
+.focushead{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:12px;
+  flex-wrap:wrap;background:var(--card);border-bottom:1px solid var(--border);padding:10px 16px}
+.focushead .h{font-weight:700;font-size:16px}
+.focusbody{padding:14px 16px 40px}
+.fgrid{display:grid;gap:14px;align-items:start;
+  grid-template-columns:minmax(310px,1.2fr) minmax(280px,1fr) minmax(360px,1.8fr)}
+.fgrid.two{grid-template-columns:minmax(280px,1fr) minmax(280px,1fr);margin-top:14px}
+.fcard{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px}
+.fcard h4{margin:0 0 8px;font-size:11px;color:var(--muted);
+  text-transform:uppercase;letter-spacing:1px}
+.fcard h4+ h4{margin-top:10px}
+/* label/value rows as real grid rows (a <table> with display:grid keeps each <tr>
+   a nested table, which sized to content and spilled outside the card) */
+.fk{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:3px 12px;
+  font-size:12px;width:100%}
+.fk .fkr{display:contents}
+.fk .fkk{color:var(--muted);white-space:nowrap}
+.fk .fkv{font-family:var(--mono);min-width:0;overflow-wrap:anywhere;word-break:break-word}
+/* 27 metrics in one narrow column is unreadable - lay them out in two */
+.statcols{display:grid;grid-template-columns:1fr 1fr;gap:0 26px}
+.statcols table{width:100%}
+.statcols .muted{padding:8px 0}
+@media (max-width:1100px){.statcols{grid-template-columns:1fr}}
+.fbar{display:flex;align-items:center;gap:8px;margin:4px 0;font-size:11px}
+.fbar .bn{width:66px;color:var(--muted);flex:none}
+.fbar .bt{flex:1;height:9px;background:var(--card2);border-radius:5px;overflow:hidden;
+  display:block}
+.fbar .bf{display:block;height:100%;min-width:2px;border-radius:5px;transition:width .25s}
+.fbar .bv{width:86px;text-align:right;font-family:var(--mono);flex:none}
+.focuspane .phases{max-height:42vh}
+.focuspane .console{max-height:34vh}
+.focuspane .statstable{font-size:11px}
+
+/* chart legend: the real numbers behind a normalised (mixed-unit) plot */
+.chartlegend{display:flex;flex-wrap:wrap;gap:3px 16px;margin:7px 2px 0;font-size:11px}
+.chartlegend:empty{display:none}
+.chartlegend .cl{display:inline-flex;align-items:center;gap:6px;color:var(--muted)}
+.chartlegend .cl i{width:10px;height:3px;border-radius:2px;display:inline-block;flex:none}
+.chartlegend .cl b{color:var(--text);font-family:var(--mono);font-weight:600}
+.chartlegend .cl .muted{font-family:var(--mono);font-size:10px}
+.chartlegend .cl.nodata{opacity:.5}
+.chartlegend .cl.nodata i{opacity:.35}
+
+/* grouped subheadings inside a detail section */
+.subhead{margin:12px 0 4px;font-size:11px;color:var(--text);text-transform:uppercase;
+  letter-spacing:.9px;opacity:.85}
+.fhealth{font-size:11px;font-family:var(--mono);color:var(--muted);line-height:1.5;
+  word-break:break-word}
+.fhealth.hot{color:var(--bad);font-weight:600}
+
+/* sparkline panel under the main chart */
+.minigrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}
+.mini{background:var(--card2);border-radius:8px;padding:6px 8px 2px}
+.mini .ml{display:flex;justify-content:space-between;gap:8px;font-size:10px;
+  color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+.mini .mv{font-family:var(--mono);color:var(--text);font-size:11px;text-transform:none}
+.mini canvas{height:56px;display:block;width:100%}
+@media (max-width:1400px){.minigrid{grid-template-columns:repeat(2,1fr)}}
+@media (max-width:900px){.minigrid{grid-template-columns:1fr}}
+@media (max-width:980px){.fgrid,.fgrid.two{grid-template-columns:1fr}}

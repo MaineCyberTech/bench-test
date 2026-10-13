@@ -1,0 +1,34 @@
+=======================================================
+    glmark2 2023.01
+=======================================================
+    OpenGL Information
+    GL_VENDOR:      NVIDIA Corporation
+    GL_RENDERER:    NVIDIA GeForce GTX 1080/PCIe/SSE2
+    GL_VERSION:     4.6.0 NVIDIA 580.178.04
+    Surface Config: buf=32 r=8 g=8 b=8 a=8 depth=24 stencil=0 samples=0
+    Surface Size:   800x600 windowed
+=======================================================
+[build] use-vbo=false: FPS: 11837 FrameTime: 0.084 ms
+[build] use-vbo=true: FPS: 42533 FrameTime: 0.024 ms
+[texture] texture-filter=nearest: FPS: 42427 FrameTime: 0.024 ms
+[texture] texture-filter=linear: FPS: 41942 FrameTime: 0.024 ms
+[texture] texture-filter=mipmap: FPS: 42275 FrameTime: 0.024 ms
+[shading] shading=gouraud: FPS: 39169 FrameTime: 0.026 ms
+[shading] shading=blinn-phong-inf: FPS: 39295 FrameTime: 0.025 ms
+[shading] shading=phong: FPS: 37058 FrameTime: 0.027 ms
+[shading] shading=cel: FPS: 37518 FrameTime: 0.027 ms
+[bump] bump-render=high-poly: FPS: 25654 FrameTime: 0.039 ms
+[bump] bump-render=normals: FPS: 42436 FrameTime: 0.024 ms
+[bump] bump-render=height: FPS: 43828 FrameTime: 0.023 ms
+[effect2d] kernel=0,1,0;1,-4,1;0,1,0;: FPS: 38199 FrameTime: 0.026 ms
+[effect2d] kernel=1,1,1,1,1;1,1,1,1,1;1,1,1,1,1;: FPS: 27404 FrameTime: 0.036 ms
+[pulsar] light=false:quads=5:texture=false: FPS: 40245 FrameTime: 0.025 ms
+[desktop] blur-radius=5:effect=blur:passes=1:separable=true:windows=4: FPS: 5545 FrameTime: 0.180 ms
+[desktop] effect=shadow:windows=4: FPS: 6996 FrameTime: 0.143 ms
+[buffer] columns=200:interleave=false:update-dispersion=0.9:update-fraction=0.5:update-method=map: FPS: 1244 FrameTime: 0.804 ms
+[buffer] columns=200:interleave=false:update-dispersion=0.9:update-fraction=0.5:update-method=subdata: FPS: 1470 FrameTime: 0.680 ms
+[buffer] columns=200:interleave=true:update-dispersion=0.9:update-fraction=0.5:update-method=map: FPS: 1061 FrameTime: 0.943 ms
+[ideas] speed=duration: FPS: 11001 FrameTime: 0.091 ms
+[jellyfish] <default>: FPS: 25461 FrameTime: 0.039 ms
+[terrain] <default>: FPS: 2280 FrameTime: 0.439 ms
+[shadow] <default>:

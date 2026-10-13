@@ -54,7 +54,7 @@ try:
                              toolkit_version, is_live, update_needs_restart, hardware_line,
                              DASH_FIELDS, auto_update, should_restart_after_update, venv_python,
                          upload_telemetry_csv, persist_root, upload_run_files,
-                         extra_runner_args, tune_summary)
+                         extra_runner_args, tune_summary, bench_version, version_string)
 except Exception:  # reporting is optional
     Reporter = None
 
@@ -94,12 +94,19 @@ _DEF_DUR = {"gpu": "600", "combined": "300", "fullsoak": "300", "gfx": "60"}
 # preset carries them in "tune". Without them a run uses the runner's long
 # defaults (cpu 120s, ram 120s, gpu matrix 12288, steady 10GB).
 _TUNE = {"cpu_soak": 45, "ram_soak": 30, "disk_seconds": 30, "gpu_size": 4096,
-         "cpu_size": 2048, "ram_size_mb": 512, "passes": 1, "steady_gb": 2, "stable": 1}
+         "cpu_size": 2048, "ram_size_mb": 512, "passes": 1, "steady_gb": 2,
+         "stable": 1, "stable_hold": 60, "gfx_engine": "furmark"}
+
+# "Quick check" has to be quick: with no tune it inherits the runner's long
+# defaults (cpu 120s, ram 120s, 10 GiB steady write, gpu matrix 12288).
+_QUICK_TUNE = {"cpu_soak": 60, "ram_soak": 30, "disk_seconds": 15, "gpu_size": 4096,
+               "cpu_size": 2048, "ram_size_mb": 512, "passes": 1, "steady_gb": 2}
 
 PRESETS = [
     ("Quick check (short soaks)", {"groups": _g("gpu", "cpu", "ram", "disk", "combined", "fullsoak",
                                                 "net", "nvenc", "sys", "gfx"),
-                                   "dur": {"gpu": "60", "combined": "60", "fullsoak": "60", "gfx": "30"}}),
+                                   "dur": {"gpu": "60", "combined": "60", "fullsoak": "60", "gfx": "30"},
+                                   "tune": dict(_QUICK_TUNE)}),
     ("Stabilized full soak (15 min)", {"groups": _g("gpu", "cpu", "ram", "disk", "combined", "fullsoak",
                                                     "net", "nvenc", "fan", "sys", "gfx"),
                                        "dur": {"gpu": "180", "combined": "45", "fullsoak": "90", "gfx": "30"},
@@ -111,6 +118,9 @@ PRESETS = [
     ("CPU + RAM + disk", {"groups": _g("cpu", "ram", "disk", "sys"), "dur": dict(_DEF_DUR)}),
     ("Storage + network", {"groups": _g("disk", "net", "sys"), "dur": dict(_DEF_DUR)}),
     ("Video / graphics", {"groups": _g("nvenc", "gfx", "sys"), "dur": dict(_DEF_DUR)}),
+    ("Graphics only (FurMark/Valley)", {"groups": _g("gfx", "sys"),
+                                        "dur": {**_DEF_DUR, "gfx": "30"},
+                                        "tune": {"gfx_engine": "furmark"}}),
     ("LLM inference (Ollama)", {"groups": _g("llm", "sys"), "dur": dict(_DEF_DUR)}),
     ("Fan response", {"groups": _g("fan", "sys"), "dur": dict(_DEF_DUR)}),
     ("Soak only (long)", {"groups": _g("gpu", "fullsoak", "sys"),
@@ -193,7 +203,7 @@ class BenchTUI:
             res = auto_update(REPO, log=lambda m: self.log.append(m))
             if res.get("updated"):
                 self.log.append("[update] restarting into the newer checkout")
-                restart_self(1.0, lambda m: self.log.append(m))
+                self._restart(1.0)
         threading.Thread(target=work, daemon=True).start()
 
     # ---------------------------------------------------------- reporting ---
@@ -204,7 +214,7 @@ class BenchTUI:
             import platform as _p
             ident = load_identity(self.server)
             self.rep = Reporter(self.server, self.token, name=self.name or _p.node(),
-                                kind="tui", os_name=_p.system(),
+                                kind="tui", os_name=_p.system(), version=version_string(REPO),
                                 runner_id=ident.get("runner_id"), api_key=ident.get("api_key"),
                                 persist=True, instance=self.instance,
                                 log=lambda m: self.log.append(m))
@@ -254,11 +264,27 @@ class BenchTUI:
             self._update_remote(cmd.get("id"), kind, payload)
         elif kind == "restart":
             self.rep.ack(cmd.get("id"), "done", {"restart": "scheduled"})
-            threading.Thread(target=restart_self, args=(0.5,), daemon=True).start()
+            self._restart()
         elif kind in ("exec", "shell"):
             self._exec_remote(cmd.get("id"), payload)
         else:
             self.rep.ack(cmd.get("id"), "failed", {"error": "unsupported: %s" % kind})
+
+    def _restart(self, delay=0.5):
+        """Re-exec for a toolkit switch.
+
+        Drop curses first: execv replaces the process image, so without endwin()
+        the successor inherits a terminal left in raw mode / alt screen (the UI
+        then never comes back). `console=True` because on Windows a successor
+        spawned hidden has no console at all - it runs with no UI.
+        """
+        def work():
+            try:
+                curses.endwin()
+            except Exception:
+                pass
+            restart_self(delay, lambda m: self.log.append(m), console=True)
+        threading.Thread(target=work, daemon=True).start()
 
     def _update_remote(self, cid, kind, payload):
         if self.running:
@@ -289,7 +315,7 @@ class BenchTUI:
             self.rep.ack(cid, "done" if res.get("ok") else "failed", res)
             if should_restart_after_update(res, running=self.running,
                                            requested=bool(payload.get("restart"))):
-                threading.Thread(target=restart_self, args=(1.5, log), daemon=True).start()
+                self._restart(1.5)
         threading.Thread(target=work, daemon=True).start()
 
     def _exec_remote(self, cid, payload):
@@ -353,7 +379,7 @@ class BenchTUI:
             self._apply_profile(profile)
         self.phases, self.last_phase, self.scroll, self.follow = [], {}, 0, True
         self.tel = {k: deque(maxlen=1000) for k in ("t", "temp", "fan", "power", "util")}
-        self.tel_path, self.tel_cols, self.csv_last = None, {}, None
+        self.tel_path, self.tel_cols, self.csv_last, self.tel_ncols = None, {}, None, 0
         self.exited = False
         self._stopped = False
         self.run_t0 = time.time()
@@ -601,17 +627,23 @@ class BenchTUI:
             self.collect()
 
     def _read_telemetry(self):
-        files = glob.glob(os.path.join(self.results_dir, "*.telemetry.csv"))
+        # only this run's CSV: at run start the newest file is still the previous
+        # run's, and reading it fed stale samples (with the old clock) into the run
+        cutoff = (self.run_t0 or 0) - 1
+        files = [f for f in glob.glob(os.path.join(self.results_dir, "*.telemetry.csv"))
+                 if os.path.getmtime(f) >= cutoff]
         if not files:
             return
         newest = max(files, key=os.path.getmtime)
         if newest != self.tel_path:
             self.tel_path = newest
-            self.tel_cols, self.csv_last = {}, None
+            self.tel_cols, self.csv_last, self.tel_ncols = {}, None, 0
             try:
                 with open(newest) as fh:
                     self.tel_cols = {}
-                    for i, n in enumerate(fh.readline().strip().split(",")):
+                    hdr = fh.readline().strip().split(",")
+                    self.tel_ncols = len(hdr)
+                    for i, n in enumerate(hdr):
                         canon = CSV_ALIASES.get(n.strip().lower(), n.strip().lower())
                         if canon and canon not in self.tel_cols:
                             self.tel_cols[canon] = i
@@ -622,7 +654,17 @@ class BenchTUI:
                 lines = fh.read().strip().splitlines()
             if len(lines) < 2:
                 return
-            vals = lines[-1].split(",")
+            # the sampler rewrites this file several times a second, so the final
+            # line is often a partial row - that made every column read as None and
+            # the GPU tiles show "--". Take the last COMPLETE row.
+            vals = None
+            for line in reversed(lines[1:]):
+                parts = line.split(",")
+                if len(parts) >= self.tel_ncols:
+                    vals = parts
+                    break
+            if vals is None:
+                return
         except OSError:
             return
 
@@ -664,6 +706,13 @@ class BenchTUI:
                 # what the charts plot against, and leaving it out made every
                 # sample land with elapsed=NULL, so the web chart showed "no data"
                 sample = {k: get(k) for k in self.tel_cols if get(k) is not None}
+                # get() is float-only, so non-numeric columns (pstate) were dropped
+                # on the floor - send them raw so nothing the sampler gathered is lost
+                for k in ("pstate",):
+                    if k not in sample:
+                        rv = raw(k)
+                        if rv:
+                            sample[k] = rv
                 if sample:
                     self.pump.push_sample(sample)
 
@@ -835,7 +884,7 @@ class BenchTUI:
             self.scr.refresh()
             return
 
-        hdr = " bench-test "
+        hdr = " bench-test v%s " % bench_version(REPO)
         self._put(0, 0, hdr, curses.color_pair(1) | curses.A_BOLD)
         self._put(0, len(hdr) + 1, self.hw[:W - 32], curses.color_pair(8))
         self._put(0, max(len(hdr) + 2, W - 10), time.strftime("%H:%M:%S"), curses.color_pair(2))

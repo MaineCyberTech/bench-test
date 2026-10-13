@@ -9,16 +9,18 @@ const DEF_SPIN = { gpu: 600, combined: 300, fullsoak: 300, gfx: 60 };
 // at these defaults a run inherits the runner's long values (cpu 120s, ram 120s,
 // gpu matrix 12288, steady 10GB); a preset overrides them via `tune`.
 const TUNE_DEFAULT = { cpu_soak: 120, ram_soak: 120, disk_seconds: 15, gpu_size: 12288,
-  cpu_size: 4096, ram_size_mb: 1024, passes: 2, steady_gb: 10, stable: 0 };
+  cpu_size: 4096, ram_size_mb: 1024, passes: 2, steady_gb: 10, stable: 0, stable_hold: 60,
+  gfx_engine: "furmark" };
 const PRESETS = {
-  "Quick check (short soaks)": { groups: gset("gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "sys", "gfx"), spin: { gpu: 60, combined: 60, fullsoak: 60, gfx: 30 } },
-  "Stabilized full soak (15 min)": { groups: gset("gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "fan", "sys", "gfx"), spin: { gpu: 180, combined: 45, fullsoak: 90, gfx: 30 }, tune: { ...TUNE_DEFAULT, cpu_soak: 45, ram_soak: 30, disk_seconds: 30, gpu_size: 4096, cpu_size: 2048, ram_size_mb: 512, passes: 1, steady_gb: 2, stable: 1 } },
+  "Quick check (short soaks)": { groups: gset("gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "sys", "gfx"), spin: { gpu: 60, combined: 60, fullsoak: 60, gfx: 30 }, tune: { ...TUNE_DEFAULT, cpu_soak: 60, ram_soak: 30, disk_seconds: 15, gpu_size: 4096, cpu_size: 2048, ram_size_mb: 512, passes: 1, steady_gb: 2 } },
+  "Stabilized full soak (15 min)": { groups: gset("gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "fan", "sys", "gfx"), spin: { gpu: 180, combined: 45, fullsoak: 90, gfx: 30 }, tune: { ...TUNE_DEFAULT, cpu_soak: 45, ram_soak: 30, disk_seconds: 30, gpu_size: 4096, cpu_size: 2048, ram_size_mb: 512, passes: 1, steady_gb: 2, stable: 1, stable_hold: 60, gfx_engine: "furmark" } },
   "System info + 60s soak (all)": { groups: gset("sys", "fullsoak"), spin: { ...DEF_SPIN, fullsoak: 60 } },
   "Full run (defaults)": { groups: gset(...ALL_GROUPS), spin: { ...DEF_SPIN } },
   "GPU compute": { groups: gset("gpu", "sys"), spin: { ...DEF_SPIN, gpu: 60 } },
   "CPU + RAM + disk": { groups: gset("cpu", "ram", "disk", "sys"), spin: { ...DEF_SPIN } },
   "Storage + network": { groups: gset("disk", "net", "sys"), spin: { ...DEF_SPIN } },
   "Video / graphics": { groups: gset("nvenc", "gfx", "sys"), spin: { ...DEF_SPIN } },
+  "Graphics only (FurMark/Valley)": { groups: gset("gfx", "sys"), spin: { ...DEF_SPIN, gfx: 30 }, tune: { ...TUNE_DEFAULT, gfx_engine: "furmark" } },
   "LLM inference (Ollama)": { groups: gset("llm", "sys"), spin: { ...DEF_SPIN } },
   "Fan response": { groups: gset("fan", "sys"), spin: { ...DEF_SPIN } },
   "Soak only (long)": { groups: gset("gpu", "fullsoak", "sys"), spin: { ...DEF_SPIN, gpu: 1800, fullsoak: 1800 } },
@@ -54,6 +56,44 @@ const CHART_PRESETS = {
 };
 const GAUGES = [["temp_c", "temp °C"], ["power_w", "power W"], ["gpu_util", "GPU %"],
                 ["fan_pct", "fan %"], ["mem_util", "VRAM %"], ["cpu_temp_c", "CPU °C"]];
+// telemetry tables are easier to scan with the load/thermal metrics first
+const STAT_ORDER = ["temp_c", "temp_limit_c", "throttle", "throttle_bits", "power_w",
+  "power_limit_w", "gpu_util", "sm_mhz", "mem_mhz", "gr_mhz", "vram_used_mib", "mem_util",
+  "fan_pct", "gpu_fan_rpm", "temp_mem_c", "cpu_util", "cpu_temp_c", "cpu_max_core_c",
+  "cpu_pkg_w", "cpu_mhz", "ram_used", "swap_used_gib", "load1", "nvme_c", "disk_read_mbs",
+  "disk_write_mbs", "net_rx_mbs", "net_tx_mbs", "pcie_gen", "pcie_width"];
+function orderedStatKeys(keys) {
+  const rank = (k) => { const i = STAT_ORDER.indexOf(k); return i < 0 ? 999 : i; };
+  return keys.slice().sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+}
+// bars in the live focus view (mirrors the TUI telemetry panel, wider); the 4th
+// entry is the full-scale value used for the bar width. Labels carry their unit
+// so "cpu %" / "cpu °C" / "cpu W" are not three identical "cpu" rows.
+const FOCUS_BARS = [
+  ["temp_c", "gpu °C", "°C", 100], ["fan_pct", "gpu fan", "%", 100],
+  ["power_w", "gpu W", "W", 400], ["gpu_util", "gpu %", "%", 100],
+  ["mem_util", "vram %", "%", 100], ["vram_used_mib", "vram", "MiB", 16384],
+  ["sm_mhz", "sm clk", "MHz", 3000], ["mem_mhz", "mem clk", "MHz", 12000],
+  ["cpu_util", "cpu %", "%", 100], ["cpu_temp_c", "cpu °C", "°C", 100],
+  ["cpu_pkg_w", "cpu W", "W", 200], ["ram_used", "ram", "GiB", 64],
+  ["load1", "load", "", 16], ["nvme_c", "nvme °C", "°C", 100],
+  ["disk_write_mbs", "disk W", "MB/s", 2000], ["net_rx_mbs", "net rx", "MB/s", 1250],
+  // the rest of DASH_FIELDS, so every metric the TUI can show has a bar here
+  ["disk_read_mbs", "disk R", "MB/s", 2000], ["net_tx_mbs", "net tx", "MB/s", 1250],
+  ["gpu_fan_rpm", "gpu rpm", "rpm", 3000], ["cpu_fan_rpm", "cpu fan", "rpm", 3000],
+  ["gpu_enc_pct", "enc %", "%", 100], ["gpu_dec_pct", "dec %", "%", 100],
+  ["temp_mem_c", "vram °C", "°C", 110], ["temp_limit_c", "gpu limit", "°C", 110],
+  ["cpu_max_core_c", "core max", "°C", 100], ["psi_io", "io stall", "%", 100],
+  ["retired", "retired", "", 1],
+];
+const HOT_BARS = ["temp_c", "cpu_temp_c", "nvme_c", "temp_mem_c"];
+// small sparkline panel under the main chart, filling the telemetry column
+const FOCUS_MINI = [
+  ["temp_c", "temp °C"], ["power_w", "power W"], ["gpu_util", "GPU %"],
+  ["sm_mhz", "SM MHz"], ["mem_util", "VRAM %"], ["fan_pct", "fan %"],
+  ["cpu_util", "CPU %"], ["cpu_temp_c", "CPU °C"], ["cpu_pkg_w", "CPU W"],
+  ["ram_used", "RAM GiB"], ["disk_write_mbs", "disk W MB/s"], ["net_rx_mbs", "net rx MB/s"],
+];
 
 let SHOW_OFFLINE = localStorage.getItem("benchd_show_offline") === "1";
 let SORT = { key: "started", dir: -1 };
@@ -63,6 +103,7 @@ let STATE = { runners: [], active: [], recent: [], metrics: [] };
 let TEL = {};               // run_id -> [sample dicts]
 let LOGS = {};              // run_id -> [line strings]
 let CHART = {};             // run_id -> selected chart preset
+let FOCUS = null;           // run_id shown in the full-pane live view
 let HOSTS = [];
 let SCHEDULES = [];
 let es = null;
@@ -154,6 +195,7 @@ function onLog(d) {
   if (buf.length > 2000) buf.splice(0, buf.length - 2000);
   const card = document.querySelector(`[data-active="${d.run_id}"]`);
   if (card) paintConsole(card, d.run_id);
+  if (FOCUS === d.run_id) { const f = $("#focus"); if (f) paintConsole(f, d.run_id); }
 }
 function setConn(on) {
   $("#connDot").className = "dot " + (on ? "on" : "off");
@@ -209,20 +251,40 @@ async function refresh() {
 function ensureTel(id) {
   if (TEL[id]) return;
   TEL[id] = [];
-  api("/runs/" + id + "/telemetry?max=600").then((d) => {
+  api("/runs/" + id + "/telemetry?max=4000").then((d) => {
     TEL[id] = (d.rows || []).filter((x) => x.elapsed != null);
     renderActive();
   }).catch(() => {});
 }
 
+/* Re-read a run's telemetry while the live view is open: the SSE stream is the
+   fast path, this is the authoritative one (a batch can be missed). */
+function reloadTel(id) {
+  api("/runs/" + id + "/telemetry?max=4000").then((d) => {
+    const rows = (d.rows || []).filter((x) => x.elapsed != null);
+    if (rows.length) TEL[id] = rows;
+    if (FOCUS === id) {
+      const f = $("#focus");
+      if (f) { paintFocusStats(f, id); drawRunChart(f, id); }
+    }
+  }).catch(() => {});
+}
+
 function onTelemetry(d) {
-  const s = d.sample;
-  if (!s || typeof s !== "object") return;
   const buf = TEL[d.run_id] || (TEL[d.run_id] = []);
-  buf.push(s);
-  if (buf.length > 900) buf.shift();
+  // the server publishes the whole posted batch ("samples"); fall back to a
+  // single "sample" for compatibility
+  const batch = (d.samples && d.samples.length) ? d.samples : (d.sample ? [d.sample] : []);
+  if (!batch.length) return;
+  for (const s of batch) if (s && typeof s === "object") buf.push(s);
+  if (buf.length > 900) buf.splice(0, buf.length - 900);
+  const last = batch[batch.length - 1];
   const card = document.querySelector(`[data-active="${d.run_id}"]`);
-  if (card) { paintGauges(card, s); drawRunChart(card, d.run_id); }
+  if (card) { paintGauges(card, last); drawRunChart(card, d.run_id); }
+  if (FOCUS === d.run_id) {
+    const f = $("#focus");
+    if (f) { paintGauges(f, last); paintFocusBars(f, last); paintFocusStats(f, d.run_id); drawRunChart(f, d.run_id); }
+  }
 }
 
 function onPhase(p) {
@@ -233,7 +295,7 @@ function onPhase(p) {
 /* -------------------------------------------------------------- render -- */
 function renderAll() {
   renderTop(); renderRunners(); renderActive(); renderHistory(); renderTrends();
-  renderCompareOptions(); renderSchedules();
+  renderCompareOptions(); renderSchedules(); renderFocus();
   const fp = $("#tab-fleet");
   if (fp && fp.classList.contains("active")) renderFleet();
 }
@@ -250,6 +312,8 @@ function renderTop() {
   ].concat(stale ? [["stale", stale]] : [])
     .map(([k, v]) => `<div class="tstat"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
   document.title = STATE.active.length ? `(${STATE.active.length}) bench-test` : "bench-test control plane";
+  const sub = document.querySelector(".brand .sub");
+  if (sub) sub.textContent = "control plane · v" + (STATE.version || "?") + " · single pane of glass";
   const off = STATE.runners.length - online;
   $("#runnerCount").innerHTML = `${online} online · ${machines} machine${machines === 1 ? "" : "s"}` +
     (off ? ` · <button class="badge toggle" data-toggle-off>${SHOW_OFFLINE ? "hide" : "show"} ${off} offline</button>` : "");
@@ -270,6 +334,12 @@ function runnerCard(r) {
     (caps.groups && caps.groups.length && caps.groups.length < ALL_GROUPS.length)
       ? `<span class="badge" title="groups this runner implements">${caps.groups.length}/${ALL_GROUPS.length} groups</span>`
       : "",
+    (caps.toolkit && caps.toolkit.version)
+      ? `<span class="badge" title="toolkit release + build">v${esc(caps.toolkit.version)}${(caps.toolkit.build || caps.toolkit.commit) ? "+" + esc(caps.toolkit.build || caps.toolkit.commit) : ""}</span>` : "",
+    (caps.toolkit && caps.toolkit.version && !(caps.toolkit.build || caps.toolkit.commit))
+      ? `<span class="badge stale" title="this copy does not record the commit it was fetched at">build unknown</span>` : "",
+    (caps.toolkit && STATE.protocol != null && caps.toolkit.protocol !== STATE.protocol)
+      ? `<span class="badge stale" title="runner speaks protocol ${caps.toolkit.protocol == null ? "unknown (older toolkit)" : esc(String(caps.toolkit.protocol))}, control plane speaks ${esc(String(STATE.protocol))} - update it">protocol mismatch</span>` : "",
     r.update_available
       ? `<span class="badge stale" title="${esc(r.toolkit_status || "behind")}: toolkit ${esc(r.toolkit_commit || "?")} vs latest ${esc(r.latest_commit || STATE.latest_git || "?")}">update available</span>`
       : (r.toolkit_commit
@@ -326,6 +396,7 @@ function runCardHTML(a) {
         <span class="muted mono elapsed"></span>
         <span class="muted mono sysline">${esc(sysLine(a))}</span>
         <div style="margin-left:auto" class="ract">
+          <button class="ghost" data-focus="${esc(a.id)}">live view</button>
           <button class="danger" data-stop="${esc(a.runner_id)}">Stop</button>
           <button class="ghost" data-detail="${esc(a.id)}">details</button>
         </div>
@@ -333,10 +404,12 @@ function runCardHTML(a) {
       <div class="gauges">
         ${GAUGES.map(([k, label]) => `<div class="gauge"><div class="gv" data-g="${k}">—</div><div class="gk">${esc(label)}</div></div>`).join("")}
       </div>
+      <div class="fhealth" data-h="health"></div>
       <div class="chartrow">
         <canvas class="runchart" height="180"></canvas>
         <select class="csel" data-chart="${a.id}">${Object.keys(CHART_PRESETS).map((k) => `<option${k === preset ? " selected" : ""}>${esc(k)}</option>`).join("")}</select>
       </div>
+      <div class="chartlegend"></div>
       <div class="phases"></div>
       <div class="consolewrap">
         <div class="chead"><span class="muted">live console</span>
@@ -384,6 +457,7 @@ function renderActive() {
     const card = el.querySelector(`[data-active="${a.id}"]`);
     if (!card) return;
     paintGauges(card, a.latest || {});
+    paintHealth(card.querySelector("[data-h=health]"), a.latest || {});
     paintHeader(card, a);
     updatePhases(card, a.phases || []);
     paintConsole(card, a.id);
@@ -409,6 +483,240 @@ function paintGauges(card, v) {
     const e = card.querySelector(`[data-g="${k}"]`);
     if (e) e.textContent = fmt(v[k], 0);
   });
+}
+
+/* ---------------------------------------------------------- live focus -- */
+/* A full-pane view of one active run: the TUI's panels (box status/specs, live
+   telemetry bars, charts, phases, console) laid out wide and updated in place. */
+function focusRun(id) {
+  FOCUS = id;
+  const el = $("#focus");
+  if (el) { el.dataset.run = ""; el.classList.add("show"); }
+  renderFocus();
+}
+
+function closeFocus() {
+  FOCUS = null;
+  const el = $("#focus");
+  if (el) { el.classList.remove("show"); el.innerHTML = ""; el.dataset.run = ""; }
+}
+
+function focusShell(r, live) {
+  const preset = CHART[r.id] || Object.keys(CHART_PRESETS)[0];
+  const sel = (id) => Object.keys(CHART_PRESETS).map((k) =>
+    `<option${k === (CHART[id] || Object.keys(CHART_PRESETS)[0]) ? " selected" : ""}>${esc(k)}</option>`).join("");
+  return `<div class="focushead">
+      <span class="statusp ${live ? "busy" : "idle"}"></span>
+      <div class="h">${esc(r.host)} · ${esc(r.label || "run")}</div>
+      <span class="pill ${esc(r.status || "")}">${esc(r.status || "")}</span>
+      <span class="muted mono" data-f="elapsed"></span>
+      <span class="muted mono" data-f="phase"></span>
+      <span class="muted mono">${esc(sysLine(r))}</span>
+      <span class="muted mono" data-f="runner"></span>
+      <div style="margin-left:auto" class="ract">
+        ${live ? `<button class="ghost" data-f="update">update</button>
+        <button class="danger" data-stop="${esc(r.runner_id)}">Stop</button>` : ""}
+        <button class="ghost" data-f="detail">details</button>
+        <button class="ghost" data-f="close">close ✕</button>
+      </div>
+    </div>
+    <div class="focusbody">
+      <div class="fgrid">
+        <div class="fcard"><h4>Box status &amp; specs</h4><div class="fk" data-f="specs"></div></div>
+        <div class="fcard"><h4>Live</h4><div data-f="bars"></div>
+          <h4>Gauges</h4>
+          <div class="gauges" data-f="gauges">${GAUGES.map(([k, label]) =>
+            `<div class="gauge"><div class="gv" data-g="${k}">—</div><div class="gk">${esc(label)}</div></div>`).join("")}</div>
+          <h4>Health</h4><div class="fhealth" data-f="health"></div>
+          <h4>Temps</h4><div class="fhealth" data-f="temps"></div>
+        </div>
+        <div class="fcard"><h4>Telemetry</h4>
+          <div class="chartrow"><canvas class="runchart" height="200"></canvas>
+            <select class="csel" data-chart="${esc(r.id)}">${sel(r.id)}</select></div>
+          <div class="chartlegend"></div>
+          <div class="minigrid" data-f="minis">${FOCUS_MINI.map(([k, lbl]) =>
+            `<div class="mini"><div class="ml"><span>${esc(lbl)}</span>
+             <span class="mv" data-m="${k}">—</span></div>
+             <canvas data-mini="${k}" height="56"></canvas></div>`).join("")}</div>
+        </div>
+      </div>
+      <div class="fcard" style="margin-top:14px"><h4>Telemetry stats (min / avg / max · n)</h4>
+        <div class="statcols" data-f="stats"></div>
+      </div>
+      <div class="fgrid two">
+        <div class="fcard"><h4>Phases</h4><div class="phases" data-f="phases"></div></div>
+        <div class="fcard"><h4>Console</h4>
+          ${live ? `<form class="term" data-exec="${esc(r.runner_id)}">
+            <input placeholder="run a command on this runner…" autocomplete="off">
+            <button class="accent" type="submit">run</button></form>` : ""}
+          <pre class="console mono" data-f="console"></pre>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderFocus() {
+  const el = $("#focus");
+  if (!el) return;
+  if (!FOCUS) { el.classList.remove("show"); return; }
+  const live = STATE.active.find((x) => x.id === FOCUS);
+  const r = live || STATE.recent.find((x) => x.id === FOCUS);
+  if (!r) { el.classList.remove("show"); return; }
+  if (el.dataset.run !== FOCUS) {
+    el.dataset.run = FOCUS;
+    el.innerHTML = focusShell(r, !!live);
+    el.classList.add("show");
+  }
+  paintFocus(el, r, !!live);
+}
+
+function paintFocus(el, r, live) {
+  const now = Date.now() / 1000;
+  const e = el.querySelector("[data-f=elapsed]");
+  if (e) e.textContent = r.started ? dur((r.ended || now) - r.started) + (live ? " elapsed" : " total") : "";
+  const pill = el.querySelector(".pill");
+  if (pill) { pill.textContent = r.status || ""; pill.className = "pill " + (r.status || ""); }
+  const run = el.querySelector("[data-f=runner]");
+  if (run) {
+    const rr = STATE.runners.find((x) => x.id === r.runner_id) || {};
+    run.textContent = [rr.addr, rr.kind, rr.toolkit_commit ? "toolkit " + rr.toolkit_commit : null,
+                       (rr.capabilities && rr.capabilities.toolkit && rr.capabilities.toolkit.version)
+                         ? "v" + rr.capabilities.toolkit.version : null]
+      .filter(Boolean).join(" · ");
+  }
+  const ph = el.querySelector("[data-f=phase]");
+  if (ph) {
+    const ps = r.phases || [];
+    const cur = ps.filter((p) => p.status === "running").slice(-1)[0] ||
+                ps.slice(-1)[0];
+    ph.textContent = cur ? `${cur.grp} · ${cur.label || ""}` : "";
+  }
+  const v = r.latest || {};
+  paintFocusSpecs(el, r);
+  paintGauges(el, v);
+  paintFocusBars(el, v);
+  paintFocusHealth(el, v);
+  paintFocusStats(el, r.id);
+  drawRunChart(el, r.id);
+  drawMiniCharts(el, r.id);
+  updatePhases(el, r.phases || []);
+  paintConsole(el, r.id);
+}
+
+function paintFocusSpecs(el, r) {
+  const sy = r.system || {};
+  const rr = STATE.runners.find((x) => x.id === r.runner_id) || {};
+  const rows = [
+    ["host", r.host], ["platform", sy.platform || r.platform], ["kernel", sy.kernel],
+    ["cpu", sy.cpu], ["cores", [sy.cores, sy.threads].filter(Boolean).join(" / ")],
+    ["ram", sy.ram_gib ? sy.ram_gib + " GiB" : null],
+    ["gpu", sy.gpu || r.gpu], ["driver", sy.driver || r.driver], ["vram", sy.vram],
+    ["board", sy.board], ["bios", sy.bios && (sy.bios.version + " " + (sy.bios.date || ""))],
+    ["torch", r.torch], ["git", r.git],
+    ["preset", r.preset], ["label", r.label],
+    ["runner", rr.label || rr.name], ["addr", rr.addr], ["kind", rr.kind],
+    ["version", rr.version],
+    ["toolkit", rr.toolkit_commit ? rr.toolkit_commit + " (" + (rr.toolkit_mode || "?") + ")" : null],
+    ["tk ver", (rr.capabilities && rr.capabilities.toolkit && rr.capabilities.toolkit.version) || null],
+    ["started", r.started ? ts(r.started) : null],
+    ["peak", (r.latest && r.latest.temp_c != null) ? fmt(r.latest.temp_c, 0) + " °C" : null],
+  ].filter((x) => x[1] != null && x[1] !== "");
+  const tb = el.querySelector("[data-f=specs]");
+  if (tb) tb.innerHTML = rows.map(([k, val]) =>
+    `<div class="fkr"><span class="fkk">${esc(k)}</span><span class="fkv">${esc(String(val))}</span></div>`).join("");
+}
+
+function paintFocusBars(el, v) {
+  const host = el.querySelector("[data-f=bars]");
+  if (!host) return;
+  host.innerHTML = FOCUS_BARS.map(([k, name, unit, full]) => {
+    const val = numOrNull(v[k]);
+    const pct = val == null ? 0 : Math.max(0, Math.min(100, (val / full) * 100));
+    const col = HOT_BARS.includes(k) ? "var(--bad)"
+      : k.indexOf("power") === 0 ? "var(--accent)" : "var(--good)";
+    return `<div class="fbar"><span class="bn">${esc(name)}</span>
+      <span class="bt"><span class="bf" style="width:${pct}%;background:${col}"></span></span>
+      <span class="bv">${val == null ? "—" : fmt(val, 0) + (unit ? " " + esc(unit) : "")}</span></div>`;
+  }).join("");
+}
+
+/* One line summarising the things that indicate trouble, shared by the live card
+ * and the focus view (the TUI's "health" line). */
+function healthBits(v) {
+  const hot = !!numOrNull(v.throttle);
+  const bits = [hot ? "THROTTLED" : "no throttle"];
+  if (v.temp_limit_c != null) bits.push("limit " + fmt(v.temp_limit_c, 0) + "°C");
+  if (v.power_limit_w != null) bits.push("cap " + fmt(v.power_limit_w, 0) + "W");
+  if (v.cpu_pkg_w != null) bits.push("cpu " + fmt(v.cpu_pkg_w, 0) + "W");
+  if (v.pcie_gen != null && v.pcie_width != null) {
+    bits.push("pcie " + fmt(v.pcie_gen, 0) + "×" + fmt(v.pcie_width, 0));
+  }
+  if (v.video_mhz != null) bits.push("nvenc " + fmt(v.video_mhz, 0));
+  if (v.pstate) bits.push(String(v.pstate));
+  if (hot && v.throttle_bits != null) bits.push("bits " + fmt(v.throttle_bits, 0));
+  return { text: bits.join(" · "), hot };
+}
+
+function paintHealth(node, v) {
+  if (!node) return;
+  const h = healthBits(v);
+  node.textContent = h.text;
+  node.className = "fhealth" + (h.hot ? " hot" : "");
+}
+
+function paintFocusHealth(el, v) {
+  paintHealth(el.querySelector("[data-f=health]"), v);
+  const temps = el.querySelector("[data-f=temps]");
+  if (!temps) return;
+  const t = [];
+  if (v.temp_c != null) t.push("gpu " + fmt(v.temp_c, 0) + "°");
+  if (v.cpu_temp_c != null) t.push("cpu " + fmt(v.cpu_temp_c, 0) + "°");
+  if (v.cpu_max_core_c != null) t.push("core-max " + fmt(v.cpu_max_core_c, 0) + "°");
+  if (v.temp_mem_c != null) t.push("vram " + fmt(v.temp_mem_c, 0) + "°");
+  if (v.nvme_c != null) t.push("nvme " + fmt(v.nvme_c, 0) + "°");
+  if (v.gpu_fan_rpm != null) t.push("fan " + fmt(v.gpu_fan_rpm, 0) + "rpm");
+  temps.textContent = t.join(" · ") || "—";
+}
+
+/* Sparkline panel: one small chart per metric, so the whole picture is visible
+   at once instead of switching the main chart's preset. */
+function drawMiniCharts(el, runId) {
+  const buf = (TEL[runId] || []).slice(-2000);
+  const base = teleBase(buf);
+  const win = runWindow(runId);
+  FOCUS_MINI.forEach(([k]) => {
+    const cv = el.querySelector(`canvas[data-mini="${k}"]`);
+    if (!cv) return;
+    const meta = SERIES[k] || [k, "#4c9aff"];
+    const pts = seriesPoints(buf, k, base, win.start);
+    const out = el.querySelector(`[data-m="${k}"]`);
+    if (out) out.textContent = pts.length ? fmt(pts[pts.length - 1].y, 1) : "—";
+    drawChart(cv, [{ name: meta[0], color: meta[1], points: pts }],
+              { normalize: true, compact: true });
+  });
+}
+
+function paintFocusStats(el, id) {
+  const host = el.querySelector("[data-f=stats]");
+  if (!host) return;
+  const buf = TEL[id] || [];
+  const keys = orderedStatKeys(Object.keys(SERIES).filter((k) => buf.some((b) => numOrNull(b[k]) != null)));
+  if (!keys.length) { host.innerHTML = `<div class="muted">no telemetry yet</div>`; return; }
+  const row = (k) => {
+    const vals = buf.map((b) => numOrNull(b[k])).filter((x) => x != null);
+    const mn = Math.min.apply(null, vals), mx = Math.max.apply(null, vals);
+    const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+    return `<tr><th>${esc(SERIES[k][0])}</th><td class="num">${fmt(mn)}</td>
+      <td class="num">${fmt(avg)}</td><td class="num">${fmt(mx)}</td>
+      <td class="num muted">${vals.length}</td></tr>`;
+  };
+  const head = `<thead><tr><th>metric</th><th>min</th><th>avg</th><th>max</th><th>n</th></tr></thead>`;
+  // two side-by-side tables: 27 metrics in one narrow column is unreadable
+  const half = Math.ceil(keys.length / 2);
+  const table = (part) => `<table class="statstable">${head}<tbody>${part.map(row).join("")}</tbody></table>`;
+  host.innerHTML = keys.length > 8
+    ? table(keys.slice(0, half)) + table(keys.slice(half))
+    : table(keys);
 }
 
 /* ------------------------------------------------------------ history --- */
@@ -621,41 +929,144 @@ async function runCompare() {
 }
 
 /* ------------------------------------------------------------ charts ---- */
+/* Plot a set of series.
+ *
+ * opt.normalize -> each series is scaled to its own band. Telemetry charts mix
+ *   units (degC, W, %), and a single shared axis made everything but the largest
+ *   series look like a flat line at the bottom - the legend carries the numbers.
+ * opt.xTime    -> x is unix seconds (clock labels)
+ * opt.xElapsed -> x is seconds into the run (m:ss labels)
+ */
 function drawChart(cv, series, opt = {}) {
   const dpr = window.devicePixelRatio || 1;
   const h = +cv.getAttribute("height") || 180;   // fixed CSS height (never compound)
-  const w = cv.clientWidth;
+  const w = Math.max(140, cv.clientWidth || 300);
   cv.style.height = h + "px";
-  cv.width = Math.max(1, w * dpr); cv.height = h * dpr;
-  const g = cv.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
-  const pl = 52, pr = 18, pt = 18, pb = 28;
-  const x0 = pl, y0 = h - pb, x1 = w - pr, y1 = pt;
-  g.strokeStyle = "#232b37"; g.fillStyle = "#8592a6"; g.font = "11px monospace";
-  let maxY = 1, minY = 0, n = 0;
-  series.forEach((s) => s.points.forEach((p) => { maxY = Math.max(maxY, p.y); minY = Math.min(minY, p.y); n = Math.max(n, s.points.length); }));
-  maxY = niceMax(maxY);
-  for (let i = 0; i <= 4; i++) {
-    const y = y0 - (y0 - y1) * i / 4;
-    g.beginPath(); g.moveTo(x0, y); g.lineTo(x1, y); g.stroke();
-    g.fillText(String(Math.round(minY + (maxY - minY) * i / 4)), 8, y + 4);
-  }
-  if (!n) { g.fillText("no data", x0 + 8, pt + 12); return; }
-  const allX = [].concat(...series.map((s) => s.points.map((p) => p.x)));
-  const xmin = Math.min(...allX), xmax = Math.max(...allX);
-  const sx = (x) => x0 + (x1 - x0) * (xmax === xmin ? 0.5 : (x - xmin) / (xmax - xmin));
-  const sy = (y) => y0 - (y0 - y1) * ((y - minY) / (maxY - minY));
-  series.forEach((s) => {
-    if (s.points.length < 2) return;
-    g.strokeStyle = s.color; g.lineWidth = 2; g.beginPath();
-    s.points.forEach((p, i) => { const X = sx(p.x), Y = sy(p.y); i ? g.lineTo(X, Y) : g.moveTo(X, Y); });
-    g.stroke();
+  cv.width = Math.max(1, Math.round(w * dpr));
+  cv.height = Math.max(1, Math.round(h * dpr));
+  const g = cv.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+
+  const norm = !!opt.normalize;
+  const compact = !!opt.compact;
+  const use = (series || []).filter((s) => s && s.points && s.points.length >= 2);
+  use.forEach((s) => {
+    const ys = s.points.map((p) => p.y);
+    s.min = Math.min.apply(null, ys);
+    s.max = Math.max.apply(null, ys);
+    s.last = ys[ys.length - 1];
+    let lo = s.min, hi = s.max;
+    if (hi - lo < 1e-9) { hi = lo + 1; }
+    const pad = (hi - lo) * 0.1;
+    s.lo = lo - pad; s.hi = hi + pad;
   });
-  if (opt.xTime && xmax > xmin) {
-    g.fillStyle = "#8592a6";
-    [xmin, (xmin + xmax) / 2, xmax].forEach((t) => g.fillText(new Date(t * 1000).toLocaleDateString(), sx(t) - 26, h - 8));
+
+  const pl = compact ? 3 : (norm ? 32 : 46), pr = compact ? 3 : 12;
+  const pt = compact ? 4 : 10, pb = compact ? 4 : 24;
+  const x0 = pl, y0 = h - pb, x1 = w - pr, y1 = pt;
+
+  let lo = 0, hi = 1, ticks;
+  if (norm) {
+    ticks = [0, 1, 2, 3, 4];
+  } else {
+    hi = 0;
+    use.forEach((s) => { lo = Math.min(lo, s.min); hi = Math.max(hi, s.max); });
+    if (hi - lo < 1e-9) { hi = lo + 1; }
+    hi = niceMax(hi);
+    ticks = [0, 1, 2, 3, 4];
   }
-  cv._chart = { series, sx, xmin, xmax, opt };
+
+  g.font = "10px monospace";
+  ticks.forEach((i) => {
+    const y = Math.round(y0 - (y0 - y1) * i / 4) + 0.5;
+    if (!compact) {
+      g.strokeStyle = "#1c222c"; g.lineWidth = 1;
+      g.beginPath(); g.moveTo(x0, y); g.lineTo(x1, y); g.stroke();
+      g.fillStyle = "#67717f";
+      g.fillText(norm ? (i * 25) + "%" : shortNum(lo + (hi - lo) * i / 4), 3, y + 3);
+    }
+  });
+  if (!compact) {
+    g.strokeStyle = "#2b3442";
+    g.beginPath(); g.moveTo(x0 + 0.5, y1); g.lineTo(x0 + 0.5, y0); g.stroke();
+  }
+
+  if (!use.length) {
+    g.fillStyle = "#67717f";
+    if (!compact) g.fillText("no data yet", x0 + 8, (y0 + y1) / 2 + 4);
+    cv._chart = { series: [], sx: () => x0, xmin: 0, xmax: 1, opt };
+    return;
+  }
+
+  const xs = [].concat.apply([], use.map((s) => s.points.map((p) => p.x)));
+  const xmin = Math.min.apply(null, xs), xmax = Math.max.apply(null, xs);
+  const sx = (x) => x0 + (x1 - x0) * (xmax === xmin ? 0.5 : (x - xmin) / (xmax - xmin));
+  const sy = (s, y) => {
+    const frac = norm ? (y - s.lo) / (s.hi - s.lo) : (y - lo) / (hi - lo);
+    return y0 - (y0 - y1) * Math.max(0, Math.min(1, frac));
+  };
+
+  use.forEach((s) => {
+    g.strokeStyle = s.color; g.lineWidth = 1.7; g.lineJoin = "round";
+    g.beginPath();
+    s.points.forEach((p, i) => {
+      const X = sx(p.x), Y = sy(s, p.y);
+      i ? g.lineTo(X, Y) : g.moveTo(X, Y);
+    });
+    g.stroke();
+    // mark the newest point so "now" is obvious
+    const last = s.points[s.points.length - 1];
+    g.fillStyle = s.color;
+    g.beginPath(); g.arc(sx(last.x), sy(s, last.y), 2.3, 0, 6.2832); g.fill();
+  });
+
+  g.fillStyle = "#67717f";
+  if (!compact) {
+    const lab = (x) => opt.xTime
+      ? new Date(x * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      : fmtElapsed(x);
+    [[xmin, 0], [(xmin + xmax) / 2, 0.5], [xmax, 1]].forEach(([x, f]) => {
+      const t = lab(x), tw = g.measureText(t).width;
+      const tx = Math.max(x0, Math.min(x0 + (x1 - x0) * f - tw * f, x1 - tw));
+      g.fillText(t, tx, h - 7);
+    });
+  }
+
+  cv._chart = { series: use, sx, xmin, xmax, opt };
   attachHover(cv);
+}
+
+/* Legend for a telemetry chart: swatch, name, latest value, and the observed
+   range - the real numbers behind the normalised plot. A series this runner
+   never emitted is listed too, so a missing line is stated rather than implied. */
+function chartLegendHTML(series) {
+  const use = (series || []).filter((s) => s && s.points && s.points.length >= 2);
+  const empty = (series || []).filter((s) => s && (!s.points || s.points.length < 2));
+  const draw = use.map((s) => {
+    const ys = s.points.map((p) => p.y);
+    const mn = Math.min.apply(null, ys), mx = Math.max.apply(null, ys);
+    return `<span class="cl"><i style="background:${s.color}"></i>${esc(s.name)}
+      <b>${fmt(ys[ys.length - 1], 1)}</b><span class="muted">${fmt(mn, 0)}–${fmt(mx, 0)}</span></span>`;
+  }).join("");
+  const missing = empty.map((s) => `<span class="cl nodata" title="this runner did not report it">
+      <i style="background:${s.color}"></i>${esc(s.name)} <b>—</b>
+      <span class="muted">no data on this runner</span></span>`).join("");
+  return draw + missing;
+}
+
+function fmtElapsed(s) {
+  s = Math.max(0, Math.round(s || 0));
+  return s < 60 ? s + "s" : Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}
+
+function shortNum(v) {
+  const n = Math.abs(v || 0);
+  if (n >= 1e6) return (v / 1e6).toFixed(1) + "M";
+  if (n >= 1e4) return Math.round(v / 1e3) + "k";
+  if (n >= 100) return String(Math.round(v));
+  if (n >= 10) return String(Math.round(v * 10) / 10);
+  return String(Math.round(v * 100) / 100);
 }
 function tipEl() {
   let t = $("#charttip");
@@ -695,18 +1106,61 @@ function attachHover(cv) {
 }
 function niceMax(v) { const p = Math.pow(10, Math.floor(Math.log10(v || 1))); return Math.ceil((v || 1) / p) * p; }
 
+/* x for a telemetry sample, relative to the start of the run's data.
+ *
+ * `elapsed` comes from the sampler's own clock, which can predate this run (the
+ * dashboard tails whichever CSV is newest, so early samples of a run can carry a
+ * previous run's clock) - rebase it to the first sample we hold. `ts` is aligned
+ * to the run but stored at ~1s granularity, so it is only the fallback. */
+function teleBase(buf) {
+  let base = Infinity;
+  for (const b of buf || []) {
+    if (b.elapsed != null && b.elapsed < base) base = b.elapsed;
+  }
+  return isFinite(base) ? base : 0;
+}
+
+function seriesPoints(buf, key, base, runStart) {
+  const rows = (buf || []).filter((b) => b[key] != null);
+  const out = [];
+  for (const b of rows) {
+    let x = b.elapsed != null ? b.elapsed - base : null;
+    if (x == null && b.ts != null && runStart != null) x = b.ts - runStart;
+    if (x == null || x < 0) continue;
+    out.push({ x, y: b[key] });
+  }
+  out.sort((a, b) => a.x - b.x);
+  // collapse same-instant duplicates (coarse ts) to the newest value, so no
+  // vertical line is drawn between two samples that share an x
+  const clean = [];
+  for (const p of out) {
+    const prev = clean[clean.length - 1];
+    if (prev && p.x - prev.x < 0.05) { prev.y = p.y; continue; }
+    clean.push(p);
+  }
+  return clean;
+}
+
+function runWindow(runId) {
+  const r = STATE.active.find((x) => x.id === runId) || STATE.recent.find((x) => x.id === runId);
+  return { start: (r && r.started) || null, end: (r && r.ended) || null };
+}
+
 function drawRunChart(card, runId) {
   const cv = card.querySelector(".runchart");
   if (!cv) return;
-  const buf = (TEL[runId] || []).slice(-240);
+  const buf = (TEL[runId] || []).slice(-2000);
+  const base = teleBase(buf);
+  const win = runWindow(runId);
   const preset = CHART[runId] || Object.keys(CHART_PRESETS)[0];
   const keys = CHART_PRESETS[preset] || [];
   const series = keys.map((k) => {
     const meta = SERIES[k] || [k, "#4c9aff"];
-    return { name: meta[0], color: meta[1],
-             points: buf.filter((b) => b[k] != null).map((b) => ({ x: b.elapsed, y: b[k] })) };
+    return { name: meta[0], color: meta[1], points: seriesPoints(buf, k, base, win.start) };
   });
-  drawChart(cv, series);
+  drawChart(cv, series, { normalize: true, xElapsed: true });
+  const lg = card.querySelector(".chartlegend");
+  if (lg) lg.innerHTML = chartLegendHTML(series);
 }
 
 /* ------------------------------------------------------------ actions --- */
@@ -745,7 +1199,10 @@ async function startRun(runnerId) {
       disk s <input id="mDiskSec" type="number" value="15" style="width:80px">
       steady GB <input id="mSteady" type="number" value="10" style="width:80px">
       passes <input id="mPasses" type="number" value="2" style="width:80px">
-      <label><input type="checkbox" id="mStable"> soak until stable</label></div>
+      <label><input type="checkbox" id="mStable"> soak until stable, hold</label>
+      <input id="mStableHold" type="number" value="60" style="width:70px"> s after plateau
+      <label>gfx engine</label>
+      <select id="mGfxEngine"><option>furmark</option><option>valley</option></select></div>
     <div class="formrow" style="justify-content:flex-end">
       <button class="ghost" id="mCancel">cancel</button>
       <button class="accent" id="mGo">start</button></div>`);
@@ -761,7 +1218,8 @@ async function startRun(runnerId) {
     $("#mRamSize").value = tune.ram_size_mb; $("#mCpuSoak").value = tune.cpu_soak;
     $("#mRamSoak").value = tune.ram_soak; $("#mDiskSec").value = tune.disk_seconds;
     $("#mSteady").value = tune.steady_gb; $("#mPasses").value = tune.passes;
-    $("#mStable").checked = !!tune.stable;
+    $("#mStable").checked = !!tune.stable; $("#mStableHold").value = tune.stable_hold;
+    $("#mGfxEngine").value = tune.gfx_engine || "furmark";
     const want = GROUPS.filter((g) => groups[g]);
     const un = want.filter((g) => !sup.includes(g));
     const info = $("#mPresetInfo");
@@ -787,7 +1245,8 @@ async function startRun(runnerId) {
       disk_seconds: +$("#mDiskSec").value, gpu_size: +$("#mGpuSize").value,
       cpu_size: +$("#mCpuSize").value, ram_size_mb: +$("#mRamSize").value,
       passes: +$("#mPasses").value, steady_gb: +$("#mSteady").value,
-      stable: $("#mStable").checked ? 1 : 0,
+      stable: $("#mStable").checked ? 1 : 0, stable_hold: +$("#mStableHold").value,
+      gfx_engine: $("#mGfxEngine").value,
     };
     closeModal();
     try {
@@ -897,8 +1356,10 @@ async function showDetail(runId) {
   const r = await api("/runs/" + runId);
   const s = r.summary || {};
   const sy = r.system || {};
-  const tel = await api("/runs/" + runId + "/telemetry?max=900");
-  const pts = (n) => (tel.rows || []).filter((x) => x[n] != null).map((x) => ({ x: x.elapsed, y: x[n] }));
+  const tel = await api("/runs/" + runId + "/telemetry?max=4000");
+  const telBuf = tel.rows || [];
+  const telBase0 = teleBase(telBuf);
+  const pts = (n) => seriesPoints(telBuf.filter((x) => x[n] != null), n, telBase0, r.started);
   const st = (r.telemetry_stats && r.telemetry_stats.stats) || {};
   const dv = (r.telemetry_stats && r.telemetry_stats.derived) || {};
   const prev = await findPrev(r);
@@ -952,7 +1413,7 @@ async function showDetail(runId) {
     ["board", sy.board], ["bios", sy.bios && (sy.bios.version + " " + (sy.bios.date || ""))],
     ["torch", r.torch], ["git", r.git],
   ].filter((x) => x[1] != null && x[1] !== "");
-  const statKeys = Object.keys(st).filter((k) => k !== "elapsed" && k !== "ts");
+  const statKeys = orderedStatKeys(Object.keys(st).filter((k) => k !== "elapsed" && k !== "ts"));
   const statRows = statKeys.map((k) => {
     const meta = SERIES[k] || [k, "#8592a6"];
     const a = st[k];
@@ -987,8 +1448,15 @@ async function showDetail(runId) {
     </div>
     <div class="chartrow"><canvas id="dChart" height="220"></canvas>
       <select class="csel" id="dChartSel">${Object.keys(CHART_PRESETS).map((k) => `<option>${esc(k)}</option>`).join("")}</select></div>
+    <div class="chartlegend" id="dChartLegend"></div>
     <h4 class="sechead">Results</h4>
-    <table class="kvtable">${resultRows(s).map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(String(v))}</td></tr>`).join("") || `<tr><td class="muted">no structured results</td></tr>`}</table>
+    ${(() => {
+      const secs = resultSections(s);
+      if (!secs.length) return `<div class="muted">no structured results</div>`;
+      return secs.map(([group, rows]) => `<h5 class="subhead">${esc(humanKey(group))}</h5>
+        <table class="kvtable">${rows.map(([k, val]) =>
+          `<tr><th>${esc(k)}</th><td>${esc(String(val))}</td></tr>`).join("")}</table>`).join("");
+    })()}
     <h4 class="sechead">System</h4>
     <table class="kvtable">${sysrows.map(([k, val]) => `<tr><th>${esc(k)}</th><td>${esc(String(val))}</td></tr>`).join("")}</table>
     <h4 class="sechead">Profile</h4>
@@ -1002,6 +1470,7 @@ async function showDetail(runId) {
         ["passes", prof.passes], ["gpu matrix", prof.gpu_size],
         ["cpu size", prof.cpu_size], ["ram size (MB)", prof.ram_size_mb],
         ["soak until stable", prof.stable == null ? null : (prof.stable ? "yes" : "no")],
+        ["stable hold (s)", prof.stable_hold],
       ].filter((x) => x[1] != null && x[1] !== "");
       return rows.map(([k, val]) => `<tr><th>${esc(k)}</th><td>${esc(String(val))}</td></tr>`).join("")
         || `<tr><td class="muted">no profile recorded</td></tr>`;
@@ -1026,30 +1495,52 @@ async function showDetail(runId) {
   let dpreset = Object.keys(CHART_PRESETS)[0];
   const drawDetail = () => {
     $("#dChartSel").value = dpreset;
-    drawChart($("#dChart"), (CHART_PRESETS[dpreset] || []).map((k) => {
+    const series = (CHART_PRESETS[dpreset] || []).map((k) => {
       const meta = SERIES[k] || [k, "#4c9aff"];
       return { name: meta[0], color: meta[1], points: pts(k) };
-    }), {});
+    });
+    drawChart($("#dChart"), series, { normalize: true, xElapsed: true });
+    const lg = document.querySelector("#dChartLegend");
+    if (lg) lg.innerHTML = chartLegendHTML(series);
   };
   drawDetail();
   $("#dChartSel").onchange = (e) => { dpreset = e.target.value; drawDetail(); };
 }
 
-/* flatten a run summary into label/value rows so nothing measured stays hidden */
-function resultRows(summary) {
+/* Turn a run summary into readable, grouped rows. The raw summary is a flat dump
+ * of dotted keys (gpu_matmul_tflops.fp16, net.download_mbps ...) which is hard to
+ * scan: label each value, group by the first path segment, and format numbers. */
+function humanKey(k) {
+  const known = (STATE.metrics || []).find((m) => m[0] === k);
+  if (known) return known[1];
+  return String(k).split(".").map((part) => part.replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase()).replace(/\bTflops\b/, "TFLOPS")
+    .replace(/\bGflops\b/, "GFLOPS").replace(/\bGbps\b/, "GB/s")
+    .replace(/\bMbps\b/, "MB/s").replace(/\bC\b/, "°C")).join(" · ");
+}
+
+function humanVal(v) {
+  if (typeof v === "boolean") return v ? "yes" : "no";
+  if (typeof v === "number") return shortNum(v);
+  return String(v);
+}
+
+function resultSections(summary) {
   const skip = new Set(["host", "timestamp", "telemetry", "samples", "gpu_soak_telemetry"]);
-  const rows = [];
-  const walk = (prefix, obj) => {
+  const groups = new Map();
+  const walk = (path, obj) => {
     for (const [k, v] of Object.entries(obj || {})) {
       if (skip.has(k)) continue;
-      const key = prefix ? prefix + "." + k : k;
-      if (v && typeof v === "object" && !Array.isArray(v)) walk(key, v);
-      else if (Array.isArray(v)) rows.push([key, v.join(" / ")]);
-      else if (v !== null && v !== undefined && v !== "") rows.push([key, v]);
+      const key = path ? path + "." + k : k;
+      if (v && typeof v === "object" && !Array.isArray(v)) { walk(key, v); continue; }
+      if (v === null || v === undefined || v === "") continue;
+      const group = key.split(".")[0];
+      if (!groups.has(group)) groups.set(group, []);
+      groups.get(group).push([humanKey(key), Array.isArray(v) ? v.join(" / ") : humanVal(v)]);
     }
   };
   walk("", summary);
-  return rows;
+  return Array.from(groups.entries());
 }
 function dltHtml(cur, prev) {
   if (cur == null || prev == null || isNaN(cur) || isNaN(prev) || +prev === 0) return "";
@@ -1158,7 +1649,7 @@ document.addEventListener("click", (e) => {
     renderHistory();
     return;
   }
-  const t = e.target.closest("[data-tab],[data-start],[data-stop],[data-update],[data-fan],[data-detail],[data-sched-del],[data-toggle-off],[data-forget],[data-power],[data-iso]");
+  const t = e.target.closest("[data-tab],[data-start],[data-stop],[data-update],[data-fan],[data-detail],[data-sched-del],[data-toggle-off],[data-forget],[data-power],[data-iso],[data-focus],[data-f]");
   if (!t) return;
   if (t.dataset.toggleOff !== undefined) {
     SHOW_OFFLINE = !SHOW_OFFLINE;
@@ -1184,6 +1675,13 @@ document.addEventListener("click", (e) => {
   if (t.dataset.forget) return forgetRunner(t.dataset.forget);
   if (t.dataset.power) return powerRunner(t.dataset.power, t.dataset.powerkind);
   if (t.dataset.iso) return runnerUpdate(t.dataset.iso);
+  if (t.dataset.focus) return focusRun(t.dataset.focus);
+  if (t.dataset.f === "close") return closeFocus();
+  if (t.dataset.f === "detail") return showDetail(FOCUS).catch((e) => toast("details failed: " + e.message, "err"));
+  if (t.dataset.f === "update") {
+    const a = STATE.active.find((x) => x.id === FOCUS) || STATE.recent.find((x) => x.id === FOCUS);
+    if (a) return cmd(a.runner_id, "update");
+  }
 });
 
 $("#tokenBtn").onclick = askToken;
@@ -1202,6 +1700,7 @@ document.addEventListener("change", (e) => {
   CHART[id] = e.target.value;
   const card = document.querySelector(`[data-active="${id}"]`);
   if (card) drawRunChart(card, id);
+  if (FOCUS === id) { const f = $("#focus"); if (f) drawRunChart(f, id); }
 });
 document.addEventListener("submit", async (e) => {
   const form = e.target.closest && e.target.closest(".term");
@@ -1217,10 +1716,13 @@ document.addEventListener("submit", async (e) => {
     toast("sent to runner: " + cmd);
   } catch (err) { toast("exec failed: " + err, "err"); }
 });
-window.addEventListener("resize", () => { renderActive(); });
+window.addEventListener("resize", () => { renderActive(); renderFocus(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && FOCUS) closeFocus(); });
 
 /* ---------------------------------------------------------------- boot -- */
 if (!TOKEN) askToken(); else { connect(); refresh(); }
 setInterval(() => {
   if (STATE.active.length) { const st = _scrollState(); renderActive(); _restoreScroll(st); }
+  if (FOCUS) renderFocus();
 }, 5000);
+setInterval(() => { if (FOCUS) reloadTel(FOCUS); }, 15000);

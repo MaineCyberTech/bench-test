@@ -9,6 +9,13 @@ live 1 Hz telemetry, a JSON + Markdown report per run, and an optional
 Built to compare machines (before/after a GPU, driver, or cooling change) with
 reproducible numbers, and to catch instability under sustained load.
 
+**Release `v1.1.0`** — the version lives in `VERSION` and is reported everywhere it
+matters: the GUI/TUI headers, each runner (so the fleet view says what a box is
+running), the web dashboard, and `GET /health` on the control plane. It is a
+release line plus an automatic build: `1.1.0+<commit>`, so every update is a
+distinct version rather than one number shared by many builds. Release artifacts
+name it too (`ISO <gpu> v1.1.0 #<run>`).
+
 - **Runs on:** Windows 10/11 (PowerShell + Python), Linux (Python + Bash), and a
   bootable **live USB** (Arch) that needs no install.
 - **Dependency-free core:** the runners, dashboards, agent and control plane use

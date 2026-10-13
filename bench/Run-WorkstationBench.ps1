@@ -26,6 +26,10 @@ param(
     [int]$Passes = 2,
     [int]$FullSystemSeconds = 0,
     [switch]$SoakUntilStable,
+    [int]$StableHold = 60,
+    [ValidateSet('furmark', 'valley')][string]$GfxEngine = 'furmark',
+    [int]$GfxSeconds = 30,
+    [string]$FurMarkBin,
     [switch]$SkipRam,
     [switch]$SkipDisk,
     [switch]$SkipNet,
@@ -67,7 +71,7 @@ $summary.artifacts.env = "$base.env.json"
 
 if (-not $SkipGpu) {
     Write-Host "=== [2/11] GPU compute battery (telemetry + report) ===" -ForegroundColor Yellow
-    & "$PSScriptRoot\Invoke-GpuBench.ps1" -OutDir $OutDir -SoakSeconds $SoakSeconds -TorchIndex $TorchIndex -Size $Size -UntilStable:$SoakUntilStable -NoInstall:$NoInstall
+    & "$PSScriptRoot\Invoke-GpuBench.ps1" -OutDir $OutDir -SoakSeconds $SoakSeconds -TorchIndex $TorchIndex -Size $Size -UntilStable:$SoakUntilStable -StableHold $StableHold -NoInstall:$NoInstall
 } else {
     Write-Host "=== [2/11] GPU battery skipped ===" -ForegroundColor DarkGray
 }
@@ -103,14 +107,26 @@ if (-not $SkipNvenc) {
 } else { Write-Host "=== [6/11] NVENC skipped ===" -ForegroundColor DarkGray }
 
 if (-not $SkipValley) {
-    Write-Host "=== [7/11] game-like render (Unigine Valley) ===" -ForegroundColor Yellow
-    if ($ValleyBin) {
-        try { & "$PSScriptRoot\Invoke-ValleyBench.ps1" -ValleyBin $ValleyBin -OutDir $OutDir | Out-Null; $summary.artifacts.valley = "see screenshot in $OutDir" }
-        catch { Write-Host "  valley skipped: $($_.Exception.Message)" }
-    } else {
-        Write-Host "  skipped: pass -ValleyBin '<path-to-valley\bin>' to include it" -ForegroundColor DarkGray
+    Write-Host "=== [7/11] game-like render ($GfxEngine) ===" -ForegroundColor Yellow
+    $gfxDone = $false
+    if ($GfxEngine -eq 'furmark') {
+        try {
+            & "$PSScriptRoot\Invoke-FurMarkBench.ps1" -FurMarkBin $FurMarkBin -Seconds $GfxSeconds -OutDir $OutDir | Out-Null
+            $f = Get-NewestArtifact "$($env:COMPUTERNAME)-furmark-*.json"
+            if ($f) { $summary.artifacts.gfx = $f.FullName; $gfxDone = $true }
+        } catch { Write-Host "  furmark unavailable: $($_.Exception.Message)" }
+        if (-not $gfxDone) { Write-Host "  falling back to Unigine Valley (-GfxEngine valley uses it directly)" -ForegroundColor DarkGray }
     }
-} else { Write-Host "=== [7/11] Valley skipped ===" -ForegroundColor DarkGray }
+    if (-not $gfxDone -and $ValleyBin) {
+        try {
+            & "$PSScriptRoot\Invoke-ValleyBench.ps1" -ValleyBin $ValleyBin -OutDir $OutDir | Out-Null
+            $summary.artifacts.valley = "see screenshot in $OutDir"; $gfxDone = $true
+        } catch { Write-Host "  valley skipped: $($_.Exception.Message)" }
+    }
+    if (-not $gfxDone) {
+        Write-Host "  gfx skipped: no FurMark binary and no -ValleyBin" -ForegroundColor DarkGray
+    }
+} else { Write-Host "=== [7/11] gfx skipped ===" -ForegroundColor DarkGray }
 
 if (-not $SkipRam) {
     Write-Host "=== [8/11] RAM bandwidth / latency / integrity / soak ===" -ForegroundColor Yellow
@@ -142,7 +158,7 @@ if (-not $SkipNet) {
 if ($FullSystemSeconds -gt 0) {
     Write-Host "=== [11/11] full-system simultaneous soak (GPU+CPU+RAM+disk) ===" -ForegroundColor Yellow
     try {
-        & "$PSScriptRoot\Invoke-FullSystemSoak.ps1" -OutDir $OutDir -Seconds $FullSystemSeconds -GpuSize $Size -CpuSize $CpuSize -RamSizeMB $RamSizeMB -DiskSizeMB $DiskSizeMB -UntilStable:$SoakUntilStable | Out-Null
+        & "$PSScriptRoot\Invoke-FullSystemSoak.ps1" -OutDir $OutDir -Seconds $FullSystemSeconds -GpuSize $Size -CpuSize $CpuSize -RamSizeMB $RamSizeMB -DiskSizeMB $DiskSizeMB -UntilStable:$SoakUntilStable -StableHold $StableHold | Out-Null
         $f = Get-NewestArtifact "$($env:COMPUTERNAME)-fullsoak-*.json"
         if ($f) { $summary.artifacts.fullsoak = $f.FullName }
     } catch { Write-Host "  fullsoak skipped: $($_.Exception.Message)" }

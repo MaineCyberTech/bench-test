@@ -260,7 +260,7 @@ def cpu_snapshot():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
-    ap.add_argument("--interval", type=float, default=1.0)
+    ap.add_argument("--interval", type=float, default=0.25)
     ap.add_argument("--duration", type=float, default=0, help="0 = run until killed")
     a = ap.parse_args()
 

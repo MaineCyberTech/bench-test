@@ -879,17 +879,24 @@ def popen_hidden(cmd, **kw):
 EXTRA_ARG_KEYS = [("cpu_soak", "--cpu-soak"), ("ram_soak", "--ram-soak"),
                   ("disk_seconds", "--disk-seconds"), ("gpu_size", "--gpu-size"),
                   ("cpu_size", "--cpu-size"), ("ram_size_mb", "--ram-size-mb"),
-                  ("passes", "--passes"), ("steady_gb", "--steady-gb")]
+                  ("passes", "--passes"), ("steady_gb", "--steady-gb"),
+                  ("stable_hold", "--stable-hold"), ("gfx_engine", "--gfx-engine")]
 
 
 def extra_runner_args(profile):
-    """Tuning flags a preset may set beyond gpu/combined/fullsoak/gfx."""
+    """Tuning flags a preset may set beyond gpu/combined/fullsoak/gfx.
+
+    `stable` turns on the plateau soak; `stable_hold` is how many seconds to keep
+    soaking *after* the plateau is reached, and implies `stable` (the runners need
+    the switch as well as the hold).
+    """
+    p = profile or {}
     args = []
     for key, flag in EXTRA_ARG_KEYS:
-        v = (profile or {}).get(key)
+        v = p.get(key)
         if v not in (None, ""):
             args += [flag, str(v)]
-    if (profile or {}).get("stable"):
+    if p.get("stable") or p.get("stable_hold") not in (None, ""):
         args.append("--soak-until-stable")
     return args
 
@@ -904,8 +911,11 @@ def tune_summary(profile):
                      ("passes", "%s pass"), ("steady_gb", "steady %sG")):
         if t.get(key) is not None:
             parts.append(fmt % t[key])
-    if t.get("stable"):
-        parts.append("until stable")
+    if t.get("stable") or t.get("stable_hold") not in (None, ""):
+        hold = t.get("stable_hold")
+        parts.append("until stable" + ((" +%ss" % hold) if hold not in (None, "") else ""))
+    if t.get("gfx_engine"):
+        parts.append("gfx %s" % t["gfx_engine"])
     return " · ".join(parts)
 
 
@@ -914,7 +924,105 @@ def is_live():
     return os.path.isdir("/run/archiso") or os.path.exists("/etc/arch-release")
 
 
-VERSION_FILE = ".bench-version"
+VERSION_FILE = ".bench-version"   # generated stamp of a fetched copy (JSON)
+SEMVER_FILE = "VERSION"           # the release version, e.g. 1.1.0
+# Wire format between runners and the control plane. Bump it when a payload or a
+# summary key changes shape, so an out-of-step runner is *detected* instead of
+# quietly producing wrong data.
+PROTOCOL = 1
+_SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.\-]+)?$")
+
+
+def git_describe(root=None):
+    """``(release, commits_since_tag, commit)`` from ``git describe``.
+
+    Returns ``("", 0, "")`` when this is not a checkout or there is no tag yet.
+    """
+    repo = root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        # --match: the release workflows also tag `app-<n>` and `iso-<gpu>-<n>`,
+        # which are newer than the version tag and would otherwise be picked as
+        # "the" tag (git describe takes the most recent one reachable from HEAD)
+        r = run_hidden(["git", "-C", repo, "describe", "--tags", "--long", "--dirty",
+                        "--match", "v[0-9]*"],
+                       capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            return ("", 0, "")
+        m = re.match(r"^v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.\-]+)?)-(\d+)-g([0-9a-f]+)",
+                     r.stdout.strip())
+        if not m:
+            return ("", 0, "")
+        return (m.group(1), int(m.group(2)), m.group(3))
+    except Exception:
+        return ("", 0, "")
+
+
+def bench_version(root=None):
+    """The **release** version - bare semver, from the git tag.
+
+    Exactly the tag you are on (`1.1.0`). How far past it you are is build
+    information, not release information, so it lives in ``bench_build()`` and
+    ``version_string()``. Only a copy with no git (a live stick) falls back to the
+    VERSION file it was fetched with, which the release workflow keeps equal to the
+    latest tag. Validated rather than trusted: a malformed value becomes
+    ``0.0.0+invalid`` instead of being passed around as a release.
+    """
+    root = root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    rel, _n, _c = git_describe(root)
+    if rel:
+        return rel
+    try:
+        with open(os.path.join(root, SEMVER_FILE), encoding="utf-8") as fh:
+            v = fh.read().strip().splitlines()[0].strip()
+    except (OSError, IndexError):
+        return "0.0.0+unknown"
+    if not v:
+        return "0.0.0+unknown"
+    return v if _SEMVER_RE.match(v) else "0.0.0+invalid"
+
+
+def bench_build(root=None):
+    """The build identity within the release: ``468.d089bab5`` or just the commit.
+
+    ``<commits-since-tag>.<commit>`` makes two builds of the same release
+    distinguishable and ordered; a copy falls back to the commit (or content hash)
+    recorded in its fetch stamp.
+    """
+    root = root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    rel, n, c = git_describe(root)
+    if rel and c:
+        return ("%d.%s" % (n, c)) if n else c
+    tv = toolkit_version(root)
+    return tv.get("build") or tv.get("commit") or ""
+
+
+def version_string(root=None):
+    """``1.1.0+468.d089bab5`` - release plus the exact build.
+
+    Every commit produces a distinct, comparable version, so a release that ships
+    many commits can never report one identical version for all of them.
+    """
+    v = bench_version(root)
+    b = bench_build(root)
+    return ("%s+%s" % (v, b)) if b else v
+
+
+def version_info(root=None):
+    """Everything needed to say exactly what is running, from one place.
+
+    Every surface (GUI/TUI headers, runner registration, web, /health) should read
+    this rather than re-deriving a version, so they cannot disagree.
+    """
+    tv = toolkit_version(root)
+    rel, n, _c = git_describe(root)
+    return {"version": version_string(root),
+            "release": bench_version(root),
+            "build": bench_build(root),
+            "commit": tv.get("commit") or git_commit(root),
+            "mode": tv.get("mode"),
+            "ref": tv.get("ref"),
+            "commits_since_tag": n,
+            "protocol": PROTOCOL}
 
 
 def git_commit(repo=None):
@@ -931,18 +1039,26 @@ def git_commit(repo=None):
 def toolkit_version(root=None):
     """Identify the running toolkit so the fleet view can spot stale runners."""
     root = root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    ver = bench_version(root)
     if os.path.isdir(os.path.join(root, ".git")):
         return {"mode": "git", "commit": git_commit(root), "ref": None,
-                "sha256": None, "fetched_at": None}
+                "sha256": None, "fetched_at": None, "version": ver,
+                "build": git_commit(root), "protocol": PROTOCOL}
     try:
         with open(os.path.join(root, VERSION_FILE), encoding="utf-8") as fh:
             v = json.load(fh)
         if isinstance(v, dict):
             v.setdefault("mode", "copy")
+            v["version"] = ver
+            v["protocol"] = PROTOCOL
+            # resolving the commit needs the GitHub API, which can be rate limited;
+            # the content hash still tells two copies apart, so use it as the build
+            v["build"] = v.get("commit") or (v.get("sha256") or "")[:7] or None
             return v
     except Exception:
         pass
-    return {"mode": "copy", "commit": None, "ref": None, "sha256": None, "fetched_at": None}
+    return {"mode": "copy", "commit": None, "ref": None, "sha256": None,
+            "fetched_at": None, "version": ver, "build": None, "protocol": PROTOCOL}
 
 
 def _resolve_commit(ref):
@@ -1203,20 +1319,26 @@ def auto_update(repo=None, log=None, enabled=None):
         return {"kind": "git", "ok": False, "updated": False, "error": str(e)}
 
 
-def restart_self(delay=1.5, log=None):
+def restart_self(delay=1.5, log=None, console=False):
     """Re-exec this runner so it picks up a freshly switched toolkit (live USB).
 
     Windows has no real execv: spawn a successor with the same argv and exit, or
     the process is left running with a dead worker thread (which is what made a
     remote 'restart' silent the runner).
+
+    `console` is for the dashboards: a successor spawned hidden (CREATE_NO_WINDOW)
+    has no console at all, so the TUI ran with no UI. It must *inherit* the
+    console, not get a new one - CREATE_NEW_CONSOLE opens a separate window that is
+    never shown or focused, which looks exactly like 'running in the background'.
     """
     log = log or (lambda _m: None)
     time.sleep(max(0.0, delay))
     log("[update] restarting to run the new toolkit")
     try:
         if os.name == "nt":
-            popen_hidden([sys.executable] + list(sys.argv), cwd=os.getcwd(),
-                         close_fds=True)
+            flags = 0 if console else getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            subprocess.Popen([sys.executable] + list(sys.argv), cwd=os.getcwd(),
+                             close_fds=False, creationflags=flags)
             os._exit(0)
         os.execv(sys.executable, [sys.executable] + list(sys.argv))
     except Exception as e:
@@ -1817,18 +1939,23 @@ def iso_write(iso_path, device, confirm=False, log=None):
 
 
 class TelemetryTail:
-    """Tails the newest 1 Hz telemetry CSV and yields canonical sample rows."""
+    """Tails this run's telemetry CSV (sampled at 2 Hz) and yields canonical rows."""
 
-    def __init__(self, results_dir, interval=1.0):
+    def __init__(self, results_dir, interval=0.3, since=None):
         self.dir = results_dir
         self.interval = interval
         self.path = None
         self.fh = None
         self.cols = {}
         self._n = 0
+        # Only consider CSVs written from here on: at run start the newest file is
+        # still the PREVIOUS run's, and tailing it posted that run's samples (with
+        # its clock) under the new run id - which is what stretched the charts.
+        self.since = time.time() if since is None else since
 
     def _find(self):
-        files = glob.glob(os.path.join(self.dir, "*.telemetry.csv"))
+        files = [f for f in glob.glob(os.path.join(self.dir, "*.telemetry.csv"))
+                 if os.path.getmtime(f) >= self.since - 1]
         if not files:
             return None
         newest = max(files, key=os.path.getmtime)
@@ -2030,7 +2157,14 @@ def _merge_into(s, j):
         phase = p.get("phase") or r.get("phase")
         grp = p.get("group") or r.get("group")
         if grp == "gfx" and isinstance(r, dict):
-            setd("gfx", r)
+            # several gfx records can exist: furmark "skipped" (no monitor) and then
+            # the glmark2 fallback that actually ran and scored. Keep the one with a
+            # score; a skipped record may only stand in until a scored one arrives.
+            have = out.get("gfx") or {}
+            new_scored = r.get("score") is not None and not r.get("skipped")
+            have_scored = have.get("score") is not None and not have.get("skipped")
+            if new_scored or not have_scored:
+                setd("gfx", r)
         if phase == "matmul" and isinstance(r.get("results"), dict):
             sub = r["results"]
             first = next(iter(sub.values()), {})

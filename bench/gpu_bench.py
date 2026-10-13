@@ -306,15 +306,30 @@ def _temp_stable(samples, window=8, tol=0.5):
     return abs(statistics.mean(recent[half:]) - statistics.mean(recent[:half])) < tol
 
 
-def _soak_continue(t0, a, samples):
-    """Keep soaking until the ceiling, or stop early once temps plateau."""
-    el = time.time() - t0
+def _soak_decision(t0, a, samples, stable_since, now=None):
+    """Return ``(keep_going, stable_since)`` for one soak iteration.
+
+    Stops at the ceiling (``--seconds``), or once the temperature has *held*
+    steady for ``--stable-hold`` seconds after it first plateaued — a plateau
+    alone is not enough, we want a full minute of it (never before the minimum).
+    ``stable_since`` is the wall clock when the plateau was first seen; it resets
+    if the temperature starts moving again, so the hold must be continuous.
+    """
+    now = time.time() if now is None else now
+    el = now - t0
     if el >= a.seconds:
-        return False
-    if getattr(a, "until_stable", False) and el >= min(45.0, a.seconds) \
-            and _temp_stable(samples):
-        return False
-    return True
+        return False, stable_since
+    if not getattr(a, "until_stable", False):
+        return True, None
+    if el < min(45.0, a.seconds):
+        return True, None
+    if not _temp_stable(samples):
+        return True, None
+    if stable_since is None:
+        stable_since = now
+    if now - stable_since >= getattr(a, "stable_hold", 60.0):
+        return False, stable_since
+    return True, stable_since
 
 
 def torch_soak(a):
@@ -330,16 +345,23 @@ def torch_soak(a):
     tel = threading.Thread(target=_telemetry_loop, args=(samples, stop), daemon=True)
     tel.start()
     t0 = time.time(); mats = convs = 0
+    stable_since = None
     if dev == "cuda" and t.cuda.get_device_capability(0) >= (7, 0):
         streams = [t.cuda.Stream() for _ in range(4)]
-        while _soak_continue(t0, a, samples):
+        while True:
+            keep, stable_since = _soak_decision(t0, a, samples, stable_since)
+            if not keep:
+                break
             for s in streams:
                 with t.cuda.stream(s):
                     _ = A @ B; mats += 1
                     _ = F.conv2d(xi, w, padding=1); convs += 1
     else:
-        # Single-stream (cpu, or pre-Volta); sync each iteration to bound the queue.
-        while _soak_continue(t0, a, samples):
+        # Single-stream (cpu or pre-Volta); sync each iteration to bound the queue.
+        while True:
+            keep, stable_since = _soak_decision(t0, a, samples, stable_since)
+            if not keep:
+                break
             _ = A @ B; mats += 1
             _ = F.conv2d(xi, w, padding=1); convs += 1
             _sync(dev)
@@ -350,12 +372,16 @@ def torch_soak(a):
            "matmul_tflops": round(2.0 * N ** 3 * mats / dt / 1e12, 1),
            "peak_vram_gib": round(t.cuda.max_memory_allocated() / 1024 ** 3, 1) if dev == "cuda" else None,
            "until_stable": bool(getattr(a, "until_stable", False)),
-           "stable": bool(getattr(a, "until_stable", False) and dt < a.seconds - 0.5)}
+           "stable": stable_since is not None,
+           "stable_at_s": (round(stable_since - t0, 1) if stable_since is not None else None),
+           "stable_hold_s": float(getattr(a, "stable_hold", 60.0))}
     ts = _telemetry_summary(samples)
     if ts:
         out["telemetry"] = ts
-    log("soak %.1fs matmuls=%d convs=%d matmul_TFLOPS=%.1f" % (
-        dt, mats, convs, out["matmul_tflops"]))
+    log("soak %.1fs matmuls=%d convs=%d matmul_TFLOPS=%.1f%s" % (
+        dt, mats, convs, out["matmul_tflops"],
+        (" stable@%.0fs+%.0fs" % (out["stable_at_s"], out["stable_hold_s"]))
+        if out["stable"] else ""))
     jline(out)
 
 
@@ -703,6 +729,8 @@ def main():
     ap.add_argument("--force", action="store_true", help="skip VRAM-fill confirmation")
     ap.add_argument("--until-stable", action="store_true",
                     help="soak until the GPU temperature plateaus (--seconds is the ceiling)")
+    ap.add_argument("--stable-hold", type=float, default=60.0,
+                    help="keep soaking this many seconds after the plateau is reached")
     ap.add_argument("--backend", default="auto", choices=["auto", "cuda", "dml", "cpu"])
     a = ap.parse_args()
 

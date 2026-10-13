@@ -47,7 +47,8 @@ try:
                              toolkit_version, is_live, update_needs_restart, hardware_line,
                              DASH_FIELDS, auto_update, should_restart_after_update,
                              venv_python, upload_telemetry_csv, persist_root,
-                             upload_run_files, extra_runner_args, tune_summary)
+                             upload_run_files, extra_runner_args, tune_summary,
+                             bench_version, version_string)
 except Exception:  # reporting is optional
     Reporter = None
 
@@ -112,13 +113,21 @@ _DEF_DUR = {"gpu": 600, "combined": 300, "fullsoak": 300, "gfx": 60}
 # (cpu 120s, ram 120s, gpu matrix 12288, steady 10GB) - the reason a "Quick check"
 # used to take over half an hour.
 _TUNE = {"cpu_soak": 45, "ram_soak": 30, "disk_seconds": 30, "gpu_size": 4096,
-         "cpu_size": 2048, "ram_size_mb": 512, "passes": 1, "steady_gb": 2, "stable": 1}
+         "cpu_size": 2048, "ram_size_mb": 512, "passes": 1, "steady_gb": 2,
+         "stable": 1, "stable_hold": 60, "gfx_engine": "furmark"}
+
+# "Quick check" has to be quick: with no tune it inherits the runner's long
+# defaults (cpu 120s, ram 120s, 10 GiB steady write, gpu matrix 12288) and ran
+# ~14 min on the live stick.
+_QUICK_TUNE = {"cpu_soak": 60, "ram_soak": 30, "disk_seconds": 15, "gpu_size": 4096,
+               "cpu_size": 2048, "ram_size_mb": 512, "passes": 1, "steady_gb": 2}
 
 PRESETS = {
     "Select a preset...": None,
     "Quick check (short soaks)": {"groups": _g("gpu", "cpu", "ram", "disk", "combined", "fullsoak",
                                                "net", "nvenc", "sys", "gfx"),
-                                  "spin": {"gpu": 60, "combined": 60, "fullsoak": 60, "gfx": 30}},
+                                  "spin": {"gpu": 60, "combined": 60, "fullsoak": 60, "gfx": 30},
+                                  "tune": _QUICK_TUNE},
     "Stabilized full soak (15 min)": {"groups": _g("gpu", "cpu", "ram", "disk", "combined", "fullsoak",
                                                    "net", "nvenc", "fan", "sys", "gfx"),
                                       "spin": {"gpu": 180, "combined": 45, "fullsoak": 90, "gfx": 30},
@@ -130,6 +139,9 @@ PRESETS = {
     "CPU + RAM + disk": {"groups": _g("cpu", "ram", "disk", "sys"), "spin": dict(_DEF_DUR)},
     "Storage + network": {"groups": _g("disk", "net", "sys"), "spin": dict(_DEF_DUR)},
     "Video / graphics": {"groups": _g("nvenc", "gfx", "sys"), "spin": dict(_DEF_DUR)},
+    "Graphics only (FurMark/Valley)": {"groups": _g("gfx", "sys"),
+                                       "spin": {**_DEF_DUR, "gfx": 30},
+                                       "tune": {"gfx_engine": "furmark"}},
     "LLM inference (Ollama)": {"groups": _g("llm", "sys"), "spin": dict(_DEF_DUR)},
     "Fan response": {"groups": _g("fan", "sys"), "spin": dict(_DEF_DUR)},
     "Soak only (long)": {"groups": _g("gpu", "fullsoak", "sys"),
@@ -293,6 +305,8 @@ class Dashboard:
                   style="Dim.TLabel").pack(side="left")
         self.hw = ttk.Label(head, text="detecting hardware...", style="Dim.TLabel")
         self.hw.pack(side="right")
+        self.ver = ttk.Label(head, text="v%s" % bench_version(REPO), style="Dim.TLabel")
+        self.ver.pack(side="right", padx=(0, 10))
 
         body = ttk.Frame(r, padding=(12, 4, 12, 8))
         body.pack(fill="both", expand=True)
@@ -567,6 +581,7 @@ class Dashboard:
             ident = load_identity(self.server)
             self.rep = Reporter(self.server, self.token, name=self.name or _p.node(),
                                 kind="gui", os_name=_p.system(), log=self._log,
+                                version=version_string(REPO),
                                 runner_id=ident.get("runner_id"), api_key=ident.get("api_key"),
                                 persist=True, instance=self.instance)
             self.sysinfo = system_info()

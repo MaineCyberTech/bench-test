@@ -163,6 +163,22 @@ you add behaviour. Never commit with a failing suite.
 
 - **Presets** live in `gui.PRESETS` (dict), `tui.PRESETS` (list), and
   `ALL_GROUPS`/`gset`/`PRESETS` in `app.js`. Change all three together.
+- **Versions are derived from git, not maintained by hand.** `bench_version()`
+  reads `git describe --tags --long`: exactly on a tag it is the release
+  (`1.1.0`), commits past it are build metadata (`1.1.0+3` = three commits after
+  `v1.1.0`), and `version_string()` appends the commit (`1.1.0+3.abc1234`). So the
+  number changes **on every commit** and the *release* changes **when a tag is
+  pushed** — `.github/workflows/release.yml` does that automatically from the
+  commit subjects (`feat:` → minor, otherwise patch) and keeps `VERSION` in step.
+  A copy with no git (a live stick) falls back to the `VERSION` file it was fetched
+  with, which that workflow keeps equal to the latest tag — so a stick and a
+  checkout of the same release agree. `version_info()` is the single authoritative
+  descriptor (release, build, commit, mode, ref, commits_since_tag, protocol) and
+  every surface reads it: GUI/TUI headers, runner registration, the web, and the
+  control plane (`/health`, `/state`; deployed as a copy, so `VERSION` ships with
+  it — see `update_ct.py`). A malformed `VERSION` yields `0.0.0+invalid` rather
+  than being passed around as a release, and a runner whose `PROTOCOL` differs is
+  flagged in the fleet view. `tests/test_version.py` keeps this honest.
 - **Tuning knobs beyond the four durations** (`cpu_soak`, `ram_soak`,
   `disk_seconds`, `gpu_size`, `cpu_size`, `ram_size_mb`, `passes`, `steady_gb`,
   `stable`) travel in a preset's `tune` field and in the start payload; both

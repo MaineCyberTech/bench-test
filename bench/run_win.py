@@ -46,6 +46,12 @@ def parse_args():
     ap.add_argument("--passes", default="2")
     ap.add_argument("--soak-until-stable", action="store_true",
                     help="soak until the GPU temperature plateaus (the soak ceiling still applies)")
+    ap.add_argument("--stable-hold", default="60",
+                    help="keep soaking this many seconds after the plateau is reached")
+    ap.add_argument("--gfx-engine", default="furmark", choices=["furmark", "valley"],
+                    help="gfx engine: FurMark 2 (default) or Unigine Valley")
+    ap.add_argument("--furmark-bin", default="",
+                    help="path to furmark.exe (else PATH/env FURMARK/standard install)")
     ap.add_argument("--valley-bin", default=DEFAULT_VALLEY)
     ap.add_argument("-o", "--out-dir", default=os.path.join(REPO, "results"))
     return ap.parse_args()
@@ -283,7 +289,7 @@ def sampler(csv_path, stop_evt):
                 os.fsync(fh.fileno())
             except Exception:
                 pass
-            stop_evt.wait(1.0)
+            stop_evt.wait(0.25)
 
 
 def main():
@@ -310,9 +316,14 @@ def main():
           "-Passes", str(a.passes),
           "-DiskSeconds", str(a.disk_seconds),
           "-SteadyGB", str(a.steady_gb),
+          "-GfxEngine", a.gfx_engine,
+          "-GfxSeconds", str(a.gfx_seconds),
           "-FullSystemSeconds", ("0" if a.skip_fullsoak else str(a.fullsoak_seconds))]
     if a.soak_until_stable:
         ps.append("-SoakUntilStable")
+        ps += ["-StableHold", str(a.stable_hold)]
+    if a.furmark_bin:
+        ps += ["-FurMarkBin", a.furmark_bin]
     if a.skip_cpu:
         ps.append("-SkipCpu")
     if a.skip_gpu:
@@ -335,10 +346,6 @@ def main():
         ps.append("-SkipValley")
     elif os.path.isdir(a.valley_bin):
         ps += ["-ValleyBin", a.valley_bin]
-    if a.gfx_seconds != 60:
-        # Unigine Valley's run length is fixed by its preset, so the Windows gfx
-        # duration is not configurable; say so rather than silently ignoring it.
-        print("[win] note: --gfx-seconds is not adjustable on Windows (Valley preset)", flush=True)
 
     cmd = ["powershell"] + ps
     print("[win] runner: %s" % " ".join(cmd), flush=True)

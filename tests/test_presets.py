@@ -20,6 +20,7 @@ CANON = {
     "CPU + RAM + disk": ({"cpu", "ram", "disk", "sys"}, dict(DEF)),
     "Storage + network": ({"disk", "net", "sys"}, dict(DEF)),
     "Video / graphics": ({"nvenc", "gfx", "sys"}, dict(DEF)),
+    "Graphics only (FurMark/Valley)": ({"gfx", "sys"}, {**DEF, "gfx": 30}),
     "LLM inference (Ollama)": ({"llm", "sys"}, dict(DEF)),
     "Fan response": ({"fan", "sys"}, dict(DEF)),
     "Soak only (long)": ({"gpu", "fullsoak", "sys"}, {**DEF, "gpu": 1800, "fullsoak": 1800}),

@@ -8,7 +8,8 @@ param(
     [int]$DiskSizeMB = 512,
     [string]$DiskPath = '',
     [string]$OutDir = '',
-    [switch]$UntilStable
+    [switch]$UntilStable,
+    [int]$StableHold = 60
 )
 if (-not $OutDir) { $OutDir = Join-Path $PSScriptRoot '..\results' }
 if (-not $DiskPath) { $DiskPath = $env:TEMP }
@@ -25,11 +26,11 @@ $dsk = Join-Path $PSScriptRoot 'disk_bench.py'
 Write-Host "[fullsoak] GPU+CPU+RAM+disk concurrently for ${Seconds}s"
 $jobs = @{
     gpu = Start-Job -ScriptBlock {
-        param($p,$s,$n,$st)
+        param($p,$s,$n,$st,$hold)
         $a = @('soak','--seconds',"$s",'--size',"$n",'--force')
-        if ($st) { $a += '--until-stable' }
+        if ($st) { $a += @('--until-stable','--stable-hold',"$hold") }
         & python $p @a
-    } -ArgumentList $gpu, $Seconds, $GpuSize, [bool]$UntilStable
+    } -ArgumentList $gpu, $Seconds, $GpuSize, [bool]$UntilStable, $StableHold
     cpu = Start-Job -ScriptBlock { param($p,$s,$n) & python $p soak --seconds $s --size $n } -ArgumentList $cpu, $Seconds, $CpuSize
     ram = Start-Job -ScriptBlock { param($p,$s,$m) & python $p soak --seconds $s --size-mb $m --force } -ArgumentList $ram, $Seconds, $RamSizeMB
     dsk = Start-Job -ScriptBlock { param($p,$s,$m,$path) & python $p soak --seconds $s --size-mb $m --path $path --force } -ArgumentList $dsk, $Seconds, $DiskSizeMB, $DiskPath

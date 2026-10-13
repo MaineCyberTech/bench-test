@@ -1,0 +1,112 @@
+name: Release (auto-tag)
+
+# The version is derived from the git tag, so this is what *makes* it change:
+# every commit after a tag reports `<release>+<n>.<commit>`; tagging cuts the next
+# release. Nobody has to remember to edit VERSION.
+#
+# On a push to main: read the commits since the last tag and decide the bump -
+# `feat:` -> minor, anything else (fix/chore/perf/docs) -> patch. Pushing the tag
+# is what promotes the build to a release, and the tag names it (`v1.2.0`), which
+# `git describe` then reports everywhere.
+#
+# Manual dispatch: bump_kind=minor|patch|major, or bump_kind=none to only report.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_kind:
+        description: "force a bump (minor/patch/major), or none to just report"
+        type: choice
+        options: [minor, patch, major, none]
+        default: minor
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-tag
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # tags + history are needed to describe
+          fetch-tags: true
+
+      - name: Decide the next version
+        id: ver
+        run: |
+          set -euo pipefail
+          last=$(git tag --list 'v*' --sort=-v:refname | head -1)
+          echo "last tag: ${last:-<none>}"
+          if [ -z "$last" ]; then
+            next="1.0.0"
+          else
+            base=${last#v}
+            subjects=$(git log "$last..HEAD" --format=%s)
+            kind="${{ inputs.bump_kind }}"
+            if [ -z "$kind" ]; then
+              if printf '%s\n' "$subjects" | grep -qE '^feat(\(|!|:)'; then
+                kind=minor
+              elif printf '%s\n' "$subjects" | grep -qE '^(fix|perf|revert)(\(|!|:)'; then
+                kind=patch
+              else
+                # only chores/docs/ci since the tag: nothing to release. The build
+                # still moves (describe reports <release>+<n>.<commit>); tagging
+                # every push would make every commit a release.
+                kind=skip
+              fi
+            fi
+            echo "bump kind: $kind"
+            if [ "$kind" = "skip" ] || [ "$kind" = "none" ]; then
+              next=""
+            else
+              IFS=. read -r major minor patch <<< "$base"
+              case "$kind" in
+                major) major=$((major + 1)); minor=0; patch=0 ;;
+                minor) minor=$((minor + 1)); patch=0 ;;
+                patch) patch=$((patch + 1)) ;;
+              esac
+              next="${major}.${minor}.${patch}"
+            fi
+          fi
+          echo "next version: ${next:-<none - no release>}"
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Point VERSION at the release
+        if: ${{ steps.ver.outputs.next != '' }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "${{ steps.ver.outputs.next }}" > VERSION
+          if ! git diff --quiet -- VERSION; then
+            git config user.name  "bench-test release bot"
+            git config user.email "release@users.noreply.github.com"
+            git add VERSION
+            git commit -m "chore(release): VERSION ${{ steps.ver.outputs.next }}"
+            git push
+          else
+            echo "VERSION already ${{ steps.ver.outputs.next }}"
+          fi
+
+      - name: Tag the release
+        if: ${{ steps.ver.outputs.next != '' && inputs.bump_kind != 'none' }}
+        run: |
+          set -euo pipefail
+          tag="v${{ steps.ver.outputs.next }}"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "$tag already exists"
+          else
+            git tag -a "$tag" -m "bench-test $tag"
+            git push origin "$tag"
+            echo "tagged $tag"
+          fi
+
+      - name: Summary
+        run: |
+          echo "### bench-test ${{ steps.ver.outputs.next }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Builds between releases report \`<release>+<n>.<commit>\`; this tag is the release." >> "$GITHUB_STEP_SUMMARY"
