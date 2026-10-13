@@ -358,7 +358,6 @@ function runnerInfo(r) {
   } else {
     rows.push(["last run", "none yet"]);
   }
-  rows.push([r.online ? "seen" : "offline", r.online ? "now" : ago(r.last_seen)]);
   return `<div class="rinfo">${rows.map(([k, v]) =>
     `<div class="rrow"><span class="rk">${esc(k)}</span><span class="rv">${v}</span></div>`).join("")}</div>`;
 }

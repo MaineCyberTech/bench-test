@@ -118,6 +118,8 @@ def _web(c):
             "t.dataset.runner &&" in js and "runnerRun(t.dataset.runner)" in js, "")
     c.check("panel controls keep their own behaviour",
             'e.target.closest("button,input,select,textarea,a,form,label")' in js, "")
+    c.check("the panel does not duplicate the card's own last-seen line",
+            'rows.push([r.online ? "seen"' not in js and "last seen ${ago(r.last_seen)}" in js, "")
     c.check("the tabs and info block are styled", ".rtabs" in css and ".rinfo" in css, "")
 
 
