@@ -375,6 +375,72 @@ def _web(c):
     except Exception as e:
         c.check("the runs API returns the total the UI shows", False, e)
 
+    # ---- W24b: web P2 backlog ----
+    # USE-P2-001: a command POST only proves it was enqueued; the runner's ack is
+    # the real outcome. The UI must track each issued command and surface
+    # queued -> acked / failed / expired (with the error), never claim success on
+    # enqueue. The ack arrives on the SSE `command` event (the GET .../commands
+    # endpoint only returns still-queued rows), so that handler must parse it.
+    c.check("issued commands are tracked by the id the POST returns",
+            "function trackCommand" in js and "trackCommand(res, runnerId" in js
+            and "res.status || \"queued\"" in js, "")
+    c.check("the SSE command event is parsed, not just used as a refresh nudge",
+            re.search(r'es\.addEventListener\("command",\s*\(e\)\s*=>', js) is not None
+            and "onCommandEvent(JSON.parse(e.data))" in js
+            and "function onCommandEvent" in js, "")
+    c.check("a command outcome maps queued -> acked / failed / expired",
+            "function cmdStatus" in js
+            and 'return "acked"' in js and '"expired"' in js and '"failed"' in js
+            and 's === "failed" || s === "error"' in js, "")
+    c.check("a dropped command (server reap) reads as expired",
+            "/no ack/i.test(c.error)" in js, "")
+    c.check("the command's error is carried through to the UI",
+            "d.result.error" in js and "c.error" in js and "function renderCommands" in js
+            and 'id="commands"' in html and "renderCommands();" in js, "")
+    c.check("a failed command is never shown with the success styling",
+            'const pill = st === "acked" ? "done"' in js
+            and '(st === "failed" || st === "expired") ? "failed"' in js, "")
+
+    # USE-P2-004: benchd's _issue_command accepts exec/shell for an idle runner
+    # (no live-run gate), so the focus-view terminal must stay available after a
+    # run ends instead of being hidden behind `live`.
+    c.check("the focus console offers the terminal for an idle runner too",
+            "USE-P2-004" in js
+            and '${live ? `<form class="term" data-exec=' not in js
+            and '<form class="term" data-exec="${esc(r.runner_id)}">' in js, "")
+
+    # USE-P2-002: the start form must validate required + numeric + > 0 client-side
+    # and disable submit with an inline error until it is valid.
+    c.check("the start form validates durations and sizes (> 0, numeric, required)",
+            "function validateStartForm" in js and "function startFormErrors" in js
+            and "must be greater than 0" in js and "is required and must be a number" in js, "")
+    c.check("submit is disabled and an inline error shown until the form is valid",
+            'id="mErr"' in js and "go.disabled = errs.length > 0" in js
+            and "if (!validateStartForm()) return;" in js, "")
+    c.check("every start-form field re-validates as it is edited",
+            'addEventListener("input", validateStartForm)' in js
+            and 'addEventListener("change", validateStartForm)' in js, "")
+
+    # Behavioural: the commands API really accepts an exec for a runner with no
+    # live run, and the ack endpoint records the outcome the UI consumes.
+    try:
+        from harness import Server
+        srv = Server()
+        try:
+            cl = srv.client()
+            st, q = cl.call("POST", "/api/v1/runners/w24b-runner/commands",
+                            {"kind": "exec", "payload": {"cmd": "true"}})
+            c.check("the commands API accepts an exec for an idle runner (no live run)",
+                    st == 200 and q.get("status") == "queued" and q.get("id"), (st, q))
+            st2, a = cl.call("POST", "/api/v1/runners/w24b-runner/commands/%s/ack" % q["id"],
+                             {"status": "failed", "result": {"error": "boom"}})
+            c.check("the ack endpoint records the outcome the UI surfaces",
+                    st2 == 200 and a.get("ok") is True, (st2, a))
+        finally:
+            srv.stop()
+    except Exception as e:
+        c.check("the commands API accepts an exec for an idle runner (no live run)", False, e)
+
 
 def run():
     c = Checker("dashboards")
