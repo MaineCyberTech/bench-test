@@ -1,0 +1,3 @@
+[backend] cuda
+conv2d fp16 TFLOPS=12.5
+RESULT_JSON:{"phase": "conv", "backend": "cuda", "tflops": 12.5, "iters": 605}

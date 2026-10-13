@@ -1,0 +1,149 @@
+{
+  "host": "bench-live",
+  "timestamp": "2026-10-13T04:19:59+00:00",
+  "platform": "Linux-7.2.9-arch1-1-x86_64-with-glibc2.44",
+  "env": {
+    "python": "/usr/bin/python",
+    "torch": "2.14.1+cu126",
+    "torch_cuda": "12.6",
+    "cuda_available": true,
+    "git_commit": "",
+    "git_dirty": false
+  },
+  "fan_curve": "35:26 45:34 55:44 60:52 68:64 75:76 82:90 88:100",
+  "telemetry": {
+    "file": "bench-live-linux-20261013-041959.telemetry.csv",
+    "samples": 96,
+    "duration_s": 26.0,
+    "temp_c": [
+      28.0,
+      34.6,
+      43.0
+    ],
+    "fan_pct": [
+      20.0,
+      36.3,
+      272.0
+    ],
+    "power_w": [
+      57.9,
+      123.89
+    ]
+  },
+  "log_dir": "/mnt/benchdata/results/bench-live-linux-20261013-041959-logs",
+  "phases": [
+    {
+      "group": "sys",
+      "phase": "info",
+      "result": {
+        "phase": "info",
+        "distro": "Arch Linux",
+        "kernel": "7.2.9-arch1-1",
+        "arch": "x86_64",
+        "cpu": {
+          "model": "Intel(R) Core(TM) i7-3770 CPU @ 3.40GHz",
+          "logical_cpus": 8,
+          "max_mhz_observed": 3911
+        },
+        "memory_gib": 15.6,
+        "gpu": {
+          "name": "NVIDIA GeForce GTX 1080",
+          "driver": "580.178.04",
+          "vram": "8192 MiB",
+          "pcie_link_gen": "1",
+          "pcie_link_width": "16",
+          "uuid": "GPU-1011ed60-5946-c902-f948-f17c44ffdfd1",
+          "vbios": "86.04.17.00.01",
+          "pci_bus": "00000000:01:00.0",
+          "temp_limit_c": "[N/A]",
+          "power_default_w": "180.00 W",
+          "power_max_w": "217.00 W"
+        },
+        "storage": [
+          "loop0 4.9G loop 0",
+          "sda 931.5G disk 0 SanDisk SSD PLUS 1000GB",
+          "sdb 29.8G disk 1 SanDisk SSD U100 32GB"
+        ],
+        "network_ifaces": [
+          {
+            "name": "enp5s0",
+            "state": "up",
+            "speed_mbps": "1000"
+          }
+        ],
+        "booted": "2026-10-12 21:57:48",
+        "errors_since_boot": 172,
+        "hardware_errors": [
+          "Oct 12 21:58:20 bench-live kernel: acpi PNP0A08:00: _OSC: OS requested [PCIeHotplug SHPCHotplug PME AER PCIeCapability LTR DPC]",
+          "Oct 12 21:58:20 bench-live kernel: acpi PNP0A08:00: _OSC: platform willing to grant [PCIeHotplug SHPCHotplug PME AER PCIeCapability LTR DPC]",
+          "Oct 12 21:58:20 bench-live kernel: r8169 0000:05:00.0 eth0: RTL8168evl/8111evl, c8:60:00:a0:43:ee, XID 2c9, IRQ 38"
+        ],
+        "disk_health": {
+          "/dev/sda": {
+            "model": null,
+            "fw": null,
+            "temp_c": 18,
+            "used_pct": null,
+            "media_errors": null,
+            "reallocated": 0,
+            "pending": null,
+            "power_on_hours": 915,
+            "health": true
+          },
+          "/dev/sdb": {
+            "model": null,
+            "fw": null,
+            "temp_c": null,
+            "used_pct": null,
+            "media_errors": null,
+            "reallocated": 0,
+            "pending": null,
+            "power_on_hours": 48,
+            "health": true
+          }
+        },
+        "ecc": {}
+      }
+    },
+    {
+      "group": "gfx",
+      "phase": "furmark",
+      "result": {
+        "skipped": true,
+        "reason": "no monitor on the X display"
+      }
+    },
+    {
+      "group": "gfx",
+      "phase": "glmark2",
+      "result": {
+        "score": 31803,
+        "furmark_rc": 1,
+        "scenes": 8,
+        "per_scene_s": 2,
+        "exit": 0
+      }
+    },
+    {
+      "group": "gfx",
+      "phase": "furmark",
+      "result": {
+        "phase": "furmark",
+        "demo": "furmark-gl",
+        "width": 1920,
+        "height": 1080,
+        "seconds": 30,
+        "exit": 1,
+        "score": null,
+        "fps_min": null,
+        "fps_avg": null,
+        "fps_max": null,
+        "temp_max_c": null,
+        "api": null,
+        "gpu_csv": null,
+        "skipped": true,
+        "reason": "furmark exited 1"
+      }
+    }
+  ]
+}
