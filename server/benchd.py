@@ -29,6 +29,8 @@ Config (first wins): --token/--join-token flags, $BENCHD_TOKEN/$BENCHD_JOIN_TOKE
 server/benchd.conf, ~/.config/benchd.conf, /etc/benchd.conf   (key=value).
   BENCHD_TOKEN=...              operator API bearer (never bake into a release)
   BENCHD_JOIN_TOKEN=...         registration-only token (safe to bake)
+  BENCHD_CORS_ORIGIN=...        one exact cross-origin dashboard (optional;
+                                same-origin is always allowed, never a wildcard)
 """
 import argparse
 import base64
@@ -58,6 +60,68 @@ DEFAULT_DB = os.path.join(HERE, "data", "benchd.sqlite")
 # never-sent Content-Length cannot pin a handler thread and its memory. Artifacts
 # (telemetry CSV, sensors dump, a screenshot) post separately and fit comfortably.
 MAX_BODY = 24 * 1024 * 1024
+
+# SEC-P2-003: in-process, per-client-IP abuse limits. Failed auth (401) attempts
+# and /api/v1/register calls each get a small token bucket (default 10/minute);
+# the operator token is never throttled. The counters live in memory only, so a
+# restart clears them, and they are attached to the HTTP server instance so a
+# test run that spins up several servers does not carry state between them.
+AUTH_RATE_LIMIT = 10
+AUTH_RATE_WINDOW = 60.0
+REGISTER_RATE_LIMIT = 10
+REGISTER_RATE_WINDOW = 60.0
+RATE_LIMITS = {"auth": (AUTH_RATE_LIMIT, AUTH_RATE_WINDOW),
+               "register": (REGISTER_RATE_LIMIT, REGISTER_RATE_WINDOW)}
+
+
+class BadJSON(Exception):
+    """A write request body was present but not a JSON object."""
+
+
+class TokenBucket:
+    """Tiny token bucket: `capacity` tokens refilled evenly over `window` seconds."""
+
+    def __init__(self, capacity, window):
+        self.capacity = float(capacity)
+        self.rate = float(capacity) / float(window)
+        self.tokens = float(capacity)
+        self.ts = time.time()
+
+    def take(self):
+        now = time.time()
+        self.tokens = min(self.capacity, self.tokens + (now - self.ts) * self.rate)
+        self.ts = now
+        if self.tokens >= 1.0:
+            self.tokens -= 1.0
+            return True
+        return False
+
+    def retry_after(self):
+        if self.tokens >= 1.0 or self.rate <= 0:
+            return 0
+        return int((1.0 - self.tokens) / self.rate) + 1
+
+
+class RateLimiter:
+    """Per-IP token buckets, keyed by kind ('auth' / 'register')."""
+
+    def __init__(self, limits=None):
+        self.limits = dict(limits or RATE_LIMITS)
+        self.lock = threading.Lock()
+        self.buckets = {}
+
+    def check(self, ip, kind):
+        """Return (allowed, retry_after_seconds) for this ip + bucket kind."""
+        with self.lock:
+            if len(self.buckets) > 10000:
+                self.buckets.clear()
+            b = self.buckets.get((ip, kind))
+            if b is None:
+                limit, window = self.limits.get(kind, (10, 60.0))
+                b = TokenBucket(limit, window)
+                self.buckets[(ip, kind)] = b
+            return b.take(), b.retry_after()
+
 
 SAMPLE_FIELDS = ["elapsed", "temp_c", "fan_pct", "power_w", "gpu_util",
                  "gpu_fan_rpm", "cpu_util", "ram_used", "sm_mhz"]
@@ -136,6 +200,10 @@ CREATE TABLE IF NOT EXISTS schedules (
   id TEXT PRIMARY KEY, runner_id TEXT, label TEXT, profile TEXT, kind TEXT,
   every_s INTEGER, at_time TEXT, next_run REAL, enabled INTEGER,
   last_run REAL, created REAL, last_status TEXT
+);
+CREATE TABLE IF NOT EXISTS audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, actor TEXT, action TEXT,
+  target TEXT, detail TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_runs_started ON runs(started);
 CREATE INDEX IF NOT EXISTS idx_runs_runner ON runs(runner_id);
@@ -218,6 +286,26 @@ class Store:
             except Exception:
                 self.conn.rollback()
                 raise
+
+    def delete_runner(self, runner_id):
+        """Delete a runner and everything it owns.
+
+        SEARCH-P2-002 / PRIV-P2-003: dropping only the runner row left its runs
+        (and their telemetry, logs, artifacts, phases, events and commands)
+        orphaned but still readable by run id. Each run goes through delete_run so
+        the same dependent-row set is cleared, then the runner's own commands and
+        schedules, then the runner row.
+        """
+        for r in self.q("SELECT id FROM runs WHERE runner_id=?", (runner_id,)):
+            self.delete_run(r["id"])
+        self.ex("DELETE FROM commands WHERE runner_id=?", (runner_id,))
+        self.ex("DELETE FROM schedules WHERE runner_id=?", (runner_id,))
+        return self.ex("DELETE FROM runners WHERE id=?", (runner_id,)).rowcount
+
+    def audit(self, actor, action, target=None, detail=None):
+        """Append one row to the audit trail (ACM-P2-003/005, ADMIN-P2-001, ...)."""
+        self.ex("INSERT INTO audit(ts,actor,action,target,detail) VALUES(?,?,?,?,?)",
+                (now(), actor, action, target, detail))
 
 
 # ----------------------------------------------------------------------- bus --
@@ -621,6 +709,7 @@ class Handler(BaseHTTPRequestHandler):
     bus = None
     token = None
     join_token = None
+    cors_origin = None
     web_dir = WEB_DIR
 
     # -- plumbing ----------------------------------------------------------
@@ -642,7 +731,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        # SEC-P2-002: never emit a wildcard. Only echo the request Origin when it
+        # is same-origin or an explicitly configured dashboard origin.
+        origin = self._origin_allowed()
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
         for k, v in (headers or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -651,8 +744,78 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
-    def _err(self, code, msg):
-        self._send(code, {"error": msg})
+    def _err(self, code, msg, headers=None):
+        self._send(code, {"error": msg}, headers=headers)
+
+    def _origin_allowed(self):
+        """The request Origin if it may receive CORS headers, else None.
+
+        Same-origin (the Origin host equals the request Host) is always allowed;
+        a configured ``cors_origin`` matches its exact value. Anything else gets
+        no Access-Control-Allow-Origin at all (not even '*'), so a foreign page
+        cannot read an authenticated response.
+        """
+        origin = self.headers.get("Origin")
+        if not origin:
+            return None
+        host = (self.headers.get("Host") or "").split(":")[0].lower()
+        try:
+            ohost = (urlparse(origin).hostname or "").lower()
+        except Exception:
+            ohost = ""
+        if ohost and host and ohost == host:
+            return origin
+        if self.cors_origin and origin == self.cors_origin:
+            return origin
+        return None
+
+    # -- rate limiting (SEC-P2-003) ---------------------------------------
+    def _client_ip(self):
+        return self.client_address[0] if self.client_address else "?"
+
+    def _limiter(self):
+        lim = getattr(self.server, "_bench_rate", None)
+        if lim is None:
+            lim = RateLimiter()
+            self.server._bench_rate = lim
+        return lim
+
+    def _limited(self, kind):
+        """(allowed, retry_after_seconds) for this client's bucket of that kind."""
+        return self._limiter().check(self._client_ip(), kind)
+
+    def _throttled(self, kind):
+        """The 429 response when a bucket is exhausted, else None."""
+        allowed, retry = self._limited(kind)
+        if allowed:
+            return None
+        return self._err(429, "too many requests", {"Retry-After": str(retry)})
+
+    def _deny(self, code, msg):
+        """An auth denial. A 401 feeds the per-IP bucket and may become a 429."""
+        if code == 401:
+            allowed, retry = self._limited("auth")
+            try:
+                if self.store is not None:
+                    self.store.audit("anonymous", "auth_fail", target=self.path)
+            except Exception:
+                pass
+            if not allowed:
+                return self._err(429, "too many requests", {"Retry-After": str(retry)})
+        return self._err(code, msg)
+
+    def _actor(self, q=None):
+        """Who is making this request, for the audit trail."""
+        if self.token is None:
+            return "operator"
+        if self._is_operator(q):
+            return "operator"
+        if self._is_join():
+            return "join"
+        r = self._runner_from_bearer()
+        if r:
+            return "runner:%s" % r["id"]
+        return "anonymous"
 
     def _capacity(self):
         """Row counts + on-disk size, so unbounded growth is visible in /health."""
@@ -680,10 +843,17 @@ class Handler(BaseHTTPRequestHandler):
         # client could pin a thread and its memory with one request
         if n > MAX_BODY:
             raise ValueError("body too large (%d > %d)" % (n, MAX_BODY))
-        try:
-            return json.loads(self.rfile.read(n).decode() or "{}")
-        except Exception:
+        raw = self.rfile.read(n).decode("utf-8", "replace")
+        if not raw.strip():
             return {}
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            # API-P2-001: a malformed body must be a 400, not a silent {}
+            raise BadJSON()
+        if not isinstance(obj, dict):
+            raise BadJSON()
+        return obj
 
     # -- auth --------------------------------------------------------------
     def _bearer(self):
@@ -758,7 +928,9 @@ class Handler(BaseHTTPRequestHandler):
     # -- dispatch ----------------------------------------------------------
     def do_OPTIONS(self):
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self._origin_allowed()
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
         self.send_header("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Authorization,Content-Type")
         self.send_header("Content-Length", "0")
@@ -777,7 +949,7 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/"):
             if path == "/api/v1/stream":
                 if not self._is_operator(q):
-                    return self._err(401, "unauthorized")
+                    return self._deny(401, "unauthorized")
                 return self._stream()
             m = re.match(r"^/api/v1/runners/([^/]+)/commands$", path)
             if m:
@@ -785,7 +957,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._err(403, "not your runner")
                 return self._runner_commands(m.group(1))
             if not self._is_operator(q):
-                return self._err(401, "unauthorized")
+                return self._deny(401, "unauthorized")
             try:
                 return self._api_get(path, q)
             except Exception as exc:
@@ -798,24 +970,26 @@ class Handler(BaseHTTPRequestHandler):
         if not path.startswith("/api/"):
             return self._err(404, "not found")
         if not self._is_operator(q):
-            return self._err(401, "unauthorized")
+            return self._deny(401, "unauthorized")
+        actor = self._actor(q)
         m = re.match(r"^/api/v1/schedules/([^/]+)$", path)
         if m:
             self.store.ex("DELETE FROM schedules WHERE id=?", (m.group(1),))
+            self.store.audit(actor, "schedule_delete", target=m.group(1))
             self.bus.publish({"event": "schedule", "data": {"id": m.group(1), "deleted": True}})
             return self._send(200, {"ok": True})
         m = re.match(r"^/api/v1/runs/([^/]+)$", path)
         if m:
             rid = m.group(1)
             self.store.delete_run(rid)
+            self.store.audit(actor, "run_delete", target=rid)
             self.bus.publish({"event": "run", "data": {"id": rid, "deleted": True}})
             return self._send(200, {"ok": True})
         m = re.match(r"^/api/v1/runners/([^/]+)$", path)
         if m:
             rid = m.group(1)
-            self.store.ex("DELETE FROM commands WHERE runner_id=?", (rid,))
-            self.store.ex("DELETE FROM schedules WHERE runner_id=?", (rid,))
-            self.store.ex("DELETE FROM runners WHERE id=?", (rid,))
+            self.store.delete_runner(rid)
+            self.store.audit(actor, "runner_delete", target=rid)
             self.bus.publish({"event": "runner", "data": {"id": rid, "deleted": True}})
             return self._send(200, {"ok": True})
         return self._err(404, "not found")
@@ -828,13 +1002,26 @@ class Handler(BaseHTTPRequestHandler):
         # The join token may register a runner and nothing else: it is accepted
         # only on /register, so it can never satisfy an operator gate elsewhere.
         if path == "/api/v1/register":
-            allowed = self._is_operator(q) or self._runner_ok() or self._is_join()
+            op = self._is_operator(q)
+            if not op:
+                # SEC-P2-003: registration is throttled per client IP, but a
+                # successful operator request is never limited.
+                over = self._throttled("register")
+                if over:
+                    return over
+            allowed = op or self._runner_ok() or self._is_join()
         else:
             allowed = self._is_operator(q) or self._runner_ok()
         if not allowed:
-            return self._err(401, "unauthorized")
+            return self._deny(401, "unauthorized")
         try:
-            return self._api_post(path, q, self._body())
+            body = self._body()
+        except BadJSON:
+            return self._err(400, "invalid json")
+        except ValueError as exc:
+            return self._err(413, str(exc))
+        try:
+            return self._api_post(path, q, body)
         except Exception as exc:
             return self._err(500, "%s: %s" % (type(exc).__name__, exc))
 
@@ -863,6 +1050,12 @@ class Handler(BaseHTTPRequestHandler):
                                     "server_time": now()})
         if path == "/api/v1/metrics":
             return self._send(200, {"metrics": METRICS})
+        if path == "/api/v1/audit":
+            # operator-only (the do_GET gate above), newest first
+            lim = int_arg(q, "limit", 100, 1, 1000)
+            rows = S.q("SELECT id,ts,actor,action,target,detail FROM audit "
+                       "ORDER BY id DESC LIMIT ?", (lim,))
+            return self._send(200, {"audit": rows})
         if path == "/api/v1/runners":
             return self._send(200, {"runners": [runner_public(r) for r in
                                                 S.q("SELECT * FROM runners ORDER BY name")]})
@@ -1047,7 +1240,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "close")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self._origin_allowed()
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
         self.end_headers()
         try:
             self._sse("snapshot", {"server_time": now()})
@@ -1127,7 +1322,7 @@ class Handler(BaseHTTPRequestHandler):
             rid = b.get("runner_id")
             if not op:
                 if not r:
-                    return self._err(401, "unauthorized")
+                    return self._deny(401, "unauthorized")
                 if rid and rid != r["id"]:
                     return self._err(403, "not your runner")
                 rid = r["id"]
@@ -1327,6 +1522,8 @@ class Handler(BaseHTTPRequestHandler):
               b.get("git"), key, mid, 1 if b.get("ephemeral") else 0, inst))
         r = runner_public(S.one("SELECT * FROM runners WHERE id=?", (rid,)))
         self.bus.publish({"event": "runner", "data": r})
+        S.audit(self._actor(), "register", target=rid,
+                detail="%s/%s" % (kind, inst) if inst else kind)
         return self._send(200, {"runner_id": rid, "api_key": key, "poll_interval": 2.0,
                                 "telemetry_interval": 1.0, "server_time": now()})
 
@@ -1342,6 +1539,7 @@ class Handler(BaseHTTPRequestHandler):
              (cid, rid, kind, json.dumps(b.get("payload") or {}), "queued", now()))
         self.bus.publish({"event": "command", "data": {"id": cid, "runner_id": rid,
                                                        "kind": kind, "status": "queued"}})
+        S.audit(self._actor(), "command", target=rid, detail=kind)
         return self._send(200, {"id": cid, "status": "queued"})
 
     def _create_schedule(self, b):
@@ -1361,6 +1559,7 @@ class Handler(BaseHTTPRequestHandler):
               kind, every_s, at_time, nxt, 1 if b.get("enabled", True) else 0, None, now(), None))
         s = schedule_public(S.one("SELECT * FROM schedules WHERE id=?", (sid,)))
         self.bus.publish({"event": "schedule", "data": s})
+        S.audit(self._actor(), "schedule_create", target=sid, detail=rid)
         return self._send(200, {"id": sid, "next_run": nxt})
 
     # -- static ------------------------------------------------------------
@@ -1500,9 +1699,7 @@ def reap_ephemeral_runners(store, bus):
     t = now()
     for r in store.q("SELECT id, last_seen FROM runners WHERE ephemeral=1"):
         if (t - (r["last_seen"] or 0)) > 60:
-            store.ex("DELETE FROM commands WHERE runner_id=?", (r["id"],))
-            store.ex("DELETE FROM schedules WHERE runner_id=?", (r["id"],))
-            store.ex("DELETE FROM runners WHERE id=?", (r["id"],))
+            store.delete_runner(r["id"])
             bus.publish({"event": "runner", "data": {"id": r["id"], "deleted": True}})
 
 
@@ -1581,6 +1778,16 @@ def find_join_token(cli_token):
             or find_conf_value("BENCHD_JOIN_TOKEN"))
 
 
+def find_cors_origin(cli_origin):
+    """Exact dashboard origin allowed to read CORS responses; None disables it.
+
+    Same-origin requests are always allowed (SEC-P2-002); this only adds one
+    explicitly configured cross-origin dashboard.
+    """
+    return (cli_origin or os.environ.get("BENCHD_CORS_ORIGIN")
+            or find_conf_value("BENCHD_CORS_ORIGIN"))
+
+
 def main():
     ap = argparse.ArgumentParser(description="bench-test control plane")
     ap.add_argument("--host", default="127.0.0.1")
@@ -1592,6 +1799,10 @@ def main():
                     help="registration-only join token: accepted by POST "
                          "/api/v1/register and nothing else, so it is safe to bake "
                          "into a public release")
+    ap.add_argument("--cors-origin", default=None,
+                    help="one exact dashboard origin allowed to read CORS "
+                         "responses (same-origin is always allowed); default is "
+                         "none, so no wildcard Access-Control-Allow-Origin is sent")
     ap.add_argument("--web", default=WEB_DIR)
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--allow-anonymous", action="store_true",
@@ -1602,6 +1813,7 @@ def main():
 
     token = find_token(a.token)
     join_token = find_join_token(a.join_token)
+    cors_origin = find_cors_origin(a.cors_origin)
     if token is None and not (a.allow_anonymous
                               or os.environ.get("BENCHD_ALLOW_ANONYMOUS") == "1"):
         print("[benchd] refusing to start: no BENCHD_TOKEN set. Set one (--token, "
@@ -1611,6 +1823,7 @@ def main():
     store = Store(a.db)
     Handler.store, Handler.bus, Handler.token, Handler.web_dir = store, Bus(), token, a.web
     Handler.join_token = join_token
+    Handler.cors_origin = cors_origin
     httpd = ThreadingHTTPServer((a.host, a.port), Handler)
     httpd.quiet = a.quiet
     httpd.daemon_threads = True

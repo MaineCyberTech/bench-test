@@ -129,8 +129,9 @@ UI-facing:
 | GET | `/trends?host=&metric=` | metric-over-time series + per-series median/p95/p99 |
 | GET | `/health` | public liveness + the control plane's commit (`git`) |
 | GET | `/metrics` | the metric catalogue (key → label) |
+| GET | `/audit?limit=N` | audit trail (newest first): `ts`, `actor`, `action`, `target`, `detail` (operator only) |
 | GET/POST/DELETE | `/schedules` · `/schedules/<id>` | list / create / remove recurring runs (operator only) |
-| DELETE | `/runs/<id>` · `/runners/<id>` | delete a run (+data) / a runner (+its commands & schedules) |
+| DELETE | `/runs/<id>` · `/runners/<id>` | delete a run (+data) / a runner (+its runs and their data, commands & schedules) |
 | POST | `/runners/<id>/commands` | issue `start`/`stop`/`update`/`fan_curve`/`power_limit`/`restart`/`shutdown`/`reboot`/`exec`/`shell`/`update_toolkit`/`iso_fetch`/`iso_write`/`iso_write_slot` (operator only) |
 
 Runner-scoped routes (`/register`, heartbeat, `/runners/<id>/commands`, command
@@ -218,6 +219,22 @@ pct exec 108 -- systemctl mask tmp.mount run-lock.mount dev-mqueue.mount
   onboarding; keep `BENCHD_TOKEN` operator-only and rotate it if it ever leaks.
 - Bind to the LAN/lab address only. On the lab overlay it is reachable over the
   `wgaudit0` WireGuard network — keep `wg0` untouched.
+- **CORS is same-origin by default.** No wildcard `Access-Control-Allow-Origin` is
+  sent; the header is echoed only when the request `Origin` is the request's own
+  host, or exactly matches `--cors-origin` / `$BENCHD_CORS_ORIGIN` (one dashboard
+  origin). OPTIONS preflight still works.
+- **Abuse limits (in-process, per client IP).** Failed auth attempts and
+  `/api/v1/register` calls are each token-bucketed at 10/minute; over the limit the
+  server answers `429` with `Retry-After`. Successful operator requests are never
+  limited. Counters are in memory and reset on restart.
+- **Audit trail.** Privileged actions append a row to the `audit` table (readable
+  at `GET /api/v1/audit`, operator only, newest first): runner registration,
+  command issuance (with the kind), run/runner/schedule deletion, and auth
+  failures (`actor=anonymous`). Actors are `operator`, `join`, `runner:<id>` or
+  `anonymous`; the shared operator token is one identity, so per-user attribution
+  still needs per-user accounts (see Roadmap).
+- A write request whose body is not a JSON object is rejected with
+  `400 {"error":"invalid json"}` instead of being treated as `{}`.
 - Put a TLS reverse proxy in front if it is ever exposed beyond the lab.
 - `server/benchd.conf`, `server/data/` and `~/.config/bench-agent.json` are
   git-ignored — never commit the token, keys or the database.
