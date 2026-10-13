@@ -1,0 +1,15 @@
+version: 2
+
+# DET-P3-001: keep GitHub Actions (now SHA-pinned, so updates matter) and the
+# Python dependencies current with a weekly PR.
+
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
