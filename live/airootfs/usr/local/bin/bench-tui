@@ -6,8 +6,9 @@ set -u
 if [ -f /usr/local/bin/bench-agent-env ]; then
     . /usr/local/bin/bench-agent-env
 else
-    for c in /etc/bench-agent.conf /mnt/benchdata/bench-agent.conf; do
-        if [ -f "$c" ]; then set -a; . "$c"; set +a; break; fi
-    done
+    # No fallback: sourcing bench-agent.conf as root would execute whatever a FAT
+    # partition anyone can write contains. bench-agent-env parses the known keys
+    # instead, and it ships in this image.
+    echo "[bench] /usr/local/bin/bench-agent-env missing - starting without control-plane config" >&2
 fi
 exec /usr/bin/python /opt/bench-test/bench/tui.py "$@"

@@ -1,7 +1,10 @@
 [Unit]
 Description=bench-test dashboard on %I
-After=getty@%i.service
-Conflicts=getty@%i.service
+# With console=ttyS0,115200 on the cmdline, systemd's getty generator also
+# instantiates serial-getty@ttyS0.service, which would fight this dashboard for
+# the tty. Conflict with and start after both getty flavours for %i.
+After=getty@%i.service serial-getty@%i.service
+Conflicts=getty@%i.service serial-getty@%i.service
 
 [Service]
 Type=simple

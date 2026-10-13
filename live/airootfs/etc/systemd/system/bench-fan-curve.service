@@ -1,6 +1,7 @@
 [Unit]
 Description=bench-test GPU fan curve daemon
-After=multi-user.target
+# Same cycle as bench-fan-auto: order before multi-user.target, not after it.
+Before=multi-user.target
 ConditionPathExists=/etc/bench-fan-curve.conf
 
 [Service]

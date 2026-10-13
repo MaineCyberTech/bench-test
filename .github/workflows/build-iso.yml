@@ -42,7 +42,7 @@ on:
       - "live/**"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: build-iso-${{ inputs.gpu || 'nvidia-legacy' }}
@@ -55,8 +55,15 @@ jobs:
     # ubuntu-latest when the lab is unavailable.
     runs-on: ${{ fromJSON(inputs.runner_labels || '["self-hosted","linux","x64","lab-iso"]') }}
     timeout-minutes: 120
+    # This single job both builds and attaches the release, so the write scope has
+    # to live here; splitting the release out would move the multi-GB ISO through
+    # artifact storage, which is deliberately avoided. Everything else is read-only.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Read version
         id: ver
@@ -102,7 +109,9 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           cp "$ISO_PATH" "dist/bench-live-${{ inputs.gpu || 'nvidia-legacy' }}.iso"
-          sha256sum dist/*.iso | tee dist/SHA256SUMS
+          # record the bare filename (no dist/ prefix): the documented reassembly
+          # happens in a download dir and `sha256sum -c SHA256SUMS` must find it
+          (cd dist && sha256sum *.iso > SHA256SUMS)
           cp VERSION dist/bench-version.txt
           du -h dist/*.iso
           # GitHub release assets are capped at 2 GiB; ship <2GiB parts
@@ -116,7 +125,7 @@ jobs:
 
       - name: Attach to release
         if: ${{ inputs.upload_release == '' || inputs.upload_release }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.6.2
         with:
           tag_name: iso-${{ inputs.gpu || 'nvidia-legacy' }}-${{ github.run_number }}
           name: "ISO ${{ inputs.gpu || 'nvidia-legacy' }} v${{ steps.ver.outputs.version }} #${{ github.run_number }}"

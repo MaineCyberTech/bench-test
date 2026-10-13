@@ -160,22 +160,33 @@ for f in "$PROFILE/grub/grub.cfg" "$PROFILE/grub/loopback.cfg"; do
     [ -f "$f" ] && sed -i -E 's/^(linux .*)$/\1 nvidia_drm.modeset=1 nvidia_drm.fbdev=1 copytoram=y/' "$f"
 done
 
-# toolkit into the image (no git/venv/results/ISOs/PACKAGED SECRETS)
+# toolkit into the image (no git/venv/results/ISOs/dist bundles/build leftovers/PACKAGED SECRETS)
 mkdir -p "$PROFILE/airootfs/opt/bench-test"
 rsync -a \
     --exclude '.git' --exclude '.venv' --exclude 'results' --exclude 'live/out*' \
     --exclude 'live/private' --exclude 'server/data' --exclude 'server/benchd.conf' \
+    --exclude 'dist' --exclude '__pycache__' --exclude '*.log' \
     "$REPO/" "$PROFILE/airootfs/opt/bench-test/"
 
-# the image must never carry private credentials — fail the build if it does
+# the image must never carry private credentials or build leftovers — fail the build if it does
 for bad in "$PROFILE/airootfs/opt/bench-test/live/private" \
            "$PROFILE/airootfs/opt/bench-test/server/benchd.conf" \
-           "$PROFILE/airootfs/opt/bench-test/.git"; do
+           "$PROFILE/airootfs/opt/bench-test/.git" \
+           "$PROFILE/airootfs/opt/bench-test/.venv" \
+           "$PROFILE/airootfs/opt/bench-test/results" \
+           "$PROFILE/airootfs/opt/bench-test/dist" \
+           "$PROFILE/airootfs/opt/bench-test/server/data"; do
     if [ -e "$bad" ]; then
-        echo "[build] ERROR: private file leaked into the image: $bad" >&2
+        echo "[build] ERROR: excluded path leaked into the image: $bad" >&2
         exit 1
     fi
 done
+# logs and bytecode caches are excluded from the rsync above; verify none slipped in
+if find "$PROFILE/airootfs/opt/bench-test" \( -name '*.log' -o -name '__pycache__' -o -name '*.pyc' \) \
+        -print -quit | grep -q .; then
+    echo "[build] ERROR: logs or bytecode leaked into the image" >&2
+    exit 1
+fi
 
 # stamp the toolkit identity so a flashed stick can report which build it runs
 # (the fleet view then shows "update available" against the latest main)
@@ -244,7 +255,10 @@ ln -sf ../bench-boot-attempt.service \
 ln -sf ../bench-boot-confirm.service \
     "$PROFILE/airootfs/etc/systemd/system/multi-user.target.wants/bench-boot-confirm.service"
 
-# exec permissions for our helpers
+# exec permissions for our helpers. The optional private configs are installed
+# mode 600, but mkarchiso re-copies airootfs with --no-preserve=ownership,mode, so
+# the modes must be re-applied here; for a file that was not baked mkarchiso warns
+# and continues (the build never carries an empty placeholder config).
 cat >> "$PROFILE/profiledef.sh" <<'EOF'
 
 file_permissions+=(
@@ -259,6 +273,8 @@ file_permissions+=(
   ["/usr/local/bin/bench-upload"]="0:0:755"
   ["/opt/bench-test/bench/Run-LinuxBench.sh"]="0:0:755"
   ["/opt/bench-test/tools/furmark/FurMark_linux64/furmark"]="0:0:755"
+  ["/etc/bench-agent.conf"]="0:0:600"
+  ["/etc/bench-upload.conf"]="0:0:600"
 )
 EOF
 

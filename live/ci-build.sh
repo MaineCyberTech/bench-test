@@ -54,6 +54,9 @@ build_native() {
 
 build_container() {
     echo "[ci] non-Arch runner - building inside an archlinux container"
+    # NOTE (audit, not implemented): `archlinux:latest` is a mutable tag, so the
+    # build toolchain can change between runs. Pin it by digest
+    # (archlinux@sha256:<digest>) when the build image is settled.
     docker run --rm --privileged \
         -v "$REPO:/work" -w /work \
         -v "$WORKROOT:/bigwork" \

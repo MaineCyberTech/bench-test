@@ -2,5 +2,13 @@
 # Upload the newest bench-test results to GitHub (live USB wrapper).
 # Config: /mnt/benchdata/bench-upload.conf (see bench/upload.py for the format)
 set -u
+# Mount BENCHDATA and export the control-plane env first (like bench-tui): the
+# upload config lives on the stick and find_conf() cannot see it until that
+# partition is mounted.
+if [ -f /usr/local/bin/bench-agent-env ]; then
+    . /usr/local/bin/bench-agent-env
+else
+    echo "[bench] /usr/local/bin/bench-agent-env missing - BENCHDATA may stay unmounted" >&2
+fi
 REPO=/opt/bench-test
 exec python3 "$REPO/bench/upload.py" "${1:-$REPO/results}"

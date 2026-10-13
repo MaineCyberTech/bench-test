@@ -23,7 +23,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-tag
@@ -32,11 +32,15 @@ concurrency:
 jobs:
   tag:
     runs-on: ubuntu-latest
+    # the only job that writes: it commits VERSION and pushes the release tag
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0          # tags + history are needed to describe
           fetch-tags: true
+          persist-credentials: false
 
       - name: Decide the next version
         id: ver
@@ -80,8 +84,13 @@ jobs:
 
       - name: Point VERSION at the release
         if: ${{ steps.ver.outputs.next != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          # persist-credentials is off, so authenticate the push explicitly with
+          # the job's scoped token instead of leaving it in .git/config.
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           printf '%s\n' "${{ steps.ver.outputs.next }}" > VERSION
           if ! git diff --quiet -- VERSION; then
             git config user.name  "bench-test release bot"

@@ -1,6 +1,11 @@
 [Unit]
 Description=bench-test: confirm the booted A/B slot
-After=multi-user.target
+# Same shape as bench-boot-attempt.service: a unit that is WantedBy=multi-user.target
+# must not be ordered After=multi-user.target, or the boot transaction contains a
+# cycle and systemd's breaker drops this unit from every boot (attempts never reset).
+DefaultDependencies=no
+After=local-fs.target bench-boot-attempt.service
+Before=multi-user.target
 
 [Service]
 Type=oneshot

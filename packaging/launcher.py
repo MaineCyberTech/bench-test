@@ -42,14 +42,18 @@ def _target(argv0):
     return "tui.py"
 
 
-def _app_args(argv):
+def _app_args(argv, exe=None):
     """The app's own arguments.
 
-    An older `restart_self` re-passed the whole argv, which for a launcher bundle
-    meant the *script path* arrived as the first argument; the app then died on an
-    unknown positional (the window closed and nothing came back). Drop it if seen.
+    An older `restart_self`, `gui.py`'s `_restart_runner` or `agent.py`'s exec
+    re-passed the whole argv. For a launcher bundle the app's argv[0] is the
+    *script path*, so the successor receives that first; a frozen app whose
+    argv[0] is the exe instead hands over the exe path. Drop either shape if seen.
     """
     args = list(argv[1:])
+    me = os.path.normcase(os.path.abspath(exe or sys.executable or ""))
+    if args and me and os.path.normcase(os.path.abspath(args[0])) == me:
+        args = args[1:]
     if args and args[0].lower().endswith(".py") and os.path.isfile(args[0]):
         args = args[1:]
     return args

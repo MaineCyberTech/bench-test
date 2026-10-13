@@ -1,6 +1,10 @@
 [Unit]
 Description=bench-test: enable the GPU fan curve when the hardware supports it
-After=bench-dkms.service multi-user.target
+# Started as part of reaching multi-user.target, never after it: After=multi-user.target
+# together with WantedBy=multi-user.target is an ordering cycle, so systemd's
+# transaction breaker silently deleted this unit and the boot-time curve never ran.
+After=bench-dkms.service
+Before=multi-user.target
 Wants=bench-dkms.service
 
 [Service]

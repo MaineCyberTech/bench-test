@@ -1,0 +1,7 @@
+# Live-USB files the root .gitattributes misses: the helpers under
+# usr/local/bin are extensionless (no *.sh/*.py rule applies) and the pacman
+# package lists are *.x86_64. A Windows checkout gives them CRLF, and
+# Build-LiveUSB.sh copies the working tree verbatim into the image, so the
+# baked shebangs would end in a CR and the package list would carry CR bytes.
+airootfs/usr/local/bin/* text eol=lf
+packages*.x86_64 text eol=lf

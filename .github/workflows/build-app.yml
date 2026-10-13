@@ -17,7 +17,7 @@ on:
       - ".github/workflows/build-app.yml"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: build-app-${{ github.ref }}
@@ -37,6 +37,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -92,8 +94,13 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    # the only job that writes: it attaches the release assets
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Read version
         id: ver
         run: echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
@@ -101,7 +108,7 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.6.2
         with:
           tag_name: app-${{ github.run_number }}
           name: "App bundles v${{ steps.ver.outputs.version }} #${{ github.run_number }}"
