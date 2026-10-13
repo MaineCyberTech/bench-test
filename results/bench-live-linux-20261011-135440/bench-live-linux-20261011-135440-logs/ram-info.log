@@ -1,2 +1,0 @@
-RAM total=15.6GiB available=14.9GiB used=4.4% cpus=8 numpy=2.5.4
-RESULT_JSON:{"phase": "info", "total_gib": 15.6, "available_gib": 14.9, "used_pct": 4.4, "logical_cpus": 8, "numpy": "2.5.4"}

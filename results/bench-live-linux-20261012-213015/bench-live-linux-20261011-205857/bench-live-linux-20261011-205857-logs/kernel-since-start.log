@@ -1,6 +1,0 @@
-Oct 11 21:00:18 bench-live kernel: logitech-hidpp-device 0003:046D:4069.000B: HID++ 4.5 device connected.
-Oct 11 21:12:24 bench-live kernel: audit: type=1130 audit(1791753144.126:118): pid=1 uid=0 auid=4294967295 ses=4294967295 msg='unit=systemd-tmpfiles-clean comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
-Oct 11 21:12:24 bench-live kernel: audit: type=1131 audit(1791753144.126:119): pid=1 uid=0 auid=4294967295 ses=4294967295 msg='unit=systemd-tmpfiles-clean comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
-Oct 11 21:34:35 bench-live kernel: perf: interrupt took too long (2529 > 2500), lowering kernel.perf_event_max_sample_rate to 79000
-Oct 11 21:37:40 bench-live kernel: perf: interrupt took too long (3172 > 3161), lowering kernel.perf_event_max_sample_rate to 63000
-Oct 11 21:40:37 bench-live kernel: perf: interrupt took too long (3986 > 3965), lowering kernel.perf_event_max_sample_rate to 50000

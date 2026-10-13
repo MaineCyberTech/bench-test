@@ -1,2 +1,0 @@
-disk steadywrite 10 GiB: first10=170 last10=201 overall=162 MB/s (drop -18%)
-RESULT_JSON:{"phase": "steadywrite", "gib": 10, "seconds": 66.3, "overall_mbps": 161.8, "first10_mbps": 170.4, "last10_mbps": 200.9, "drop_pct": -17.9}

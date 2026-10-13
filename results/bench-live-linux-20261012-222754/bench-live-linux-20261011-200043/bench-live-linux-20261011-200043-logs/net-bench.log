@@ -1,4 +1,0 @@
-ping min/avg/max 32.3/36.3/41.6 ms (1.1.1.1)
-download 216.6 Mbps
-upload 41.7 Mbps
-RESULT_JSON:{"phase": "bench", "target": "1.1.1.1", "ping_ms": {"min": 32.264, "avg": 36.287, "max": 41.562}, "download_mbps": 216.6, "download_bytes": 104857600, "upload_mbps": 41.7}

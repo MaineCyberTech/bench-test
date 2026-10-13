@@ -1,7 +1,0 @@
-Oct 12 03:13:11 bench-live kernel: logitech-hidpp-device 0003:046D:4069.000B: HID++ 4.5 device connected.
-Oct 12 03:22:51 bench-live kernel: furmark[8587]: segfault at 0 ip 00007fe1c36ceefa sp 00007ffd1e8d1f48 error 4 in libc.so.6[baefa,7fe1c3638000+17b000] likely on CPU 4 (core 0, socket 0)
-Oct 12 03:22:51 bench-live kernel: Code: f3 0f 1e fa 66 0f ef c0 66 0f ef c9 66 0f ef d2 66 0f ef db 48 89 f8 48 89 f9 48 81 e1 ff 0f 00 00 48 81 f9 cf 0f 00 00 77 66 <f3> 0f 6f 20 66 0f 74 e0 66 0f d7 d4 85 d2 74 04 0f bc c2 c3 48 83
-Oct 12 03:22:51 bench-live kernel: audit: type=1701 audit(1791775371.469:118): auid=4294967295 uid=0 gid=0 ses=4294967295 pid=8587 comm="furmark" exe="/opt/bench-test/tools/furmark/FurMark_linux64/furmark" sig=11 res=1
-Oct 12 03:22:51 bench-live kernel: audit: type=1701 audit(1791775371.592:119): auid=4294967295 uid=0 gid=0 ses=4294967295 pid=8586 comm="timeout" exe="/usr/bin/timeout" sig=11 res=1
-Oct 12 03:24:09 bench-live kernel: audit: type=1130 audit(1791775449.385:120): pid=1 uid=0 auid=4294967295 ses=4294967295 msg='unit=systemd-tmpfiles-clean comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
-Oct 12 03:24:09 bench-live kernel: audit: type=1131 audit(1791775449.385:121): pid=1 uid=0 auid=4294967295 ses=4294967295 msg='unit=systemd-tmpfiles-clean comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'

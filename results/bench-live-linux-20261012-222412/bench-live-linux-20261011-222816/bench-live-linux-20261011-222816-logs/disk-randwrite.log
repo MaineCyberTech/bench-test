@@ -1,2 +1,0 @@
-disk randwrite 6994 IOPS, 28.6 MB/s (r=0 w=1448719)
-RESULT_JSON:{"phase": "randwrite", "seconds": 207.1, "ops": 1448719, "reads": 0, "writes": 1448719, "iops": 6994.0, "mbps": 28.6}

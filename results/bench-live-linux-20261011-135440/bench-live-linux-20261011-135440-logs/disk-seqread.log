@@ -1,2 +1,0 @@
-disk seqread 8807 MB/s (0.2 s for 2048 MiB)
-RESULT_JSON:{"phase": "seqread", "size_mb": 2048, "seconds": 0.23, "mbps": 8807.5}

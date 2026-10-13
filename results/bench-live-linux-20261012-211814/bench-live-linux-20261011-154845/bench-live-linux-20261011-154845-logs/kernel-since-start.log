@@ -1,8 +1,0 @@
-Oct 11 15:49:05 bench-live kernel: audit: type=1131 audit(1791733745.992:111): pid=1 uid=0 auid=4294967295 ses=4294967295 msg='unit=systemd-hostnamed comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
-Oct 11 15:49:06 bench-live kernel: audit: type=1334 audit(1791733746.010:112): prog-id=64 op=UNLOAD
-Oct 11 15:49:06 bench-live kernel: audit: type=1130 audit(1791733746.256:113): pid=1 uid=0 auid=4294967295 ses=4294967295 msg='unit=systemd-time-wait-sync comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
-Oct 11 15:49:06 bench-live kernel: audit: type=1130 audit(1791733746.334:114): pid=1 uid=0 auid=4294967295 ses=4294967295 msg='unit=gpg-agent@etc-pacman.d-gnupg comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
-Oct 11 15:49:12 bench-live kernel: audit: type=1130 audit(1791733752.317:115): pid=1 uid=0 auid=4294967295 ses=4294967295 msg='unit=pacman-init comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
-Oct 11 16:03:05 bench-live kernel: audit: type=1130 audit(1791734585.948:116): pid=1 uid=0 auid=4294967295 ses=4294967295 msg='unit=systemd-tmpfiles-clean comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
-Oct 11 16:03:05 bench-live kernel: audit: type=1131 audit(1791734585.949:117): pid=1 uid=0 auid=4294967295 ses=4294967295 msg='unit=systemd-tmpfiles-clean comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
-Oct 11 16:28:36 bench-live kernel: perf: interrupt took too long (2520 > 2500), lowering kernel.perf_event_max_sample_rate to 79000

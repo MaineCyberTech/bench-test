@@ -1,5 +1,0 @@
-Oct 12 18:20:03 bench-live kernel: perf: interrupt took too long (4968 > 4960), lowering kernel.perf_event_max_sample_rate to 40000
-Oct 12 18:26:46 bench-live kernel: furmark[32931]: segfault at 0 ip 00007f9cc07dbefa sp 00007ffd3c3e7ee8 error 4 in libc.so.6[baefa,7f9cc0745000+17b000] likely on CPU 4 (core 0, socket 0)
-Oct 12 18:26:46 bench-live kernel: Code: f3 0f 1e fa 66 0f ef c0 66 0f ef c9 66 0f ef d2 66 0f ef db 48 89 f8 48 89 f9 48 81 e1 ff 0f 00 00 48 81 f9 cf 0f 00 00 77 66 <f3> 0f 6f 20 66 0f 74 e0 66 0f d7 d4 85 d2 74 04 0f bc c2 c3 48 83
-Oct 12 18:26:46 bench-live kernel: audit: type=1701 audit(1791829606.549:122): auid=4294967295 uid=0 gid=0 ses=4294967295 pid=32931 comm="furmark" exe="/opt/bench-test/tools/furmark/FurMark_linux64/furmark" sig=11 res=1
-Oct 12 18:26:46 bench-live kernel: audit: type=1701 audit(1791829606.682:123): auid=4294967295 uid=0 gid=0 ses=4294967295 pid=32930 comm="timeout" exe="/usr/bin/timeout" sig=11 res=1

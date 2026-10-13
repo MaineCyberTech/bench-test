@@ -1,2 +1,0 @@
-fan check: no-fan-response (temp 23.0 -> 62.0 °C, fan 27.0 -> 34.0 %, rpm max None)
-RESULT_JSON:{"cmd": "check", "seconds": 90, "vendor": "nvidia", "temp_start": 23.0, "temp_max": 62.0, "fan_start_pct": 27.0, "fan_max_pct": 34.0, "fan_max_rpm": null, "verdict": "no-fan-response"}

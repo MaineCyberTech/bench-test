@@ -1,2 +1,0 @@
-disk path=/mnt/benchdata total=24.4GiB free=24.4GiB
-RESULT_JSON:{"phase": "info", "path": "/mnt/benchdata", "total_gib": 24.4, "free_gib": 24.4}

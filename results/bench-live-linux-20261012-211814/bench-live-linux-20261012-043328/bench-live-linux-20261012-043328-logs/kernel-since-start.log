@@ -1,9 +1,0 @@
-Oct 12 04:47:18 bench-live kernel: audit: type=1130 audit(1791780438.175:118): pid=1 uid=0 auid=4294967295 ses=4294967295 msg='unit=systemd-tmpfiles-clean comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
-Oct 12 04:47:18 bench-live kernel: audit: type=1131 audit(1791780438.175:119): pid=1 uid=0 auid=4294967295 ses=4294967295 msg='unit=systemd-tmpfiles-clean comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
-Oct 12 04:53:02 bench-live kernel: furmark[12911]: segfault at 0 ip 00007f6ec65afefa sp 00007fff7f6f7888 error 4 in libc.so.6[baefa,7f6ec6519000+17b000] likely on CPU 0 (core 0, socket 0)
-Oct 12 04:53:02 bench-live kernel: Code: f3 0f 1e fa 66 0f ef c0 66 0f ef c9 66 0f ef d2 66 0f ef db 48 89 f8 48 89 f9 48 81 e1 ff 0f 00 00 48 81 f9 cf 0f 00 00 77 66 <f3> 0f 6f 20 66 0f 74 e0 66 0f d7 d4 85 d2 74 04 0f bc c2 c3 48 83
-Oct 12 04:53:02 bench-live kernel: audit: type=1701 audit(1791780782.807:120): auid=4294967295 uid=0 gid=0 ses=4294967295 pid=12911 comm="furmark" exe="/opt/bench-test/tools/furmark/FurMark_linux64/furmark" sig=11 res=1
-Oct 12 04:53:02 bench-live kernel: audit: type=1701 audit(1791780782.936:121): auid=4294967295 uid=0 gid=0 ses=4294967295 pid=12910 comm="timeout" exe="/usr/bin/timeout" sig=11 res=1
-Oct 12 04:56:26 bench-live kernel: perf: interrupt took too long (2516 > 2500), lowering kernel.perf_event_max_sample_rate to 79000
-Oct 12 05:00:40 bench-live kernel: perf: interrupt took too long (3172 > 3145), lowering kernel.perf_event_max_sample_rate to 63000
-Oct 12 05:04:33 bench-live kernel: perf: interrupt took too long (3985 > 3965), lowering kernel.perf_event_max_sample_rate to 50000
