@@ -925,4 +925,13 @@ if [ "$SUMMARY_RC" -ne 0 ]; then
         echo "results dir: $OUT"
     } >> "$LOGDIR/summary-error.txt" 2>/dev/null || true
 fi
+
+# Exit non-zero only if nothing ran at all. One phase failing is recorded in the
+# summary and the run is still a run; a battery that produced no records at all
+# (no python, no vendor tools, a broken environment) has to be visible to the
+# caller instead of looking like a successful run.
+if ! grep -q '"group"' "$JSONL" 2>/dev/null; then
+    echo "[fail] no phase produced a result - see $LOGDIR" >&2
+    exit 1
+fi
 exit 0

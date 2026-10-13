@@ -42,7 +42,7 @@ $mon = Start-Job -ScriptBlock {
     for ($i = 0; $i -lt $n; $i++) {
         $l = & nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,power.draw,clocks.sm,memory.used,fan.speed --format=csv,noheader 2>$null
         if ($l -match ',') {
-            $p = $l -split ',' | ForEach-Object { [double](($_ -replace '[^0-9\.]', '')) }
+            $p = $l -split ',' | ForEach-Object { $t = ($_ -replace '[^0-9\.]', ''); if ($t -eq '' -or $t -eq '.') { $null } else { [double]$t } }
             [void]$a.Add([pscustomobject]@{ util = $p[0]; temp = $p[1]; power = $p[2]; sm = $p[3]; mem = $p[4]; fan = $p[5] })
         }
         Start-Sleep -Seconds $iv
@@ -76,7 +76,7 @@ if ($n -gt 20) {
     }
 } else { $drift = @{ note = 'too few loaded samples' } }
 
-$throttle = & nvidia-smi -q -d PERFORMANCE 2>$null | Select-String -Pattern 'SW Power Cap|HW Thermal Slowdown|HW Slowdown|HW Power Braking|SW Thermal' | ForEach-Object { $_.Line.Trim() }
+$throttle = & nvidia-smi -q -d PERFORMANCE 2>$null | Select-String -Pattern 'SW Power Cap|HW Thermal Slowdown|HW Slowdown|HW Power Braking|SW Thermal' | Where-Object { $_.Line -notmatch 'Not Active' } | ForEach-Object { $_.Line.Trim() }
 $ev = Get-WinEvent -FilterHashtable @{ LogName = 'System'; StartTime = (Get-Date).AddHours(-($Hours + 1)) } -ErrorAction SilentlyContinue |
     Where-Object { $_.Id -eq 4101 -or $_.ProviderName -match 'nvlddmkm|WHEA|BugCheck' }
 

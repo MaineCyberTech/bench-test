@@ -18,6 +18,9 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $hostname = $env:COMPUTERNAME
 $base = Join-Path $OutDir "$hostname-$stamp"
+# The stability scan must cover the whole run: a TDR an hour into a soak is
+# exactly what it looks for, and a one-minute window at the end would miss it.
+$runStart = Get-Date
 
 function Get-TelemetryStats($samples) {
     if (-not $samples -or $samples.Count -eq 0) { return $null }
@@ -42,7 +45,7 @@ function Invoke-Phase($name, $extraArgs, $telemetrySeconds) {
                 if ($smi) {
                     $line = & nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,power.draw,clocks.sm,memory.used,fan.speed --format=csv,noheader 2>$null
                     if ($line -match ',') {
-                        $p = $line -split ',' | ForEach-Object { [double](($_ -replace '[^0-9\.]', '')) }
+                        $p = $line -split ',' | ForEach-Object { $t = ($_ -replace '[^0-9\.]', ''); if ($t -eq '' -or $t -eq '.') { $null } else { [double]$t } }
                         $s += [pscustomobject]@{ util = $p[0]; temp = $p[1]; power = $p[2]; sm = $p[3]; mem = $p[4]; fan = $p[5] }
                     }
                 } else {
@@ -53,7 +56,7 @@ function Invoke-Phase($name, $extraArgs, $telemetrySeconds) {
                         $sum = ($c | Where-Object { $_.InstanceName -match 'engtype_3D' } | Measure-Object CookedValue -Sum).Sum
                         if ($sum) { $u = [math]::Min(100.0, [math]::Round($sum, 1)) }
                     } catch { }
-                    $s += [pscustomobject]@{ util = $u; temp = 0; power = 0; sm = 0; mem = 0; fan = 0 }
+                    $s += [pscustomobject]@{ util = $u; temp = $null; power = $null; sm = $null; mem = $null; fan = $null }
                 }
                 Start-Sleep -Milliseconds 1000
             }
@@ -107,11 +110,11 @@ if ($UntilStable) { $soakArgs += @('--until-stable', '--stable-hold', "$StableHo
 $phases += Invoke-Phase 'soak' $soakArgs $SoakSeconds
 
 # --- stability scan ---
-$ev = Get-WinEvent -FilterHashtable @{ LogName = 'System'; StartTime = (Get-Date).AddMinutes(-1) } -ErrorAction SilentlyContinue |
+$ev = Get-WinEvent -FilterHashtable @{ LogName = 'System'; StartTime = $runStart } -ErrorAction SilentlyContinue |
     Where-Object { $_.Id -eq 4101 -or $_.ProviderName -match 'nvlddmkm|WHEA|BugCheck' }
 $throttle = @()
 if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
-    $throttle = @(& nvidia-smi -q -d PERFORMANCE 2>$null | Select-String -Pattern 'SW Power Cap|HW Thermal Slowdown|HW Slowdown|HW Power Braking|SW Thermal' |
+    $throttle = @(& nvidia-smi -q -d PERFORMANCE 2>$null | Select-String -Pattern 'SW Power Cap|HW Thermal Slowdown|HW Slowdown|HW Power Braking|SW Thermal' | Where-Object { $_.Line -notmatch 'Not Active' } |
         ForEach-Object { $_.Line.Trim() })
 }
 $stability = [ordered]@{

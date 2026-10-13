@@ -44,7 +44,7 @@ $mon = Start-Job -ScriptBlock {
         $os = Get-CimInstance Win32_OperatingSystem
         $cpu = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
         if ($l -match ',') {
-            $p = $l -split ',' | ForEach-Object { [double](($_ -replace '[^0-9\.]', '')) }
+            $p = $l -split ',' | ForEach-Object { $t = ($_ -replace '[^0-9\.]', ''); if ($t -eq '' -or $t -eq '.') { $null } else { [double]$t } }
             $a += [pscustomobject]@{ gpu = $p[0]; temp = $p[1]; power = $p[2]; sm = $p[3]; fan = $p[4]
                 cpu = [math]::Round($cpu, 0); freeMiB = [math]::Round($os.FreePhysicalMemory / 1024, 0) }
         }

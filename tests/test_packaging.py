@@ -6,6 +6,9 @@ up by load_conf(), and that write_agent_conf() writes it from the build env.
 """
 import importlib.util
 import os
+import re
+import shutil
+import subprocess
 import tempfile
 
 from harness import Checker, BENCH, REPO
@@ -90,6 +93,76 @@ def run():
         tui = fh.read()
     c.check("TUI kills the run tree on close (taskkill + teardown)",
             "_kill_tree" in tui and "taskkill" in tui and "def teardown" in tui, "")
+
+    # ---- the PS phase telemetry must not invent zeros ----
+    # nvidia-smi prints N/A for a sensor it cannot read; stripping non-digits leaves ''
+    # and [double]('') is 0, so an unreadable sensor was recorded as a real zero and
+    # dragged the phase averages down. The parse yields $null now, which Measure-Object
+    # skips, and the AMD/Intel fallback (util counter only) leaves the rest unknown.
+    ps = shutil.which("powershell") or shutil.which("pwsh")
+    parse_re = re.compile(
+        r"^[ \t]*(\$p = \$line -split ',' \| ForEach-Object \{[^\n]*\})[ \t]*$", re.M)
+    for f in ("Invoke-GpuBench.ps1", "Invoke-CombinedStress.ps1",
+              "Invoke-FullSystemSoak.ps1", "Invoke-LongSoak.ps1"):
+        with open(os.path.join(BENCH, f), encoding="utf-8", errors="replace") as fh:
+            src = fh.read()
+        c.check("%s records an unreadable sensor as blank, not 0" % f,
+                "$t -eq '' -or $t -eq '.'" in src and "temp = 0; power = 0" not in src, "")
+    if ps:
+        with open(os.path.join(BENCH, "Invoke-GpuBench.ps1"), encoding="utf-8") as fh:
+            gsrc = fh.read()
+        m = parse_re.search(gsrc)
+        c.check("the GPU bench's parse line is the one under test", bool(m), "")
+        snippet = ("$line = 'N/A, 62, 45 %, 1234 MiB, 0, [Not Supported]'\n"
+                   + (m.group(1) if m else "") + "\n$p -join ','")
+        r = subprocess.run([ps, "-NoProfile", "-NonInteractive", "-Command", snippet],
+                           capture_output=True, text=True, timeout=120)
+        c.check("the shipped parse keeps real zeros and drops N/A",
+                r.stdout.strip() == ",62,45,1234,0,",
+                (r.stdout.strip(), r.stderr.strip()[:140]))
+    else:
+        print("  SKIP the shipped-parse behaviour check (no powershell/pwsh on this host)")
+
+    # a slowdown reason nvidia-smi marks "Not Active" is not throttling
+    for f in ("Invoke-GpuBench.ps1", "Invoke-CombinedStress.ps1", "Invoke-LongSoak.ps1"):
+        with open(os.path.join(BENCH, f), encoding="utf-8", errors="replace") as fh:
+            src = fh.read()
+        c.check("%s ignores throttle reasons marked Not Active" % f,
+                "'Not Active' } |" in src, "")
+
+    # the GPU bench looked for TDR/WHEA over the last minute only, so a reset during an
+    # hour-long soak was invisible
+    with open(os.path.join(BENCH, "Invoke-GpuBench.ps1"), encoding="utf-8") as fh:
+        gsrc = fh.read()
+    c.check("the GPU bench scans for TDR/WHEA from the start of the run",
+            "$runStart = Get-Date" in gsrc and "StartTime = $runStart" in gsrc
+            and "AddMinutes(-1)" not in gsrc, "")
+
+    # Run-LinuxBench must not report success when nothing ran at all
+    with open(os.path.join(BENCH, "Run-LinuxBench.sh"), encoding="utf-8") as fh:
+        lsrc = fh.read()
+    c.check("Run-LinuxBench fails when no phase produced a result",
+            "no phase produced a result" in lsrc and "exit 1" in lsrc, "")
+    bash = shutil.which("bash")
+    if bash:
+        guard = lsrc[lsrc.index("# Exit non-zero only if nothing ran"):]
+        env = dict(os.environ, LOGDIR=tempfile.gettempdir())
+        empty = os.path.join(tempfile.mkdtemp(prefix="bench-guard-"), "empty.jsonl")
+        open(empty, "w").close()
+        r = subprocess.run([bash, "-s"], input=guard, capture_output=True, text=True,
+                           timeout=60, env=dict(env, JSONL=empty))
+        c.check("the guard exits 1 when the records file has nothing in it",
+                r.returncode == 1 and "no phase produced" in r.stderr,
+                (r.returncode, r.stderr[:120]))
+        good = os.path.join(tempfile.mkdtemp(prefix="bench-guard-"), "ok.jsonl")
+        with open(good, "w") as fh:
+            fh.write('{"group": "gpu", "phase": "soak"}\n')
+        r = subprocess.run([bash, "-s"], input=guard, capture_output=True, text=True,
+                           timeout=60, env=dict(env, JSONL=good))
+        c.check("the guard exits 0 when at least one phase ran",
+                r.returncode == 0, (r.returncode, r.stderr[:120]))
+    else:
+        print("  SKIP the Run-LinuxBench guard behaviour check (no bash here)")
 
     return c.fails
 
