@@ -184,12 +184,17 @@ CREATE INDEX IF NOT EXISTS idx_sched_next ON schedules(enabled, next_run);
 CREATE INDEX IF NOT EXISTS idx_runs_host ON runs(host);
 """
 
+# Every table that references a run by run_id. Deleting a run clears all of them
+# in one transaction, so nothing is left orphaned and readable by run id.
+RUN_DEPENDENT_TABLES = ("phases", "telemetry", "logs", "events", "artifacts", "commands")
+
 
 # --------------------------------------------------------------------- store --
 class Store:
     def __init__(self, path):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         self.lock = threading.RLock()
+        self.path = path
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         with self.lock:
@@ -263,6 +268,24 @@ class Store:
     def one(self, sql, args=()):
         rows = self.q(sql, args)
         return rows[0] if rows else None
+
+    def delete_run(self, run_id):
+        """Delete a run and every row that belongs to it, in one transaction.
+
+        Previously each table was cleared with its own committed statement; the
+        set is now atomic, so a deleted run can never leave telemetry/logs/events/
+        artifacts/phases/commands behind to be read back by run id.
+        """
+        with self.lock:
+            try:
+                for t in RUN_DEPENDENT_TABLES:
+                    self.conn.execute("DELETE FROM %s WHERE run_id=?" % t, (run_id,))
+                cur = self.conn.execute("DELETE FROM runs WHERE id=?", (run_id,))
+                self.conn.commit()
+                return cur.rowcount
+            except Exception:
+                self.conn.rollback()
+                raise
 
 
 # ----------------------------------------------------------------------- bus --
@@ -870,6 +893,21 @@ class Handler(BaseHTTPRequestHandler):
         print("[benchd] %s %s failed: %s: %s" % (method, path, type(exc).__name__, exc),
               flush=True)
 
+    def _capacity(self):
+        """Row counts + on-disk size, so unbounded growth is visible in /health."""
+        S = self.store
+        rows = {}
+        for t in ("runs", "telemetry", "logs", "events", "artifacts"):
+            rows[t] = S.one("SELECT COUNT(*) c FROM %s" % t)["c"]
+        db_bytes = 0
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                db_bytes += os.path.getsize((S.path or "") + suffix)
+            except OSError:
+                pass
+        return {"rows": rows, "db_bytes": db_bytes,
+                "retention_days": RETENTION_DAYS}
+
     def _body(self):
         """Parse the JSON body, raising BodyError instead of guessing.
 
@@ -1005,6 +1043,7 @@ class Handler(BaseHTTPRequestHandler):
                                     "version": server_version(),
                                     "protocol": PROTOCOL,
                                     "latest": latest_git(),
+                                    "capacity": self._capacity(),
                                     "runners": len(self.store.q("SELECT id FROM runners"))})
         if path.startswith("/api/"):
             # ?token= is allowed only where a browser cannot send a header:
@@ -1046,9 +1085,7 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/v1/runs/([^/]+)$", path)
         if m:
             rid = m.group(1)
-            for t in ("phases", "telemetry", "events", "artifacts", "logs"):
-                self.store.ex("DELETE FROM %s WHERE run_id=?" % t, (rid,))
-            self.store.ex("DELETE FROM runs WHERE id=?", (rid,))
+            self.store.delete_run(rid)
             # a runner still pointing at the deleted run must not look busy forever
             self.store.ex("UPDATE runners SET status='idle', current_run=NULL "
                           "WHERE current_run=?", (rid,))
@@ -2139,6 +2176,7 @@ def main():
     ap.add_argument("--allow-anonymous", action="store_true",
                     help="serve without BENCHD_TOKEN (dangerous: anyone can control the fleet)")
     a = ap.parse_args()
+
 
     token = find_token(a.token)
     refusal = auth_refusal(token, a.allow_anonymous)
