@@ -916,24 +916,30 @@ def is_live():
 
 
 VERSION_FILE = ".bench-version"   # generated stamp of a fetched copy (JSON)
-SEMVER_FILE = "VERSION"           # the release version, e.g. 1.0.0
+SEMVER_FILE = "VERSION"           # the release version, e.g. 1.1.0
+# Wire format between runners and the control plane. Bump it when a payload or a
+# summary key changes shape, so an out-of-step runner is *detected* instead of
+# quietly producing wrong data.
+PROTOCOL = 1
+_SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.\-]+)?$")
 
 
 def bench_version(root=None):
-    """The toolkit's release version, from the VERSION file.
+    """The toolkit's release version, validated.
 
-    Returns a bare version like ``1.0.0``; ``0.0.0+unknown`` when the file is
-    missing (a copy that predates versioning) so callers never print nothing.
+    A malformed VERSION is a bug, but a dashboard must still start: accept the
+    value only when it is semver, otherwise return a marker that is obviously not
+    a release (and says so) rather than passing a bad string around.
     """
     root = root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     try:
         with open(os.path.join(root, SEMVER_FILE), encoding="utf-8") as fh:
             v = fh.read().strip().splitlines()[0].strip()
-        if v:
-            return v
     except (OSError, IndexError):
-        pass
-    return "0.0.0+unknown"
+        return "0.0.0+unknown"
+    if not v:
+        return "0.0.0+unknown"
+    return v if _SEMVER_RE.match(v) else "0.0.0+invalid"
 
 
 def version_string(root=None):
@@ -945,11 +951,27 @@ def version_string(root=None):
     the release line and is bumped on purpose; the commit identifies the build.
     """
     v = bench_version(root)
-    # a live/copy toolkit has no .git, so fall back to the commit recorded in its
+    # a live/copy toolkit has no .git, so fall back to the build recorded in its
     # fetch stamp - otherwise a stick reports a bare version with no build id and
     # two different sticks look identical
     c = git_commit(root) or (toolkit_version(root).get("build") or "")
     return ("%s+%s" % (v, c)) if c else v
+
+
+def version_info(root=None):
+    """Everything needed to say exactly what is running, from one place.
+
+    Every surface (GUI/TUI headers, runner registration, web, /health) should read
+    this rather than re-deriving a version, so they cannot disagree.
+    """
+    tv = toolkit_version(root)
+    return {"version": version_string(root),
+            "release": bench_version(root),
+            "build": tv.get("build") or tv.get("commit"),
+            "commit": tv.get("commit"),
+            "mode": tv.get("mode"),
+            "ref": tv.get("ref"),
+            "protocol": PROTOCOL}
 
 
 def git_commit(repo=None):
@@ -970,13 +992,14 @@ def toolkit_version(root=None):
     if os.path.isdir(os.path.join(root, ".git")):
         return {"mode": "git", "commit": git_commit(root), "ref": None,
                 "sha256": None, "fetched_at": None, "version": ver,
-                "build": git_commit(root)}
+                "build": git_commit(root), "protocol": PROTOCOL}
     try:
         with open(os.path.join(root, VERSION_FILE), encoding="utf-8") as fh:
             v = json.load(fh)
         if isinstance(v, dict):
             v.setdefault("mode", "copy")
             v["version"] = ver
+            v["protocol"] = PROTOCOL
             # resolving the commit needs the GitHub API, which can be rate limited;
             # the content hash still tells two copies apart, so use it as the build
             v["build"] = v.get("commit") or (v.get("sha256") or "")[:7] or None
@@ -984,7 +1007,7 @@ def toolkit_version(root=None):
     except Exception:
         pass
     return {"mode": "copy", "commit": None, "ref": None, "sha256": None,
-            "fetched_at": None, "version": ver, "build": None}
+            "fetched_at": None, "version": ver, "build": None, "protocol": PROTOCOL}
 
 
 def _resolve_commit(ref):

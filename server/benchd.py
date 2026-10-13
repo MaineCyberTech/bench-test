@@ -43,6 +43,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# Wire format this control plane speaks. Runners advertise theirs; a mismatch is
+# flagged in the fleet view instead of silently producing wrong data.
+PROTOCOL = 1
 WEB_DIR = os.path.join(HERE, "web")
 DEFAULT_DB = os.path.join(HERE, "data", "benchd.sqlite")
 
@@ -592,6 +595,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/health":
             return self._send(200, {"ok": True, "time": now(), "git": server_git(),
                                     "version": server_version(),
+                                    "protocol": PROTOCOL,
                                     "latest": latest_git(),
                                     "runners": len(self.store.q("SELECT id FROM runners"))})
         if path.startswith("/api/"):
@@ -675,7 +679,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"runners": runners, "active": active, "recent": recent,
                                     "metrics": METRICS, "hosts": hosts,
                                     "server_git": server_git(), "latest_git": latest_git(),
-                            "version": server_version(),
+                            "version": server_version(), "protocol": PROTOCOL,
                                     "server_time": now()})
         if path == "/api/v1/metrics":
             return self._send(200, {"metrics": METRICS})

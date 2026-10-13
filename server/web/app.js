@@ -338,6 +338,9 @@ function runnerCard(r) {
       ? `<span class="badge" title="toolkit release + build">v${esc(caps.toolkit.version)}${(caps.toolkit.build || caps.toolkit.commit) ? "+" + esc(caps.toolkit.build || caps.toolkit.commit) : ""}</span>` : "",
     (caps.toolkit && caps.toolkit.version && !(caps.toolkit.build || caps.toolkit.commit))
       ? `<span class="badge stale" title="this copy does not record the commit it was fetched at">build unknown</span>` : "",
+    (caps.toolkit && caps.toolkit.protocol != null && STATE.protocol != null
+      && caps.toolkit.protocol !== STATE.protocol)
+      ? `<span class="badge stale" title="runner speaks protocol ${esc(String(caps.toolkit.protocol))}, control plane speaks ${esc(String(STATE.protocol))} - update it">protocol mismatch</span>` : "",
     r.update_available
       ? `<span class="badge stale" title="${esc(r.toolkit_status || "behind")}: toolkit ${esc(r.toolkit_commit || "?")} vs latest ${esc(r.latest_commit || STATE.latest_git || "?")}">update available</span>`
       : (r.toolkit_commit

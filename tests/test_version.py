@@ -42,13 +42,36 @@ def run():
             "+" in rep.version_string(REPO) or not rep.git_commit(REPO),
             rep.version_string(REPO))
 
+    # a malformed VERSION must be rejected, not passed around as a release
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        with open(os.path.join(td, "VERSION"), "w") as fh:
+            fh.write("not-a-version\n")
+        c.check("malformed VERSION is rejected",
+                rep.bench_version(td) == "0.0.0+invalid", rep.bench_version(td))
+        with open(os.path.join(td, "VERSION"), "w") as fh:
+            fh.write("2.3.4-rc.1\n")
+        c.check("a prerelease VERSION is accepted",
+                rep.bench_version(td) == "2.3.4-rc.1", rep.bench_version(td))
+        c.check("version_info reports the release, build and protocol",
+                rep.version_info(td)["release"] == "2.3.4-rc.1"
+                and rep.version_info(td)["protocol"] == rep.PROTOCOL,
+                rep.version_info(td))
+    c.check("toolkit_version advertises the protocol",
+            rep.toolkit_version(REPO).get("protocol") == rep.PROTOCOL,
+            rep.toolkit_version(REPO))
+
     # the control plane reports its own version (it is deployed as a copy)
     srv = Server()
     try:
         _, health = srv.client().call("GET", "/health")
         c.check("health reports the version", health.get("version") == v, health)
+        c.check("health reports the protocol",
+                health.get("protocol") == rep.PROTOCOL, health.get("protocol"))
         _, state = srv.client().call("GET", "/api/v1/state")
         c.check("state reports the version", state.get("version") == v, state.get("version"))
+        c.check("state reports the protocol",
+                state.get("protocol") == rep.PROTOCOL, state.get("protocol"))
     finally:
         srv.stop()
 
