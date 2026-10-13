@@ -53,13 +53,17 @@ function Invoke-Phase($name, $extraArgs, $telemetrySeconds) {
                     }
                 } else {
                     # Vendor-agnostic fallback (AMD/Intel on Windows): total GPU busy %.
-                    $u = 0
+                    # $u stays $null on a failed counter read, and the sample is only
+                    # appended with a real reading, so it cannot drag the average to 0.
+                    $u = $null
                     try {
                         $c = (Get-Counter '\GPU Engine(*)\Utilization Percentage' -ErrorAction Stop).CounterSamples
                         $sum = ($c | Where-Object { $_.InstanceName -match 'engtype_3D' } | Measure-Object CookedValue -Sum).Sum
                         if ($sum) { $u = [math]::Min(100.0, [math]::Round($sum, 1)) }
                     } catch { }
-                    $s += [pscustomobject]@{ util = $u; temp = $null; power = $null; sm = $null; mem = $null; fan = $null }
+                    if ($null -ne $u) {
+                        $s += [pscustomobject]@{ util = $u; temp = $null; power = $null; sm = $null; mem = $null; fan = $null }
+                    }
                 }
                 Start-Sleep -Milliseconds 1000
             }

@@ -38,13 +38,18 @@ $mon = Start-Job {
                 $s += [pscustomobject]@{ util = $p[0]; temp = $p[1]; power = $p[2]; sm = $p[3]; mem = $p[4]; fan = $p[5]; cpu = $c }
             }
         } else {
-            $u = 0
+            # Vendor-agnostic fallback (AMD/Intel on Windows): total GPU busy %.
+            # $u stays $null on a failed counter read, and the sample is only
+            # appended with a real reading, so it cannot drag the average to 0.
+            $u = $null
             try {
                 $cc = (Get-Counter '\GPU Engine(*)\Utilization Percentage' -ErrorAction Stop).CounterSamples
                 $sum = ($cc | Where-Object { $_.InstanceName -match 'engtype_3D' } | Measure-Object CookedValue -Sum).Sum
                 if ($sum) { $u = [math]::Min(100.0, [math]::Round($sum, 1)) }
             } catch { }
-            $s += [pscustomobject]@{ util = $u; temp = $null; power = $null; sm = $null; mem = $null; fan = $null; cpu = $c }
+            if ($null -ne $u) {
+                $s += [pscustomobject]@{ util = $u; temp = $null; power = $null; sm = $null; mem = $null; fan = $null; cpu = $c }
+            }
         }
         Start-Sleep -Milliseconds 500
     }

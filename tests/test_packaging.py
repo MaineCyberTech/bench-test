@@ -124,11 +124,107 @@ def run():
         print("  SKIP the shipped-parse behaviour check (no powershell/pwsh on this host)")
 
     # a slowdown reason nvidia-smi marks "Not Active" is not throttling
-    for f in ("Invoke-GpuBench.ps1", "Invoke-CombinedStress.ps1", "Invoke-LongSoak.ps1"):
+    for f in ("Invoke-GpuBench.ps1", "Invoke-CombinedStress.ps1", "Invoke-LongSoak.ps1",
+              "Invoke-FullSystemSoak.ps1"):
         with open(os.path.join(BENCH, f), encoding="utf-8", errors="replace") as fh:
             src = fh.read()
         c.check("%s ignores throttle reasons marked Not Active" % f,
                 "'Not Active' } |" in src, "")
+
+    # the full-system soak was missed by both fixes: its throttle read kept the Not
+    # Active lines and dropped the power-cap reasons, and it had no AMD/Intel util
+    # fallback, so on a card it could not read it reported invented 0/0 telemetry
+    with open(os.path.join(BENCH, "Invoke-FullSystemSoak.ps1"), encoding="utf-8",
+              errors="replace") as fh:
+        fss = fh.read()
+    c.check("the full-system soak reads the power-cap and HW-slowdown reasons",
+            "SW Power Cap" in fss and "HW Slowdown" in fss, "")
+    m = re.search(r"^\$throttle = .*$", fss, re.M)
+    c.check("the full-system soak throttle read is the one under test", bool(m), "")
+    if m and ps:
+        snippet = ("function nvidia-smi { @('SW Power Cap : Not Active', "
+                   "'HW Slowdown : Active', 'HW Thermal Slowdown : Not Active') }\n"
+                   + m.group(0) + "\n$throttle -join '|'\n")
+        r = subprocess.run([ps, "-NoProfile", "-NonInteractive", "-Command", snippet],
+                           capture_output=True, text=True, timeout=120)
+        c.check("the shipped throttle read keeps the active reason and drops Not Active",
+                r.stdout.strip() == "HW Slowdown : Active",
+                (r.stdout.strip(), r.stderr.strip()[:140]))
+    else:
+        print("  SKIP the full-soak throttle behaviour check (no powershell/pwsh here)")
+
+    # a failed engine-counter read must not be recorded as util 0 (it dragged the
+    # phase average); the sample is appended only when the counter returned a reading
+    for f in ("Invoke-GpuBench.ps1", "Invoke-CombinedStress.ps1", "Invoke-FullSystemSoak.ps1"):
+        with open(os.path.join(BENCH, f), encoding="utf-8", errors="replace") as fh:
+            src = fh.read()
+        c.check("%s does not record a failed engine-counter read as util 0" % f,
+                "$u = $null" in src and "$u = 0" not in src
+                and "if ($null -ne $u)" in src, "")
+    c.check("the full-system soak emits each telemetry sample as it is taken",
+            "$s = @(Receive-Job $mon" in fss, "")
+    c.check("the full-system soak omits a metric with no readings instead of 0",
+            "if ($vals.Count -eq 0) { continue }" in fss, "")
+    c.check("the full-system soak reports free RAM min from the min, not the max",
+            "free RAM min $($stat.freeMiB.min)" in fss and "$stat.freeMiB.max" not in fss, "")
+    m = re.search(r"^\$stat = @\{\}\n(?:.*\n)*?^\}", fss, re.M)
+    c.check("the shipped full-soak stats block is the one under test", bool(m), "")
+    if m and ps:
+        snippet = ("$s = @("
+                   "[pscustomobject]@{gpu=$null; temp=$null; power=$null; sm=$null; fan=$null; cpu=50; freeMiB=900},"
+                   "[pscustomobject]@{gpu=42; temp=$null; power=$null; sm=$null; fan=$null; cpu=60; freeMiB=800})\n"
+                   + m.group(0) + "\n"
+                   "if ($null -eq $stat.temp) { 'TEMP-OMITTED' } else { 'TEMP-PRESENT' }\n"
+                   "'free-min={0} free-avg={1} cpu-avg={2} gpu-avg={3}' -f "
+                   "$stat.freeMiB.min, $stat.freeMiB.avg, $stat.cpu.avg, $stat.gpu.avg\n")
+        r = subprocess.run([ps, "-NoProfile", "-NonInteractive", "-Command", snippet],
+                           capture_output=True, text=True, timeout=120)
+        out = r.stdout.strip()
+        c.check("a metric with no readings is omitted, and free RAM keeps its minimum",
+                "TEMP-OMITTED" in out
+                and "free-min=800 free-avg=850 cpu-avg=55 gpu-avg=42" in out,
+                (out, r.stderr.strip()[:140]))
+    else:
+        print("  SKIP the full-soak stats behaviour check (no powershell/pwsh here)")
+
+    # ---- a failed transfer is not a 0 Mbps measurement ----
+    # curl exits 0 on an HTTP error; the speed it printed for the error body was
+    # recorded as a real rate and the summary copied the 0.0. A failed transfer
+    # now yields null (with download_error/upload_error), never 0.
+    with open(os.path.join(BENCH, "Invoke-NetBench.ps1"), encoding="utf-8",
+              errors="replace") as fh:
+        netps = fh.read()
+    c.check("the net phase's failed download is null, not 0 Mbps",
+            "$downBps = $null" in netps
+            and "$downMbps = if ($null -ne $downBps) { [math]::Round($downBps * 8 / 1e6, 1) } else { $null }" in netps, "")
+    c.check("the net phase's failed upload is null, not 0 Mbps",
+            "'%{speed_upload} %{time_total} %{http_code}'" in netps
+            and "$upMbps = if ($null -ne $upBps) { [math]::Round($upBps * 8 / 1e6, 1) } else { $null }" in netps, "")
+    c.check("the net report keeps download_error and gains upload_error",
+            "download_error = $downErr" in netps and "upload_error = $upErr" in netps, "")
+    m = re.search(r"^\$downBps = \$null[^\n]*\n(?:.*\n)*?^\$downMBs = [^\n]*", netps, re.M)
+    c.check("the shipped net download block is the one under test", bool(m), "")
+    if m and ps:
+        snippet = ("function curl.exe { '0.0 1.234 403' }\n$DownMB = 100\n"
+                   + m.group(0) + "\n'{0}|{1}' -f $downBps, $downErr\n")
+        r = subprocess.run([ps, "-NoProfile", "-NonInteractive", "-Command", snippet],
+                           capture_output=True, text=True, timeout=120)
+        c.check("a 403 download records no rate and names the error",
+                r.stdout.strip() == "|HTTP 403 for 10MB",
+                (r.stdout.strip(), r.stderr.strip()[:140]))
+    else:
+        print("  SKIP the net failure-path behaviour check (no powershell/pwsh here)")
+
+    # the Python net phase: a failed transfer is null, not 0.0 (the same pattern),
+    # and the request-size field no longer reads like the PS side's download_mbs
+    nb = _load("net_bench", os.path.join(BENCH, "net_bench.py"))
+    mbps, nbytes, req_mb = nb.download_mbps("file:///nonexistent/__down?bytes=%d", 10)
+    c.check("net_bench records a failed download as None, not 0",
+            mbps is None and nbytes == 0 and req_mb == 10, (mbps, nbytes, req_mb))
+    with open(os.path.join(BENCH, "net_bench.py"), encoding="utf-8") as fh:
+        nbsrc = fh.read()
+    c.check("net_bench names the request size unambiguously (no download_mb/MB-s clash)",
+            '"download_request_mb"' in nbsrc and '"download_mb"' not in nbsrc, "")
 
     # the GPU bench looked for TDR/WHEA over the last minute only, so a reset during an
     # hour-long soak was invisible

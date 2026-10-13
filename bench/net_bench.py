@@ -51,6 +51,9 @@ def download_mbps(url, megabytes, chunk_mb=25, timeout=90, max_mb=95):
     95MB. The old code opened a new connection per 25MB chunk and started the
     clock before the first, so TLS/TCP/slow-start were inside the number;
     `chunk_mb` is now the socket read size, not a new connection.
+
+    Returns (mbps, bytes_received, requested_mb); mbps is None when nothing was
+    received, so a failed transfer is recorded as null, never as 0.0.
     """
     n = max(1, min(int(megabytes), max_mb))
     total = 0
@@ -102,7 +105,7 @@ def main():
     if ping:
         print("ping min/avg/max/mdev %.1f/%.1f/%.1f/%.1f ms loss %.0f%% (%s)" % (
             ping["min"], ping["avg"], ping["max"], ping.get("mdev", 0.0), ping.get("loss_pct", 0.0), a.target))
-    down, nbytes, down_mb = download_mbps(
+    down, nbytes, down_req_mb = download_mbps(
         "https://speed.cloudflare.com/__down?bytes=%d", a.down_mb)
     print(("download %.1f Mbps" % down) if down is not None else "download failed")
     up = upload_mbps("https://speed.cloudflare.com/__up", a.up_mb)
@@ -110,7 +113,8 @@ def main():
     jline({"phase": "bench", "target": a.target, "ping_ms": ping,
            "ping_avg_ms": ping and ping["avg"], "ping_mdev_ms": ping and ping.get("mdev"),
            "ping_loss_pct": ping and ping.get("loss_pct"),
-           "download_mbps": down, "download_bytes": nbytes, "download_mb": down_mb,
+           "download_mbps": down, "download_bytes": nbytes,
+           "download_request_mb": down_req_mb,
            "upload_mbps": up})
     return 0
 
