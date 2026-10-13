@@ -357,7 +357,8 @@ bench/     PowerShell runners + Python phases + telemetry + dashboards + agent
 server/    benchd control plane (stdlib) + web dashboard + importer + systemd units
 live/      live-USB build + airootfs (launchers, units, conf)
 tests/     stdlib test suite (run_all.py)
-docs/      METHODOLOGY · CONTROL_PLANE · PHASE_TIMINGS · FUTURE_WORK · DATA
+docs/      METHODOLOGY · CONTROL_PLANE · PHASE_TIMINGS · FUTURE_WORK · DATA ·
+           PRIVACY · KNOWN_ISSUES
 examples/  real Windows + Linux result sets
 results/   output (mostly git-ignored; a few runs tracked as history)
 ```
@@ -394,9 +395,15 @@ telemetry, logs and events of finished runs after 30 days
 
 The control plane uses a shared join token (operators) and per-runner keys
 (runners). Bind it to the LAN/lab; put TLS in front if exposed further. Tokens and
-the SQLite db are git-ignored — never commit them. The repo and its ISO releases
-are public, so a token baked into an ISO is world-readable; rotate it if a stick
-leaves the lab.
+the SQLite db are git-ignored — never commit them. The repo and both release
+streams are public — app bundles (`.github/workflows/build-app.yml`) and live ISOs
+(`.github/workflows/build-iso.yml`) — so the control-plane config baked into either
+is world-readable: use a limited, rotatable value, and rotate it if an artifact
+leaves the lab. Today that baked value is the shared join token, which is also the
+operator bearer; when the registration-only join-token model lands, bake that
+instead so a downloaded artifact cannot act as an operator (see
+[`docs/CONTROL_PLANE.md`](docs/CONTROL_PLANE.md) § Roadmap). Report a leaked or
+baked credential privately — see [`SECURITY.md`](SECURITY.md).
 
 ## License
 
