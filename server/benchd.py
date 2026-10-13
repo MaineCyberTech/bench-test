@@ -1041,6 +1041,11 @@ class Handler(BaseHTTPRequestHandler):
             pending = S.one("SELECT COUNT(*) c FROM commands WHERE runner_id=? AND status='queued'",
                             (rid,))["c"]
             return self._send(200, {"ok": True, "commands": pending, "server_time": now()})
+        m = re.match(r"^/api/v1/server/update$", path)
+        if m:
+            if not self._is_operator(q):
+                return self._err(403, "operator only")
+            return self._server_update()
         m = re.match(r"^/api/v1/runners/([^/]+)/commands$", path)
         if m:
             if not self._is_operator(q):
