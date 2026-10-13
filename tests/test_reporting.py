@@ -262,6 +262,27 @@ def run():
     c.check("no internal bookkeeping leaks into the verdicts",
             all(set(v) == {"level", "text"} for v in vs2), vs2)
 
+    # ---- a stale Valley screenshot must not be attributed to this run ----
+    gd3 = tmpdir()
+    with open(os.path.join(gd3, "host-20260101-000000.json"), "w") as fh:
+        json.dump({"host": "h", "phases": [{"group": "gfx", "phase": "furmark",
+                                            "result": {"skipped": True,
+                                                       "reason": "no monitor"}}]}, fh)
+    stale = os.path.join(gd3, "valley-host-old.png")
+    with open(stale, "wb") as fh:
+        fh.write(b"png")
+    os.utime(stale, (time.time() - 86400, time.time() - 86400))
+    c.check("a stale valley screenshot is not adopted as this run's gfx",
+            "gfx" not in (build_summary_dir(gd3, since=time.time() - 60) or {}),
+            build_summary_dir(gd3, since=time.time() - 60))
+    fresh = os.path.join(gd3, "valley-host-new.png")
+    with open(fresh, "wb") as fh:
+        fh.write(b"png")
+    c.check("a screenshot from this run is still picked up",
+            (build_summary_dir(gd3, since=time.time() - 60) or {}).get("gfx", {}).get("screenshot")
+            == os.path.basename(fresh),
+            build_summary_dir(gd3, since=time.time() - 60).get("gfx"))
+
     # ---- phase results that used to be dropped are merged into the summary ----
     d2 = tmpdir()
     for name, obj in {

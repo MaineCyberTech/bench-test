@@ -1372,6 +1372,10 @@ def update_needs_restart(res):
         return False
     if res.get("kind") == "git":
         return True
+    # an app bundle refreshed its shipped toolkit in place, so it must re-register
+    # (or it keeps reporting the version it booted with)
+    if res.get("kind") == "app" or res.get("restart_required"):
+        return True
     return bool(res.get("switched"))
 
 
@@ -2509,10 +2513,17 @@ def build_summary_dir(results_dir, window_h=8, since=None):
     verdicts = _hardware_verdicts(results_dir)
     if verdicts:
         out["verdicts"] = verdicts
-    # Windows gfx is a Unigine Valley run kept as a screenshot
+    # Windows gfx is a Unigine Valley run kept as a screenshot. Scope it to this
+    # run exactly like the reports above: the results dir keeps earlier runs for
+    # hours, and an unscoped screenshot made a FurMark run report a stale Valley
+    # result from the previous day.
     if "gfx" not in out:
         shots = sorted(glob.glob(os.path.join(results_dir, "valley-*.png")),
                        key=os.path.getmtime)
+        if since is not None:
+            shots = [s for s in shots if os.path.getmtime(s) >= since - 5]
+        else:
+            shots = [s for s in shots if now - os.path.getmtime(s) <= window_h * 3600]
         if shots:
             out["gfx"] = {"screenshot": os.path.basename(shots[-1])}
     return out
