@@ -205,15 +205,21 @@ table td.num{font-family:var(--mono);text-align:right}
 .focushead .h{font-weight:700;font-size:16px}
 .focusbody{padding:14px 16px 40px}
 .fgrid{display:grid;gap:14px;align-items:start;
-  grid-template-columns:minmax(260px,1fr) minmax(260px,1fr) minmax(320px,2fr)}
+  grid-template-columns:minmax(250px,1fr) minmax(280px,1.1fr) minmax(340px,1.9fr)}
 .fgrid.two{grid-template-columns:minmax(280px,1fr) minmax(280px,1fr);margin-top:14px}
 .fcard{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px}
 .fcard h4{margin:0 0 8px;font-size:11px;color:var(--muted);
   text-transform:uppercase;letter-spacing:1px}
 .fcard h4+ h4{margin-top:10px}
-.fk{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-size:12px;width:100%}
+.fk{display:grid;grid-template-columns:minmax(78px,auto) minmax(0,1fr);gap:2px 10px;
+  font-size:12px;width:100%;table-layout:fixed}
 .fk th{color:var(--muted);font-weight:400;text-align:left;white-space:nowrap;vertical-align:top}
-.fk td{font-family:var(--mono);word-break:break-word}
+.fk td{font-family:var(--mono);overflow-wrap:anywhere;min-width:0}
+/* 27 metrics in one narrow column is unreadable - lay them out in two */
+.statcols{display:grid;grid-template-columns:1fr 1fr;gap:0 26px}
+.statcols table{width:100%}
+.statcols .muted{padding:8px 0}
+@media (max-width:1100px){.statcols{grid-template-columns:1fr}}
 .fbar{display:flex;align-items:center;gap:8px;margin:4px 0;font-size:11px}
 .fbar .bn{width:66px;color:var(--muted);flex:none}
 .fbar .bt{flex:1;height:9px;background:var(--card2);border-radius:5px;overflow:hidden;

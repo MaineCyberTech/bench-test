@@ -67,15 +67,16 @@ function orderedStatKeys(keys) {
   return keys.slice().sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
 }
 // bars in the live focus view (mirrors the TUI telemetry panel, wider); the 4th
-// entry is the full-scale value used for the bar width
+// entry is the full-scale value used for the bar width. Labels carry their unit
+// so "cpu %" / "cpu °C" / "cpu W" are not three identical "cpu" rows.
 const FOCUS_BARS = [
-  ["temp_c", "temp", "°C", 100], ["fan_pct", "fan", "%", 100],
-  ["power_w", "power", "W", 400], ["gpu_util", "gpu", "%", 100],
-  ["mem_util", "vram", "%", 100], ["vram_used_mib", "vram", "MiB", 16384],
+  ["temp_c", "gpu °C", "°C", 100], ["fan_pct", "gpu fan", "%", 100],
+  ["power_w", "gpu W", "W", 400], ["gpu_util", "gpu %", "%", 100],
+  ["mem_util", "vram %", "%", 100], ["vram_used_mib", "vram", "MiB", 16384],
   ["sm_mhz", "sm clk", "MHz", 3000], ["mem_mhz", "mem clk", "MHz", 12000],
-  ["cpu_util", "cpu", "%", 100], ["cpu_temp_c", "cpu", "°C", 100],
-  ["cpu_pkg_w", "cpu", "W", 200], ["ram_used", "ram", "GiB", 64],
-  ["load1", "load", "", 16], ["nvme_c", "nvme", "°C", 100],
+  ["cpu_util", "cpu %", "%", 100], ["cpu_temp_c", "cpu °C", "°C", 100],
+  ["cpu_pkg_w", "cpu W", "W", 200], ["ram_used", "ram", "GiB", 64],
+  ["load1", "load", "", 16], ["nvme_c", "nvme °C", "°C", 100],
   ["disk_write_mbs", "disk W", "MB/s", 2000], ["net_rx_mbs", "net rx", "MB/s", 1250],
 ];
 const HOT_BARS = ["temp_c", "cpu_temp_c", "nvme_c", "temp_mem_c"];
@@ -511,11 +512,13 @@ function focusShell(r, live) {
           <h4>Temps</h4><div class="fhealth" data-f="temps"></div>
         </div>
         <div class="fcard"><h4>Telemetry</h4>
-          <div class="chartrow"><canvas class="runchart" height="240"></canvas>
+          <div class="chartrow"><canvas class="runchart" height="300"></canvas>
             <select class="csel" data-chart="${esc(r.id)}">${sel(r.id)}</select></div>
           <div class="chartlegend"></div>
-          <table class="statstable" data-f="stats"></table>
         </div>
+      </div>
+      <div class="fcard" style="margin-top:14px"><h4>Telemetry stats (min / avg / max · n)</h4>
+        <div class="statcols" data-f="stats"></div>
       </div>
       <div class="fgrid two">
         <div class="fcard"><h4>Phases</h4><div class="phases" data-f="phases"></div></div>
@@ -644,21 +647,26 @@ function paintFocusHealth(el, v) {
 }
 
 function paintFocusStats(el, id) {
-  const tb = el.querySelector("[data-f=stats]");
-  if (!tb) return;
+  const host = el.querySelector("[data-f=stats]");
+  if (!host) return;
   const buf = TEL[id] || [];
   const keys = orderedStatKeys(Object.keys(SERIES).filter((k) => buf.some((b) => numOrNull(b[k]) != null)));
-  if (!keys.length) { tb.innerHTML = `<tr><td class="muted">no telemetry yet</td></tr>`; return; }
-  const body = keys.map((k) => {
+  if (!keys.length) { host.innerHTML = `<div class="muted">no telemetry yet</div>`; return; }
+  const row = (k) => {
     const vals = buf.map((b) => numOrNull(b[k])).filter((x) => x != null);
     const mn = Math.min.apply(null, vals), mx = Math.max.apply(null, vals);
     const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
     return `<tr><th>${esc(SERIES[k][0])}</th><td class="num">${fmt(mn)}</td>
       <td class="num">${fmt(avg)}</td><td class="num">${fmt(mx)}</td>
       <td class="num muted">${vals.length}</td></tr>`;
-  }).join("");
-  tb.innerHTML = `<thead><tr><th>metric</th><th>min</th><th>avg</th><th>max</th><th>n</th></tr></thead>
-    <tbody>${body}</tbody>`;
+  };
+  const head = `<thead><tr><th>metric</th><th>min</th><th>avg</th><th>max</th><th>n</th></tr></thead>`;
+  // two side-by-side tables: 27 metrics in one narrow column is unreadable
+  const half = Math.ceil(keys.length / 2);
+  const table = (part) => `<table class="statstable">${head}<tbody>${part.map(row).join("")}</tbody></table>`;
+  host.innerHTML = keys.length > 8
+    ? table(keys.slice(0, half)) + table(keys.slice(half))
+    : table(keys);
 }
 
 /* ------------------------------------------------------------ history --- */
