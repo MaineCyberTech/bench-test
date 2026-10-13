@@ -1850,9 +1850,9 @@ def iso_write(iso_path, device, confirm=False, log=None):
 
 
 class TelemetryTail:
-    """Tails the newest 1 Hz telemetry CSV and yields canonical sample rows."""
+    """Tails the newest telemetry CSV (sampled at 2 Hz) and yields canonical rows."""
 
-    def __init__(self, results_dir, interval=1.0):
+    def __init__(self, results_dir, interval=0.5):
         self.dir = results_dir
         self.interval = interval
         self.path = None

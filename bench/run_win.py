@@ -289,7 +289,7 @@ def sampler(csv_path, stop_evt):
                 os.fsync(fh.fileno())
             except Exception:
                 pass
-            stop_evt.wait(1.0)
+            stop_evt.wait(0.5)
 
 
 def main():

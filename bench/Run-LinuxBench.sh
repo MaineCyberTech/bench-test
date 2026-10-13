@@ -85,8 +85,8 @@ TELE_PID=""
 trap 'rm -f "$JSONL"; [ -n "$TELE_PID" ] && kill "$TELE_PID" 2>/dev/null' EXIT
 
 echo "[env] python: $($PY -c 'import sys; print(sys.version.split()[0])')  out: $BASE.json|.md"
-echo "[telemetry] $PY $BENCH/telemetry_log.py --out $TELEMETRY --interval 1"
-"$PY" "$BENCH/telemetry_log.py" --out "$TELEMETRY" --interval 1 &
+echo "[telemetry] $PY $BENCH/telemetry_log.py --out $TELEMETRY --interval 0.5"
+"$PY" "$BENCH/telemetry_log.py" --out "$TELEMETRY" --interval 0.5 &
 TELE_PID=$!
 nvidia-smi -q > "$LOGDIR/nvidia-smi-q.start.txt" 2>&1 || true
 sensors -j > "$LOGDIR/sensors.start.json" 2>&1 || true
@@ -276,25 +276,33 @@ if [ "$DO_GFX" = 1 ]; then
             printf '{"group":"gfx","phase":"furmark","result":{"skipped":true,"reason":"no monitor on the X display"}}\n' >> "$JSONL"
         fi
         # glmark2's default is ~10s per scene (25 scenes ~= 4 min, which can run
-        # past the timeout and lose the final Score line). Scale the per-scene
-        # duration to the requested gfx seconds and keep the whole suite bounded.
-        GLD=$(( GFX_SECONDS / 10 )); [ "$GLD" -lt 1 ] && GLD=1; [ "$GLD" -gt 10 ] && GLD=10
+        # past the timeout and lose the final Score line), so the fallback below
+        # runs a bounded scene subset instead of the whole suite.
         # if FurMark still dies, fall back to glmark2 so the gfx phase always
         # produces a score (glmark2 ships in the live image). Note: glmark2's -b
         # takes a benchmark NAME, so a bare "-b" is an error - run the default suite.
+        # glmark2's -d is --debug (it floods the log and does not shorten the run);
+        # the per-scene duration is a scene option, and its default of ~10s per
+        # scene over the full suite runs past any sane timeout. Run a fixed,
+        # representative subset with a short per-scene duration so the phase is
+        # bounded and comparable run to run.
+        GLD=2
+        GL_SCENES="-b build:duration=$GLD -b texture:duration=$GLD -b shading:duration=$GLD \
+-b bump:duration=$GLD -b effect2d:duration=$GLD -b jellyfish:duration=$GLD \
+-b terrain:duration=$GLD -b shadow:duration=$GLD"
         if [ "$GFRC" -ne 0 ] && command -v glmark2 >/dev/null 2>&1; then
-            echo "    running glmark2 (per-scene ${GLD}s)"
-            GM_OUT="$(timeout $((GFX_SECONDS * 2 + 300)) glmark2 -d "$GLD" 2>&1)"; GMRC=$?
+            echo "    running glmark2 (8 scenes, ${GLD}s each)"
+            GM_OUT="$(timeout $((GFX_SECONDS + 120)) glmark2 $GL_SCENES 2>&1)"; GMRC=$?
             printf '%s\n' "$GM_OUT" > "$LOGDIR/gfx-glmark2.log"
             printf '%s\n' "$GM_OUT" | grep -E "glmark2 Score|FPS:" | tail -3 | sed 's/^/    /'
             GSCORE="$(printf '%s\n' "$GM_OUT" | grep -oE "glmark2 Score: [0-9]+" | tail -1 | grep -oE "[0-9]+")"
-            printf '{"group":"gfx","phase":"glmark2","result":{"score":%s,"furmark_rc":%s,"per_scene_s":%s,"exit":%s}}\n' "${GSCORE:-0}" "$GFRC" "$GLD" "$GMRC" >> "$JSONL"
+            printf '{"group":"gfx","phase":"glmark2","result":{"score":%s,"furmark_rc":%s,"scenes":8,"per_scene_s":%s,"exit":%s}}\n' "${GSCORE:-0}" "$GFRC" "$GLD" "$GMRC" >> "$JSONL"
         fi
         # last resort: EGL/GLES off-screen, which needs no X output/CRTC (the
         # headless NVIDIA server has none, which is what kills the GL apps above)
         if [ "${GSCORE:-0}" = "0" ] && command -v glmark2-es2 >/dev/null 2>&1; then
             echo "    trying glmark2-es2 --off-screen (EGL, no X output needed)"
-            GME_OUT="$(DISPLAY= timeout $((GFX_SECONDS * 2 + 180)) glmark2-es2 --off-screen 2>&1)"; GMERC=$?
+            GME_OUT="$(DISPLAY= timeout 90 glmark2-es2 --off-screen 2>&1)"; GMERC=$?
             printf '%s\n' "$GME_OUT" > "$LOGDIR/gfx-glmark2-es2.log"
             printf '%s\n' "$GME_OUT" | grep -E "glmark2 Score|FPS:" | tail -3 | sed 's/^/    /'
             GESCORE="$(printf '%s\n' "$GME_OUT" | grep -oE "glmark2 Score: [0-9]+" | tail -1 | grep -oE "[0-9]+")"

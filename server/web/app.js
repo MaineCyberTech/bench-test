@@ -236,7 +236,7 @@ async function refresh() {
 function ensureTel(id) {
   if (TEL[id]) return;
   TEL[id] = [];
-  api("/runs/" + id + "/telemetry?max=600").then((d) => {
+  api("/runs/" + id + "/telemetry?max=1500").then((d) => {
     TEL[id] = (d.rows || []).filter((x) => x.elapsed != null);
     renderActive();
   }).catch(() => {});
@@ -245,7 +245,7 @@ function ensureTel(id) {
 /* Re-read a run's telemetry while the live view is open: the SSE stream is the
    fast path, this is the authoritative one (a batch can be missed). */
 function reloadTel(id) {
-  api("/runs/" + id + "/telemetry?max=600").then((d) => {
+  api("/runs/" + id + "/telemetry?max=1500").then((d) => {
     const rows = (d.rows || []).filter((x) => x.elapsed != null);
     if (rows.length) TEL[id] = rows;
     if (FOCUS === id) {
@@ -1234,7 +1234,7 @@ async function showDetail(runId) {
   const r = await api("/runs/" + runId);
   const s = r.summary || {};
   const sy = r.system || {};
-  const tel = await api("/runs/" + runId + "/telemetry?max=900");
+  const tel = await api("/runs/" + runId + "/telemetry?max=1500");
   const pts = (n) => seriesPoints((tel.rows || []).filter((x) => x[n] != null), n, r.started, r.ended);
   const st = (r.telemetry_stats && r.telemetry_stats.stats) || {};
   const dv = (r.telemetry_stats && r.telemetry_stats.derived) || {};
