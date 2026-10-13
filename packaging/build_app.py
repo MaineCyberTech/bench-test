@@ -157,6 +157,11 @@ def main():
               "(pip install windows-curses on Windows, or the system curses)")
         return 2
     os.makedirs(a.out, exist_ok=True)
+    # ship the sensor library with the bundle: without it a bundled runner has to
+    # download it at run time, and when that is slow or blocked every LHM column
+    # (per-core load, fan RPM, VRAM total, CPU temp/power/clock) comes out blank
+    lhm_dir = os.path.join(REPO, "tools", "lhm")
+    have_lhm = os.path.isfile(os.path.join(lhm_dir, "LibreHardwareMonitorLib.dll"))
     # what the apps import, so the frozen stdlib is complete even though the app
     # code itself is not frozen
     toolkit_src = [os.path.join(BENCH, f) for f in
@@ -170,6 +175,8 @@ def main():
                # ship the whole toolkit next to the exe so a local battery needs no
                # checkout; bootstrap.py provisions the interpreter + deps on first run.
                "--add-data", "%s%sbench" % (BENCH, os.pathsep),
+               *(["--add-data", "%s%stools" % (os.path.join(REPO, "tools"), os.pathsep)]
+                 if have_lhm else []),
                "--contents-directory", ".",
                "--distpath", a.out, "--workpath", os.path.join(a.out, "_work"),
                "--specpath", os.path.join(a.out, "_spec"),

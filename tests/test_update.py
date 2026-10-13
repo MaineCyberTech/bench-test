@@ -523,6 +523,8 @@ def run():
             "LAUNCHER]" in _bsrc and "os.path.join(BENCH, script)]" not in _bsrc, "")
     c.check("the build does not freeze benchreport into the exe",
             '"--hidden-import", "benchreport"' not in _bsrc, "")
+    c.check("the build ships the sensor library so a bundle needs no download",
+            "have_lhm" in _bsrc and '"%s%stools"' in _bsrc, "")
     _spec2 = _ilu.spec_from_file_location("pkg_build",
                                           os.path.join(REPO, "packaging", "build_app.py"))
     _bm = _ilu.module_from_spec(_spec2)
