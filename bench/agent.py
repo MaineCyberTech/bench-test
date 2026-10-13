@@ -394,7 +394,8 @@ def self_test(a):
 
 
 def main():
-    sys.argv = drop_stray_script_arg(me=__file__)
+    if "drop_stray_script_arg" in globals():     # absent on an older toolkit
+        sys.argv = drop_stray_script_arg(me=__file__)
     ap = argparse.ArgumentParser(description="bench-test control-plane agent")
     _srv, _tok = load_conf()
     ap.add_argument("--server", default=_srv)
