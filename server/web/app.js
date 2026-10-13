@@ -306,11 +306,17 @@ function renderTop() {
   const online = STATE.runners.filter((r) => r.online).length;
   const machines = new Set(STATE.runners.map(machineKey)).size;
   const stale = STATE.runners.filter((r) => r.update_available).length;
+  // the control plane is a runner of sorts: it can be behind its own latest commit
+  const behind = STATE.server_git && STATE.latest_git && STATE.server_git !== STATE.latest_git;
   $("#topstats").innerHTML = [
     ["machines", machines], ["runners", STATE.runners.length], ["online", online],
     ["active runs", STATE.active.length], ["history", STATE.recent.length],
   ].concat(stale ? [["stale", stale]] : [])
-    .map(([k, v]) => `<div class="tstat"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
+    .map(([k, v]) => `<div class="tstat"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("")
+    + (behind
+      ? `<button class="tstat warn" data-server-update title="control plane ${esc(STATE.server_git)} vs latest ${esc(STATE.latest_git)} - pull and restart">`
+        + `<div class="v">!</div><div class="k">update server</div></button>`
+      : "");
   document.title = STATE.active.length ? `(${STATE.active.length}) bench-test` : "bench-test control plane";
   const sub = document.querySelector(".brand .sub");
   if (sub) sub.textContent = "control plane · v" + (STATE.version || "?") + " · single pane of glass";
@@ -1743,7 +1749,7 @@ document.addEventListener("click", (e) => {
     renderHistory();
     return;
   }
-  const t = e.target.closest("[data-tab],[data-start],[data-stop],[data-update],[data-fan],[data-detail],[data-sched-del],[data-toggle-off],[data-forget],[data-power],[data-iso],[data-focus],[data-rtab],[data-runner],[data-f]");
+  const t = e.target.closest("[data-tab],[data-start],[data-stop],[data-update],[data-fan],[data-detail],[data-sched-del],[data-toggle-off],[data-forget],[data-power],[data-iso],[data-focus],[data-rtab],[data-runner],[data-f],[data-server-update]");
   if (!t) return;
   if (t.dataset.rtab) {
     const found = runnerRun(t.dataset.rtab);
@@ -1757,6 +1763,14 @@ document.addEventListener("click", (e) => {
     const found = runnerRun(t.dataset.runner);
     if (!found) return toast("that runner has no runs yet");
     if (FOCUS !== found.run.id) focusRun(found.run.id);
+    return;
+  }
+  if (t.dataset.serverUpdate !== undefined) {
+    if (!confirm("Pull the control plane's own checkout and restart it?")) return;
+    api("/server/update", "POST", {}).then((r) => {
+      toast(r.message || (r.ok ? "server updated" : "no change"));
+      setTimeout(refresh, 5000);
+    }).catch((err) => toast("server update failed: " + err.message, "err"));
     return;
   }
   if (t.dataset.toggleOff !== undefined) {

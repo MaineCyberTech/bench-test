@@ -148,6 +148,9 @@ def run():
             "vals = [r[i] for r in tele" not in _imp and "r.get(name) for r in tele" in _imp, "")
     # static files must be contained by real path, not a raw string prefix
     _bd = open(os.path.join(REPO, "server", "benchd.py"), encoding="utf-8").read()
+    c.check("the server can update its own checkout, operator only (source)",
+            're.match(r"^/api/v1/server/update$", path)' in _bd
+            and "_server_update" in _bd and "copy deploy" in _bd, "")
     c.check("static file serving uses a real containment check",
             "os.path.commonpath([full, root]) == root" in _bd, "")
     c.check("a body size cap exists", "MAX_BODY" in _bd, "")

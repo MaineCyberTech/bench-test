@@ -720,6 +720,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._is_operator(q):
                     return self._err(401, "unauthorized")
                 return self._stream()
+            m = re.match(r"^/api/v1/server/update$", path)
+            if m:
+                if not self._is_operator(q):
+                    return self._err(403, "operator only")
+                return self._server_update()
             m = re.match(r"^/api/v1/runners/([^/]+)/commands$", path)
             if m:
                 if not self._may_act_as(m.group(1)):
@@ -1249,6 +1254,44 @@ class Handler(BaseHTTPRequestHandler):
         self.bus.publish({"event": "runner", "data": r})
         return self._send(200, {"runner_id": rid, "api_key": key, "poll_interval": 2.0,
                                 "telemetry_interval": 1.0, "server_time": now()})
+
+    def _server_update(self):
+        """Pull the control plane's own checkout and restart it.
+
+        Only meaningful for a git deploy; a copy deploy has no history to pull, so it
+        says so rather than pretending. The restart is handed to systemd with a delay,
+        so this response flushes before the process it is answering from goes away.
+        """
+        import subprocess
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if not os.path.isdir(os.path.join(root, ".git")):
+            return self._send(200, {"ok": False, "mode": "copy",
+                                    "message": "copy deploy - refresh the files and restart benchd"})
+        before = server_git()
+
+        def git(*args):
+            return subprocess.run(["git", "-C", root] + list(args), capture_output=True,
+                                  text=True, timeout=180)
+
+        try:
+            git("fetch", "--depth", "1", "origin")
+            r = git("pull", "--ff-only")
+        except Exception as e:
+            return self._send(200, {"ok": False, "message": "git failed: %s" % e})
+        _SERVER_GIT["v"] = None                    # re-read the commit we are now on
+        after = server_git()
+        restart = bool(after) and after != before
+        if restart:
+            try:
+                subprocess.Popen(["bash", "-c", "sleep 1; systemctl restart benchd"],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
+            except Exception:
+                pass
+        out = [l for l in (r.stdout or "").strip().splitlines() if l.strip()]
+        return self._send(200, {"ok": True, "before": before, "after": after,
+                                "restarting": restart,
+                                "message": (out[-1] if out else "pulled")[:200]})
 
     def _issue_command(self, rid, b):
         S = self.store
