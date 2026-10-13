@@ -2292,6 +2292,13 @@ def build_summary(report_path):
         elif phase == "soak":
             if r.get("matmul_tflops") is not None:
                 out["gpu_soak_tflops"] = r.get("matmul_tflops")
+                # the size is what makes this comparable: the same card reports a
+                # very different TFLOPS at N=4096 vs N=10240, and the total adds the
+                # conv work the matmul-only number leaves out
+                if r.get("size") is not None:
+                    out["gpu_soak_size"] = r.get("size")
+                if r.get("total_tflops") is not None:
+                    out["gpu_soak_total_tflops"] = r.get("total_tflops")
                 out["gpu_soak_telemetry"] = r.get("telemetry")
             elif r.get("gflops") is not None:
                 out["cpu_soak_gflops"] = r.get("gflops")
@@ -2405,6 +2412,8 @@ def _merge_into(s, j):
         elif phase == "soak":
             if r.get("matmul_tflops") is not None:
                 setd("gpu_soak_tflops", r["matmul_tflops"])
+                setd("gpu_soak_size", r.get("size"))
+                setd("gpu_soak_total_tflops", r.get("total_tflops"))
                 setd("gpu_soak_telemetry", r.get("telemetry"))
             elif r.get("gflops") is not None:
                 setd("cpu_soak_gflops", r["gflops"])

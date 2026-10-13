@@ -115,6 +115,28 @@ def run():
     g = build_summary_dir(gd)
     c.check("summary keeps the gfx record that scored, not the later skipped one",
             (g.get("gfx") or {}).get("score") == 31723, g.get("gfx"))
+
+    # ---- the soak metric must be interpretable across matrix sizes ----
+    # the same card reports very different TFLOPS at N=4096 vs N=10240, and the
+    # matmul-only number omits the conv work the soak loop also does
+    sd = tmpdir()
+    with open(os.path.join(sd, "host-20260101-000000.json"), "w") as fh:
+        json.dump({"host": "h", "phases": [
+            {"group": "gpu", "phase": "soak",
+             "result": {"matmul_tflops": 32.7, "total_tflops": 69.5, "size": 4096,
+                        "seconds": 183.4, "matmuls": 43628}}]}, fh)
+    s4 = build_summary_dir(sd)
+    c.check("the soak keeps its matmul-only metric",
+            s4.get("gpu_soak_tflops") == 32.7, s4.get("gpu_soak_tflops"))
+    c.check("the soak records the matrix size that produced it",
+            s4.get("gpu_soak_size") == 4096, s4.get("gpu_soak_size"))
+    c.check("the soak reports the total throughput too (conv included)",
+            s4.get("gpu_soak_total_tflops") == 69.5, s4.get("gpu_soak_total_tflops"))
+    _gsrc = open(os.path.join(BENCH, "gpu_bench.py"), encoding="utf-8").read()
+    c.check("both soak backends report size + total",
+            _gsrc.count('"total_tflops": round') == 2 and _gsrc.count('"size": N') == 1
+            and _gsrc.count('"size": n') == 1,
+            (_gsrc.count('"total_tflops": round'), _gsrc.count('"size": N'), _gsrc.count('"size": n')))
     gd2 = tmpdir()
     with open(os.path.join(gd2, "host-20260101-000000.json"), "w") as fh:
         json.dump({"host": "h", "phases": [

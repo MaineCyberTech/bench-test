@@ -368,8 +368,16 @@ def torch_soak(a):
     _sync(dev)
     dt = time.time() - t0
     stop.set(); tel.join(timeout=5)
+    # The loop runs a conv2d alongside every matmul, so a matmul-only count
+    # understates throughput - badly at small N, where the conv is comparable work
+    # (~half of it at 4096, ~7% at 10240). Report both, plus the size: the TFLOPS is
+    # only comparable between runs that used the same N.
+    mm_flops = 2.0 * N ** 3 * mats
+    conv_flops = 2.0 * 32 * 128 * 128 * 128 * (128 * 3 * 3)
     out = {"phase": "soak", "backend": dev, "seconds": round(dt, 1), "matmuls": mats, "convs": convs,
-           "matmul_tflops": round(2.0 * N ** 3 * mats / dt / 1e12, 1),
+           "size": N,
+           "matmul_tflops": round(mm_flops / dt / 1e12, 1),
+           "total_tflops": round((mm_flops + conv_flops * convs) / dt / 1e12, 1),
            "peak_vram_gib": round(t.cuda.max_memory_allocated() / 1024 ** 3, 1) if dev == "cuda" else None,
            "until_stable": bool(getattr(a, "until_stable", False)),
            "stable": stable_since is not None,
@@ -378,8 +386,8 @@ def torch_soak(a):
     ts = _telemetry_summary(samples)
     if ts:
         out["telemetry"] = ts
-    log("soak %.1fs matmuls=%d convs=%d matmul_TFLOPS=%.1f%s" % (
-        dt, mats, convs, out["matmul_tflops"],
+    log("soak %.1fs matmuls=%d convs=%d N=%d matmul_TFLOPS=%.1f total_TFLOPS=%.1f%s" % (
+        dt, mats, convs, N, out["matmul_tflops"], out["total_tflops"],
         (" stable@%.0fs+%.0fs" % (out["stable_at_s"], out["stable_hold_s"]))
         if out["stable"] else ""))
     jline(out)
@@ -679,14 +687,19 @@ def dml_soak(a):
         io_cv.get_outputs()[0].numpy()
     dt = time.time() - t0
     stop.set(); tel.join(timeout=5)
+    mm_flops = 2.0 * n ** 3 * mats
+    conv_flops = 2.0 * 8 * 128 * 128 * 128 * (64 * 3 * 3)
     out = {"phase": "soak", "backend": "dml", "seconds": round(dt, 1), "matmuls": mats, "convs": convs,
-           "matmul_tflops": round(2.0 * n ** 3 * mats / dt / 1e12, 1),
+           "size": n,
+           "matmul_tflops": round(mm_flops / dt / 1e12, 1),
+           "total_tflops": round((mm_flops + conv_flops * convs) / dt / 1e12, 1),
            "until_stable": bool(getattr(a, "until_stable", False)),
            "stable": False}
     ts = _telemetry_summary(samples)
     if ts:
         out["telemetry"] = ts
-    log("soak %.1fs matmuls=%d convs=%d matmul_TFLOPS=%.1f" % (dt, mats, convs, out["matmul_tflops"]))
+    log("soak %.1fs matmuls=%d convs=%d N=%d matmul_TFLOPS=%.1f total_TFLOPS=%.1f"
+        % (dt, mats, convs, n, out["matmul_tflops"], out["total_tflops"]))
     jline(out)
 
 

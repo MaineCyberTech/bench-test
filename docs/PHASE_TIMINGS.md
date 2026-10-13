@@ -149,6 +149,25 @@ call, so 2 Hz keeps the traces smooth. The A/B (same box, same sampler):
 
 `elapsed_s` is now written with 2 decimals so rows stay distinct above 10 Hz.
 
+### The soak's TFLOPS depends on the matrix size
+
+`gpu_soak_tflops` is `2·N³·matmuls / seconds`, so it is **only comparable between
+runs that used the same `gpu_size`**. The same RTX 4070 Ti SUPER reported **81.1**
+at the runner's default (N=10240) and **32.7** with the stabilized preset's
+`gpu_size: 4096` — not a regression:
+
+| run | N | matmuls/s | `gpu_soak_tflops` | `gpu_soak_total_tflops` |
+|---|---|---|---|---|
+| default size | 10240 | 37.7 | 81.1 | **86.9** (conv = 7% of the work) |
+| stabilized preset | 4096 | **237.9** | 32.7 | **69.5** (conv = 53%) |
+
+The card did **6× more matmuls per second** at the smaller size; it simply reaches a
+lower fraction of peak. The soak loop also runs a conv2d per matmul, and the
+matmul-only figure omits it — which matters far more at 4096, where the conv is
+about half the work. So the summary now carries `gpu_soak_size` and
+`gpu_soak_total_tflops` alongside `gpu_soak_tflops`: read the size before comparing
+two runs, and prefer the total when the sizes differ.
+
 ## Caveats
 
 - Two machines, one run each; treat as indicative. Faster/slower disks, GPUs and
