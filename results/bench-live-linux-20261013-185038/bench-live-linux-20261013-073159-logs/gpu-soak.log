@@ -1,0 +1,3 @@
+[backend] cuda
+soak 180.0s matmuls=3214 convs=3214 N=4096 matmul_TFLOPS=2.5 total_TFLOPS=5.2 stable@175s+60s
+RESULT_JSON:{"phase": "soak", "backend": "cuda", "seconds": 180.0, "matmuls": 3214, "convs": 3214, "size": 4096, "matmul_tflops": 2.5, "total_tflops": 5.2, "peak_vram_gib": 0.5, "until_stable": true, "stable": true, "stable_at_s": 175.4, "stable_hold_s": 60.0, "telemetry": {"samples": 89, "temp_c": [66.0, 73.7, 76.0], "fan_pct": [47.0, 71.9, 78.0], "power_w": [174.4, 188.7], "sm_mhz": [1739]}}

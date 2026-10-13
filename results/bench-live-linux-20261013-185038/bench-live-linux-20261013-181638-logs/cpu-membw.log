@@ -1,0 +1,2 @@
+membw copy=18 add=13 reduce=13 GB/s
+RESULT_JSON:{"phase": "membw", "bytes_per_array": 268435456, "results": {"copy_gbps": 18.0, "add_gbps": 13.0, "reduce_gbps": 13.0}}
