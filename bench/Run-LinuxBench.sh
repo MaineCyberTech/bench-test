@@ -10,6 +10,7 @@
 #   [--skip-gpu] [--skip-cpu] [--skip-ram] [--skip-disk]
 #   [--skip-combined] [--skip-fullsoak] [--skip-net] [--skip-nvenc] [--skip-sys]
 #   [--skip-gfx] [--skip-fan]
+#   [--soak-until-stable] [--stable-hold S]
 #
 # Env: BENCH_PY overrides the Python interpreter (default: .venv/bin/python, else python3).
 #      FURMARK overrides the FurMark 2 binary path (default: tools/furmark/FurMark_linux64/furmark).
@@ -29,7 +30,7 @@ DISK_PATH="${TMPDIR:-/tmp}"; DISK_SIZE_MB=2048; DISK_SECONDS=15; STEADY_GB=10
 DISK_PATH_SET=0
 DO_GPU=1; DO_CPU=1; DO_RAM=1; DO_DISK=1
 DO_COMBINED=1; DO_FULLSOAK=1; DO_NET=1; DO_NVENC=1; DO_SYS=1; DO_GFX=1; DO_FAN=1
-STABLE_ARG=""
+STABLE_ARG=""; STABLE_HOLD=60
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -62,7 +63,8 @@ while [ $# -gt 0 ]; do
         --skip-sys)        DO_SYS=0; shift ;;
         --skip-gfx)        DO_GFX=0; shift ;;
         --skip-fan)        DO_FAN=0; shift ;;
-    --soak-until-stable) STABLE_ARG="--until-stable"; shift ;;
+    --soak-until-stable) STABLE_ARG="--until-stable --stable-hold $STABLE_HOLD"; shift ;;
+    --stable-hold)     STABLE_HOLD="$2"; STABLE_ARG="--until-stable --stable-hold $STABLE_HOLD"; shift 2 ;;
         -h|--help)         sed -n '2,19p' "$0"; exit 0 ;;
         *)                 echo "unknown option: $1" >&2; exit 1 ;;
     esac

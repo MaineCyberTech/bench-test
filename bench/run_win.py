@@ -46,6 +46,8 @@ def parse_args():
     ap.add_argument("--passes", default="2")
     ap.add_argument("--soak-until-stable", action="store_true",
                     help="soak until the GPU temperature plateaus (the soak ceiling still applies)")
+    ap.add_argument("--stable-hold", default="60",
+                    help="keep soaking this many seconds after the plateau is reached")
     ap.add_argument("--valley-bin", default=DEFAULT_VALLEY)
     ap.add_argument("-o", "--out-dir", default=os.path.join(REPO, "results"))
     return ap.parse_args()
@@ -313,6 +315,7 @@ def main():
           "-FullSystemSeconds", ("0" if a.skip_fullsoak else str(a.fullsoak_seconds))]
     if a.soak_until_stable:
         ps.append("-SoakUntilStable")
+        ps += ["-StableHold", str(a.stable_hold)]
     if a.skip_cpu:
         ps.append("-SkipCpu")
     if a.skip_gpu:

@@ -26,6 +26,7 @@ param(
     [int]$Passes = 2,
     [int]$FullSystemSeconds = 0,
     [switch]$SoakUntilStable,
+    [int]$StableHold = 60,
     [switch]$SkipRam,
     [switch]$SkipDisk,
     [switch]$SkipNet,
@@ -67,7 +68,7 @@ $summary.artifacts.env = "$base.env.json"
 
 if (-not $SkipGpu) {
     Write-Host "=== [2/11] GPU compute battery (telemetry + report) ===" -ForegroundColor Yellow
-    & "$PSScriptRoot\Invoke-GpuBench.ps1" -OutDir $OutDir -SoakSeconds $SoakSeconds -TorchIndex $TorchIndex -Size $Size -UntilStable:$SoakUntilStable -NoInstall:$NoInstall
+    & "$PSScriptRoot\Invoke-GpuBench.ps1" -OutDir $OutDir -SoakSeconds $SoakSeconds -TorchIndex $TorchIndex -Size $Size -UntilStable:$SoakUntilStable -StableHold $StableHold -NoInstall:$NoInstall
 } else {
     Write-Host "=== [2/11] GPU battery skipped ===" -ForegroundColor DarkGray
 }
@@ -142,7 +143,7 @@ if (-not $SkipNet) {
 if ($FullSystemSeconds -gt 0) {
     Write-Host "=== [11/11] full-system simultaneous soak (GPU+CPU+RAM+disk) ===" -ForegroundColor Yellow
     try {
-        & "$PSScriptRoot\Invoke-FullSystemSoak.ps1" -OutDir $OutDir -Seconds $FullSystemSeconds -GpuSize $Size -CpuSize $CpuSize -RamSizeMB $RamSizeMB -DiskSizeMB $DiskSizeMB -UntilStable:$SoakUntilStable | Out-Null
+        & "$PSScriptRoot\Invoke-FullSystemSoak.ps1" -OutDir $OutDir -Seconds $FullSystemSeconds -GpuSize $Size -CpuSize $CpuSize -RamSizeMB $RamSizeMB -DiskSizeMB $DiskSizeMB -UntilStable:$SoakUntilStable -StableHold $StableHold | Out-Null
         $f = Get-NewestArtifact "$($env:COMPUTERNAME)-fullsoak-*.json"
         if ($f) { $summary.artifacts.fullsoak = $f.FullName }
     } catch { Write-Host "  fullsoak skipped: $($_.Exception.Message)" }

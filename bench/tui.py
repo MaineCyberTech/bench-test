@@ -80,7 +80,8 @@ _DEF_DUR = {"gpu": "600", "combined": "300", "fullsoak": "300", "gfx": "60"}
 # preset carries them in "tune". Without them a run uses the runner's long
 # defaults (cpu 120s, ram 120s, gpu matrix 12288, steady 10GB).
 _TUNE = {"cpu_soak": 45, "ram_soak": 30, "disk_seconds": 30, "gpu_size": 4096,
-         "cpu_size": 2048, "ram_size_mb": 512, "passes": 1, "steady_gb": 2, "stable": 1}
+         "cpu_size": 2048, "ram_size_mb": 512, "passes": 1, "steady_gb": 2,
+         "stable": 1, "stable_hold": 60}
 
 PRESETS = [
     ("Quick check (short soaks)", {"groups": _g("gpu", "cpu", "ram", "disk", "combined", "fullsoak",

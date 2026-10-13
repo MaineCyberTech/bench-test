@@ -870,17 +870,24 @@ def popen_hidden(cmd, **kw):
 EXTRA_ARG_KEYS = [("cpu_soak", "--cpu-soak"), ("ram_soak", "--ram-soak"),
                   ("disk_seconds", "--disk-seconds"), ("gpu_size", "--gpu-size"),
                   ("cpu_size", "--cpu-size"), ("ram_size_mb", "--ram-size-mb"),
-                  ("passes", "--passes"), ("steady_gb", "--steady-gb")]
+                  ("passes", "--passes"), ("steady_gb", "--steady-gb"),
+                  ("stable_hold", "--stable-hold")]
 
 
 def extra_runner_args(profile):
-    """Tuning flags a preset may set beyond gpu/combined/fullsoak/gfx."""
+    """Tuning flags a preset may set beyond gpu/combined/fullsoak/gfx.
+
+    `stable` turns on the plateau soak; `stable_hold` is how many seconds to keep
+    soaking *after* the plateau is reached, and implies `stable` (the runners need
+    the switch as well as the hold).
+    """
+    p = profile or {}
     args = []
     for key, flag in EXTRA_ARG_KEYS:
-        v = (profile or {}).get(key)
+        v = p.get(key)
         if v not in (None, ""):
             args += [flag, str(v)]
-    if (profile or {}).get("stable"):
+    if p.get("stable") or p.get("stable_hold") not in (None, ""):
         args.append("--soak-until-stable")
     return args
 
@@ -895,8 +902,9 @@ def tune_summary(profile):
                      ("passes", "%s pass"), ("steady_gb", "steady %sG")):
         if t.get(key) is not None:
             parts.append(fmt % t[key])
-    if t.get("stable"):
-        parts.append("until stable")
+    if t.get("stable") or t.get("stable_hold") not in (None, ""):
+        hold = t.get("stable_hold")
+        parts.append("until stable" + ((" +%ss" % hold) if hold not in (None, "") else ""))
     return " · ".join(parts)
 
 

@@ -1013,7 +1013,7 @@ class Handler(BaseHTTPRequestHandler):
             run_id = m.group(1)
             samples = b.get("samples") or []
             rows = []
-            last_named = None
+            named = []
             for s in samples:
                 ts = None
                 if isinstance(s, dict):
@@ -1023,11 +1023,11 @@ class Handler(BaseHTTPRequestHandler):
                              and isinstance(v, (int, float)) and not isinstance(v, bool)}
                     if isinstance(s.get("ts"), (int, float)):
                         ts = float(s["ts"])
-                    last_named = dict(s)
+                    named.append(dict(s))
                 else:
                     core = (list(s) + [None] * len(SAMPLE_FIELDS))[:len(SAMPLE_FIELDS)]
                     extra = {}
-                    last_named = dict(zip(SAMPLE_FIELDS, core))
+                    named.append(dict(zip(SAMPLE_FIELDS, core)))
                 rows.append([run_id, ts or now()] + core + [json.dumps(extra) if extra else None])
             with S.lock:
                 S.conn.executemany(
@@ -1035,9 +1035,13 @@ class Handler(BaseHTTPRequestHandler):
                     "gpu_fan_rpm,cpu_util,ram_used,sm_mhz,mem_used,extra) "
                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
                 S.conn.commit()
-            if last_named is not None:
+            if named:
+                # publish the WHOLE batch: a runner posts telemetry in chunks, and
+                # sending only the last sample made the live web view undersample
+                # (one point per chunk instead of per second)
                 self.bus.publish({"event": "telemetry",
-                                  "data": {"run_id": run_id, "sample": last_named, "n": len(rows)}})
+                                  "data": {"run_id": run_id, "sample": named[-1],
+                                           "samples": named[-1000:], "n": len(rows)}})
             return self._send(200, {"ok": True, "accepted": len(rows)})
         m = re.match(r"^/api/v1/runs/([^/]+)/event$", path)
         if m:

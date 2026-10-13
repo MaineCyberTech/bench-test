@@ -6,6 +6,7 @@ param(
     [string]$TorchIndex = 'https://download.pytorch.org/whl/cu128',
     [int]$Size = 12288,
     [switch]$UntilStable,
+    [int]$StableHold = 60,
     [switch]$NoInstall
 )
 
@@ -75,7 +76,7 @@ $phases += Invoke-Phase 'conv' @('--seconds', '15') 0
 $phases += Invoke-Phase 'integrity' @() 0
 $phases += Invoke-Phase 'streams' @('--seconds', '8') 0
 $soakArgs = @('--seconds', "$SoakSeconds")
-if ($UntilStable) { $soakArgs += '--until-stable' }
+if ($UntilStable) { $soakArgs += @('--until-stable', '--stable-hold', "$StableHold") }
 $phases += Invoke-Phase 'soak' $soakArgs $SoakSeconds
 
 # --- stability scan ---
