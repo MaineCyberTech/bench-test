@@ -130,7 +130,7 @@ limit. Costs measured on a Windows box (nvidia-smi is the same command on Linux)
 
 | Stat | How | Cost | Cadence |
 |---|---|---|---|
-| GPU util/temp/fan/power/clocks/VRAM/pstate | `nvidia-smi` | **66 ms/call** | 2 Hz (`--gpu-interval 0.5`) |
+| GPU util/temp/fan/power/clocks/VRAM/pstate | `nvidia-smi` | **66 ms/call** | 1 Hz (`--gpu-interval 0.5`) |
 | CPU package/core temps | `sensors -j` | subprocess | 1 Hz (`--slow-interval 1.0`) |
 | GPU fan RPM | `nvidia-settings` | subprocess | 1 Hz |
 | CPU %/RAM/swap | `psutil`, `GetSystemTimes`, `/proc` | 0.1–3.6 ms | the row rate |

@@ -191,7 +191,7 @@ pct exec 108 -- systemctl mask tmp.mount run-lock.mount dev-mqueue.mount
 - **Summary** (runs-index-style): GPU matmul (fp16/bf16/tf32/fp32), soak TFLOPS + telemetry,
   CPU matmul/soak, RAM, disk seq write, network, full-system verdict — the same keys on
   Windows and Linux so trends/compare line up.
-- **Telemetry** (4 Hz rows; nvidia-smi cached at 2 Hz, sensors at 1 Hz): GPU util/mem-util/temp(+mem temp)/fan/power(+limit)/SM+mem+gr clocks/
+- **Telemetry** (4 Hz rows; nvidia-smi cached at 1 Hz, sensors at 1 Hz): GPU util/mem-util/temp(+mem temp)/fan/power(+limit)/SM+mem+gr clocks/
   VRAM/pstate/enc+dec, CPU util + package/core temp, RAM + swap, disk read/write, net rx/tx.
 - **Full inventory** per run: CPU, board/BIOS, DIMMs, GPUs + driver, storage, NICs
   (Windows `sysinfo` / Linux `sys` phase) — attached to the run as `system.inventory`.

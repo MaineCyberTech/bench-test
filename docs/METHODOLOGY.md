@@ -19,7 +19,7 @@ measured, and so a machine can be stress-tested for stability and thermals.
 | Valley (Unigine) | game-like render | score/FPS (note: often CPU-bound at 1080p) |
 
 ## Telemetry
-telemetry rows at 4 Hz, with `nvidia-smi` cached at 2 Hz (a call costs ~66 ms) and
+telemetry rows at 4 Hz, with `nvidia-smi` cached at 1 Hz (a call costs ~66 ms) and
 `sensors`/`nvidia-settings` at 1 Hz - `nvidia-smi` fields: `utilization.gpu`, `temperature.gpu`, `power.draw`,
 `clocks.sm`, `memory.used`, `fan.speed`. Throttle reasons are read after the soak
 (`nvidia-smi -q -d PERFORMANCE`). Stability is checked against System events

@@ -52,7 +52,7 @@ name it too (`ISO <gpu> v1.11.3 #<run>`).
 
 ## Telemetry
 
-4 Hz rows per run (nvidia-smi cached at 2 Hz), written to `*.telemetry.csv` and streamed to the control plane.
+4 Hz rows per run (nvidia-smi cached at 1 Hz), written to `*.telemetry.csv` and streamed to the control plane.
 Canonical fields: `elapsed, temp_c, fan_pct, power_w, gpu_util, gpu_fan_rpm,
 cpu_util, ram_used, sm_mhz`, plus extras: `mem_util, mem_mhz,
 vram_used_mib, cpu_temp_c, cpu_max_core_c, cpu_fan_rpm, load1, swap_used_gib,
