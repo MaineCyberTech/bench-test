@@ -126,6 +126,7 @@ class Metrics:
     def auth_failure(self):
         with self.lock:
             self.auth_failures += 1
+            return self.auth_failures
 
     def rate_limit(self):
         with self.lock:
@@ -133,6 +134,86 @@ class Metrics:
 
     def uptime(self):
         return time.time() - self.started
+
+
+# OBS-P2-001 / IR-P2-001 / NOTIF-P2-001: optional, disabled-by-default alert
+# webhook. When a URL is configured (--alert-webhook / $BENCHD_ALERT_WEBHOOK) the
+# control plane POSTs a small JSON alert out of band on a failed run finish, a
+# failing /ready probe, a burst of auth failures, or a capacity threshold. Each
+# alert is delivered from a daemon thread with a short timeout and is rate-limited
+# per kind, so a slow or dead webhook can never block, slow or alter a request.
+ALERT_RATE_WINDOW = 300.0   # at most one alert per kind per 5 minutes
+ALERT_TIMEOUT_S = 5.0       # urllib timeout for one webhook POST
+ALERT_AUTH_BURST = 10       # failed auth attempts that count as a burst
+
+
+class Alerter:
+    """Out-of-band alert webhook (disabled unless a URL is set).
+
+    ``fire`` is safe to call from any request path: it only takes a short lock,
+    consults a per-kind rate limit, and hands the actual POST to a daemon thread,
+    so an unreachable webhook cannot slow or fail a request.
+    """
+
+    def __init__(self, url=None, window=ALERT_RATE_WINDOW, timeout=ALERT_TIMEOUT_S,
+                 db_bytes_limit=0):
+        self.url = url or None
+        self.window = float(window)
+        self.timeout = float(timeout)
+        self.db_bytes_limit = int(db_bytes_limit or 0)
+        self.lock = threading.Lock()
+        self.last = {}          # kind -> ts of the last delivered alert
+        self.counts = {}        # kind -> alerts delivered
+        self.suppressed = 0     # alerts dropped by the rate limit
+        self.failures = 0       # webhook POSTs that raised
+
+    @property
+    def enabled(self):
+        return bool(self.url)
+
+    def fire(self, kind, **fields):
+        """Deliver one alert of `kind` from a daemon thread; rate-limited.
+
+        Returns True when an alert was queued, False when the webhook is disabled
+        or the kind is still inside its rate-limit window. Never raises.
+        """
+        if not self.url:
+            return False
+        t = now()
+        with self.lock:
+            if t - self.last.get(kind, 0.0) < self.window:
+                self.suppressed += 1
+                return False
+            self.last[kind] = t
+            self.counts[kind] = self.counts.get(kind, 0) + 1
+        payload = {"alert": kind, "ts": round(t, 3)}
+        payload.update(fields)
+        try:
+            threading.Thread(target=self._post, args=(payload,),
+                             name="benchd-alert", daemon=True).start()
+        except Exception:
+            pass
+        return True
+
+    def _post(self, payload):
+        """POST one alert; only ever runs on the daemon thread, never raises."""
+        try:
+            body = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(
+                self.url, data=body, method="POST",
+                headers={"Content-Type": "application/json", "User-Agent": "benchd"})
+            with urllib.request.urlopen(req, timeout=self.timeout):
+                pass
+        except Exception as exc:
+            with self.lock:
+                self.failures += 1
+            log_json("warning", "alert webhook failed", alert=payload.get("alert"),
+                     error="%s: %s" % (type(exc).__name__, exc))
+
+    def totals(self):
+        with self.lock:
+            return {"fired": sum(self.counts.values()),
+                    "suppressed": self.suppressed, "failed": self.failures}
 
 
 # OBS-P2-004: /health is a cheap liveness probe. Its expensive fields (per-table
@@ -179,6 +260,12 @@ def refresh_health(store=None, with_network=True):
         _HEALTH.update({"capacity": cap, "runners": runners, "git": git,
                         "version": version, "version_source": version_source,
                         "latest": latest})
+    # OBS-P2-001 / NOTIF-P2-001: a capacity threshold fires an out-of-band alert.
+    # Checked here (off the request path) so a probe never pays for it; the
+    # per-kind rate limit keeps a full disk from spamming the webhook.
+    a = getattr(store, "alerter", None)
+    if a is not None and a.db_bytes_limit and cap.get("db_bytes", 0) > a.db_bytes_limit:
+        a.fire("capacity", db_bytes=cap.get("db_bytes"), limit=a.db_bytes_limit)
 
 
 def health_snapshot():
@@ -404,6 +491,11 @@ class Store:
         # re-registers a machine_id it just created still gets the same key back.
         # Never persisted - the database only ever holds key_digest(key).
         self.key_plain = {}
+        # OBS-P2-001 / IR-P2-001 / NOTIF-P2-001: the alert webhook lives with the
+        # store so the background /health refresher (which owns the capacity
+        # numbers) and the request path share one rate-limited sender. Disabled
+        # until main()/a test installs a URL.
+        self.alerter = Alerter()
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         with self.lock:
@@ -526,6 +618,7 @@ class Store:
                     self.conn.execute("DELETE FROM %s WHERE run_id=?" % t, (run_id,))
                 cur = self.conn.execute("DELETE FROM runs WHERE id=?", (run_id,))
                 self.conn.commit()
+                invalidate_run_cache(run_id)
                 return cur.rowcount
             except Exception:
                 self.conn.rollback()
@@ -1033,6 +1126,26 @@ def dotted(obj, path):
     return cur
 
 
+# OBS-P2-001 / IR-P2-001: a finished run is a failure when its status says so, or
+# when the summary carries a failing verdict. The run status is the primary signal
+# (the GUI/agent report "failed"); the full-system soak verdict and a string
+# ``verdict`` field are secondary, so a "clean: false" soak also alerts.
+FAILED_RUN_STATUSES = ("failed", "error", "aborted", "timeout", "cancelled", "canceled")
+
+
+def run_failed(status, summary):
+    """True when a finished run counts as a failure (status or verdict)."""
+    if str(status or "").lower() in FAILED_RUN_STATUSES:
+        return True
+    if isinstance(summary, dict):
+        if dotted(summary, "fullsoak.result.verdict.clean") is False:
+            return True
+        v = summary.get("verdict")
+        if isinstance(v, str) and v.lower() in ("failed", "fail", "unclean", "not-clean"):
+            return True
+    return False
+
+
 def runner_public(r):
     if r is None:
         return None
@@ -1151,6 +1264,76 @@ def derive_stats(rows, series, stats):
     return d
 
 
+# PERF-P2-001: the per-run detail, stats and telemetry/CSV endpoints each load and
+# re-parse every telemetry row on the request thread. The parsed results are cached
+# per run, keyed by (run_id, telemetry_generation, kind): every telemetry write
+# bumps the run's in-memory generation, so a repeat request reuses the parsed value
+# with no extra DB read until new telemetry arrives. The generation is an
+# equivalent, cheaper invalidation than a row count, and cached objects are
+# returned unchanged, so responses stay byte-identical.
+_STATS_CACHE = {}
+_STATS_CACHE_LOCK = threading.Lock()
+STATS_CACHE_MAX = 64
+_TELE_GEN = {}          # run_id -> telemetry generation (bumped on every write)
+
+
+def clear_stats_cache():
+    with _STATS_CACHE_LOCK:
+        _STATS_CACHE.clear()
+        _TELE_GEN.clear()
+
+
+def bump_run_cache(run_id):
+    """Mark a run's cached artifacts stale: new telemetry arrived for it."""
+    with _STATS_CACHE_LOCK:
+        _TELE_GEN[run_id] = _TELE_GEN.get(run_id, 0) + 1
+        for k in [k for k in _STATS_CACHE if k[0] == run_id]:
+            _STATS_CACHE.pop(k, None)
+
+
+def invalidate_run_cache(run_id):
+    """Drop a run's cached artifacts and its telemetry generation (on delete)."""
+    with _STATS_CACHE_LOCK:
+        _TELE_GEN.pop(run_id, None)
+        for k in [k for k in _STATS_CACHE if k[0] == run_id]:
+            _STATS_CACHE.pop(k, None)
+
+
+def _run_gen(run_id):
+    with _STATS_CACHE_LOCK:
+        return _TELE_GEN.get(run_id, 0)
+
+
+def _cache_get(key):
+    with _STATS_CACHE_LOCK:
+        return _STATS_CACHE.get(key)
+
+
+def _cache_put(key, value):
+    with _STATS_CACHE_LOCK:
+        if len(_STATS_CACHE) >= STATS_CACHE_MAX:
+            _STATS_CACHE.clear()
+        _STATS_CACHE[key] = value
+
+
+def compute_stats_cached(store, run_id):
+    """compute_stats(store, run_id) behind a (run_id, generation) cache.
+
+    Only runs with samples are cached: an empty run's stored-stats fallback is a
+    single cheap row read, and caching it would risk serving a stale empty result
+    after retention materialises the stats. A telemetry write bumps the run's
+    generation, so the next request naturally misses the cache.
+    """
+    key = (run_id, _run_gen(run_id), "stats")
+    hit = _cache_get(key)
+    if hit is not None:
+        return hit
+    st = compute_stats(store, run_id)
+    if st.get("samples"):
+        _cache_put(key, st)
+    return st
+
+
 def compute_stats(store, run_id):
     """Per-field min/avg/max/p95/p99 plus derived metrics for a run's telemetry.
 
@@ -1245,6 +1428,19 @@ class Handler(BaseHTTPRequestHandler):
         """Structured log line stamped with this request's id."""
         log_json(level, msg, request_id=self._request_id(), **extras)
 
+    def _alert(self, kind, **fields):
+        """Fire an out-of-band alert (OBS-P2-001), if one is configured.
+
+        Best-effort and non-blocking: the alert is queued to a daemon thread by the
+        Alerter, and a failure to deliver never touches the request path.
+        """
+        a = getattr(self.store, "alerter", None)
+        if a is not None:
+            try:
+                a.fire(kind, **fields)
+            except Exception:
+                pass
+
     def _metrics_obj(self):
         m = getattr(self.server, "_bench_metrics", None)
         if m is None:
@@ -1329,7 +1525,7 @@ class Handler(BaseHTTPRequestHandler):
     def _deny(self, code, msg):
         """An auth denial. A 401 feeds the per-IP bucket and may become a 429."""
         if code == 401:
-            self._metrics_obj().auth_failure()
+            n = self._metrics_obj().auth_failure()
             allowed, retry = self._limited("auth")
             try:
                 if self.store is not None:
@@ -1337,6 +1533,10 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 # OBS-P2-003: an audit write must never be silently lost.
                 self._log("error", "audit write failed", traceback=traceback.format_exc())
+            # OBS-P2-001 / IR-P2-001: a burst of auth failures is alertable. The
+            # per-kind rate limit keeps this to one alert per window.
+            if n >= ALERT_AUTH_BURST:
+                self._alert("auth_failures", count=n)
             if not allowed:
                 self._metrics_obj().rate_limit()
                 return self._err(429, "too many requests", {"Retry-After": str(retry)})
@@ -1621,6 +1821,8 @@ class Handler(BaseHTTPRequestHandler):
             db_err = "%s: %s" % (type(exc).__name__, exc)
             self._log("error", "readiness db check failed", error=db_err,
                       traceback=traceback.format_exc())
+            # OBS-P2-001 / IR-P2-001: a failing readiness probe is alertable.
+            self._alert("readiness", error=db_err)
         latest, git = latest_git(), server_git()
         compare = compare_commits(git, latest) if (git and latest) else ""
         out = {"ok": db_ok, "db": {"ok": db_ok}, "version": server_version(),
@@ -1650,6 +1852,9 @@ class Handler(BaseHTTPRequestHandler):
             expired = S.one("SELECT COUNT(*) c FROM commands WHERE status='expired'")["c"]
         except Exception:
             expired = 0
+        # OBS-P2-001: alert webhook counters (all zero while the webhook is off).
+        al = getattr(S, "alerter", None)
+        al_tot = al.totals() if al is not None else {"fired": 0, "suppressed": 0, "failed": 0}
         lines = [
             "# HELP benchd_uptime_seconds Seconds since the control plane started.",
             "# TYPE benchd_uptime_seconds gauge",
@@ -1682,6 +1887,15 @@ class Handler(BaseHTTPRequestHandler):
             " bounded-queue / telemetry coalescing.",
             "# TYPE benchd_sse_dropped_events_total counter",
             "benchd_sse_dropped_events_total %d" % self.bus.dropped_count(),
+            "# HELP benchd_alerts_fired_total Alert webhook deliveries.",
+            "# TYPE benchd_alerts_fired_total counter",
+            "benchd_alerts_fired_total %d" % al_tot["fired"],
+            "# HELP benchd_alerts_suppressed_total Alerts dropped by the per-kind rate limit.",
+            "# TYPE benchd_alerts_suppressed_total counter",
+            "benchd_alerts_suppressed_total %d" % al_tot["suppressed"],
+            "# HELP benchd_alerts_failed_total Alert webhook POSTs that failed.",
+            "# TYPE benchd_alerts_failed_total counter",
+            "benchd_alerts_failed_total %d" % al_tot["failed"],
         ]
         return "\n".join(lines) + "\n"
 
@@ -1788,7 +2002,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def _run_telemetry(self, run_id, q):
         maxn = int_arg(q, "max", 600, 1, 5000)
-        rows = self.store.q("SELECT * FROM telemetry WHERE run_id=? ORDER BY ts", (run_id,))
+        # PERF-P2-001: cache the parsed rows; a repeat request with the same
+        # telemetry generation reuses them and only re-applies the (cheap)
+        # downsampling.
+        key = (run_id, _run_gen(run_id), "tele")
+        rows = _cache_get(key)
+        if rows is None:
+            raw = self.store.q("SELECT * FROM telemetry WHERE run_id=? ORDER BY ts", (run_id,))
+            rows = [tele_public(r) for r in raw]
+            _cache_put(key, rows)
         if len(rows) > maxn:
             step = len(rows) / float(maxn)
             picked, i = [], 0.0
@@ -1798,7 +2020,7 @@ class Handler(BaseHTTPRequestHandler):
             if picked and picked[-1] is not rows[-1]:
                 picked.append(rows[-1])
             rows = picked
-        return self._send(200, {"run_id": run_id, "rows": [tele_public(r) for r in rows]})
+        return self._send(200, {"run_id": run_id, "rows": rows})
 
     def _run_logs(self, run_id, q):
         after = int_arg(q, "after", 0, 0, 100000000)
@@ -1815,7 +2037,9 @@ class Handler(BaseHTTPRequestHandler):
         return derive_stats(rows, series, stats)
 
     def _compute_stats(self, run_id):
-        st = compute_stats(self.store, run_id)
+        # PERF-P2-001: served from the per-run cache; only a changed row count
+        # (new telemetry) re-parses the rows.
+        st = compute_stats_cached(self.store, run_id)
         if st.get("samples"):
             return st
         # Retention may have swept the samples. The copy materialised at that point
@@ -1834,18 +2058,25 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, dict({"run_id": run_id}, **self._compute_stats(run_id)))
 
     def _telemetry_csv(self, run_id):
-        rows = self.store.q("SELECT ts,elapsed,temp_c,fan_pct,power_w,gpu_util,gpu_fan_rpm,"
-                            "cpu_util,ram_used,sm_mhz FROM telemetry "
-                            "WHERE run_id=? ORDER BY ts", (run_id,))
-        buf = io.StringIO()
-        w = csv.writer(buf)
-        w.writerow(["ts", "elapsed_s", "temp_c", "fan_pct", "power_w", "gpu_util_pct",
-                    "gpu_fan_rpm", "cpu_util_pct", "ram_used_gib", "sm_mhz"])
-        for r in rows:
-            w.writerow([r[k] for k in ("ts", "elapsed", "temp_c", "fan_pct", "power_w",
-                                       "gpu_util", "gpu_fan_rpm", "cpu_util", "ram_used",
-                                       "sm_mhz")])
-        return self._send(200, raw=buf.getvalue().encode(), ctype="text/csv",
+        # PERF-P2-001: the CSV bytes are cached by telemetry generation; repeat
+        # downloads return the exact same bytes without re-reading or re-formatting.
+        key = (run_id, _run_gen(run_id), "csv")
+        raw = _cache_get(key)
+        if raw is None:
+            rows = self.store.q("SELECT ts,elapsed,temp_c,fan_pct,power_w,gpu_util,gpu_fan_rpm,"
+                                "cpu_util,ram_used,sm_mhz FROM telemetry "
+                                "WHERE run_id=? ORDER BY ts", (run_id,))
+            buf = io.StringIO()
+            w = csv.writer(buf)
+            w.writerow(["ts", "elapsed_s", "temp_c", "fan_pct", "power_w", "gpu_util_pct",
+                        "gpu_fan_rpm", "cpu_util_pct", "ram_used_gib", "sm_mhz"])
+            for r in rows:
+                w.writerow([r[k] for k in ("ts", "elapsed", "temp_c", "fan_pct", "power_w",
+                                           "gpu_util", "gpu_fan_rpm", "cpu_util", "ram_used",
+                                           "sm_mhz")])
+            raw = buf.getvalue().encode()
+            _cache_put(key, raw)
+        return self._send(200, raw=raw, ctype="text/csv",
                           headers={"Content-Disposition":
                                    'attachment; filename="%s-telemetry.csv"' % safe_filename(run_id)})
 
@@ -2094,6 +2325,8 @@ class Handler(BaseHTTPRequestHandler):
                     "gpu_fan_rpm,cpu_util,ram_used,sm_mhz,extra) "
                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", rows)
                 S.conn.commit()
+            # PERF-P2-001: new telemetry invalidates the run's cached stats/CSV/rows.
+            bump_run_cache(run_id)
             if named:
                 # publish the WHOLE batch: a runner posts telemetry in chunks, and
                 # sending only the last sample made the live web view undersample
@@ -2177,6 +2410,11 @@ class Handler(BaseHTTPRequestHandler):
             run = run_public(S.one("SELECT * FROM runs WHERE id=?", (run_id,)))
             if run:
                 self.bus.publish({"event": "run", "data": run})
+            # OBS-P2-001 / IR-P2-001: a run finishing failed (or with a failing
+            # verdict) raises an out-of-band alert.
+            if run_failed(status, summary):
+                self._alert("run_failed", run_id=run_id, status=status,
+                            exit_code=b.get("exit_code"))
             return self._send(200, {"ok": True})
         return self._err(404, "not found")
 
@@ -2493,6 +2731,10 @@ def reap_stale_runs(store, bus):
                      (r["runner_id"],))
         bus.publish({"event": "run",
                      "data": run_public(store.one("SELECT * FROM runs WHERE id=?", (r["id"],)))})
+        # OBS-P2-001 / IR-P2-001: a run the reaper failed is still a failed run.
+        a = getattr(store, "alerter", None)
+        if a is not None:
+            a.fire("run_failed", run_id=r["id"], status="failed", reason="reaped")
 
 
 def reap_ephemeral_runners(store, bus):
@@ -2612,6 +2854,27 @@ def find_cors_origin(cli_origin):
             or find_conf_value("BENCHD_CORS_ORIGIN"))
 
 
+def find_alert_webhook(cli_url):
+    """The alert webhook URL; None keeps alerting disabled (the default).
+
+    OBS-P2-001 / IR-P2-001 / NOTIF-P2-001: an optional out-of-band alert target.
+    Nothing is sent unless this resolves to a URL.
+    """
+    return (cli_url or os.environ.get("BENCHD_ALERT_WEBHOOK")
+            or find_conf_value("BENCHD_ALERT_WEBHOOK"))
+
+
+def find_alert_db_bytes(cli_val):
+    """The database-size alert threshold in bytes; 0 (the default) disables it."""
+    raw = (cli_val if cli_val is not None
+           else os.environ.get("BENCHD_ALERT_DB_BYTES")
+           or find_conf_value("BENCHD_ALERT_DB_BYTES"))
+    try:
+        return max(0, int(str(raw).strip()))
+    except (TypeError, ValueError):
+        return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description="bench-test control plane")
     ap.add_argument("--host", default="127.0.0.1")
@@ -2627,6 +2890,13 @@ def main():
                     help="one exact dashboard origin allowed to read CORS "
                          "responses (same-origin is always allowed); default is "
                          "none, so no wildcard Access-Control-Allow-Origin is sent")
+    ap.add_argument("--alert-webhook", default=None,
+                    help="optional URL: POST a JSON alert on a failed run, a failing "
+                         "/ready, a burst of auth failures, or a capacity threshold; "
+                         "default is none (alerting disabled)")
+    ap.add_argument("--alert-db-bytes", default=None,
+                    help="database-size alert threshold in bytes (with "
+                         "--alert-webhook); default 0 disables the capacity alert")
     ap.add_argument("--web", default=WEB_DIR)
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--allow-anonymous", action="store_true",
@@ -2653,6 +2923,9 @@ def main():
     Handler.store, Handler.bus, Handler.token, Handler.web_dir = store, Bus(), token, a.web
     Handler.join_token = join_token
     Handler.cors_origin = cors_origin
+    # OBS-P2-001 / IR-P2-001 / NOTIF-P2-001: install the optional alert webhook.
+    alert_url = find_alert_webhook(a.alert_webhook)
+    store.alerter = Alerter(alert_url, db_bytes_limit=find_alert_db_bytes(a.alert_db_bytes))
     httpd = ThreadingHTTPServer((a.host, a.port), Handler)
     httpd.quiet = a.quiet
     httpd.daemon_threads = True
@@ -2670,6 +2943,9 @@ def main():
     if join_token:
         print("[benchd] join token enabled: POST /api/v1/register accepts it "
               "(registration only)", flush=True)
+    if alert_url:
+        print("[benchd] alert webhook enabled (db_bytes limit %d)"
+              % store.alerter.db_bytes_limit, flush=True)
     if not token:
         print("[benchd] WARNING: no BENCHD_TOKEN set - anyone can register/control", flush=True)
     try:
