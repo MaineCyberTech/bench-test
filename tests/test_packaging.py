@@ -178,6 +178,30 @@ def run():
     c.check("and it requires a serial device to exist",
             "ConditionPathExists=/dev/ttyS0" in drop, "")
 
+    # ---- the LLM phase must not hang on a wedged Ollama server ----
+    # `ollama list` blocks forever when the server is stuck, which is how a full run
+    # sat on a handheld for eight hours with the machine idle and no model line printed.
+    with open(os.path.join(BENCH, "Invoke-LlmBench.ps1"), encoding="utf-8",
+              errors="replace") as fh:
+        llm = fh.read()
+    c.check("the LLM phase bounds every ollama CLI call",
+            "Invoke-OllamaCli" in llm and "Wait-Job $job -Timeout $TimeoutSec" in llm, "")
+    c.check("and it probes the server before generating", "/api/tags" in llm, "")
+    if ps:
+        m = re.search(r"^function Invoke-OllamaCli \{.*?^\}", llm, re.S | re.M)
+        c.check("the bounded CLI helper is the one under test", bool(m), "")
+        snippet = (m.group(0) + "\n"
+                   "try { Invoke-OllamaCli -Exe 'powershell' -CliArgs "
+                   "@('-NoProfile','-Command','Start-Sleep -Seconds 30') -TimeoutSec 2; "
+                   "'NO-TIMEOUT' } catch { 'TIMED-OUT' }")
+        r = subprocess.run([ps, "-NoProfile", "-NonInteractive", "-Command", snippet],
+                           capture_output=True, text=True, timeout=180)
+        c.check("a wedged CLI call times out instead of hanging",
+                "TIMED-OUT" in r.stdout and "NO-TIMEOUT" not in r.stdout,
+                r.stdout.strip()[-160:])
+    else:
+        print("  SKIP the bounded-CLI behaviour check (no powershell/pwsh on this host)")
+
     return c.fails
 
 
