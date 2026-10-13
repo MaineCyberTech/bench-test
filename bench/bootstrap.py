@@ -227,6 +227,9 @@ def _has(tool):
 
 def packages_for(vendor=None, include_torch=False):
     pkgs = list(BASE_PACKAGES)
+    if os.name == "nt":
+        # CPython on Windows has no _curses; the TUI dashboard needs this.
+        pkgs.append("windows-curses")
     vendor = vendor or detect_vendor()
     if os.name == "nt" and vendor in ("amd", "intel"):
         pkgs += GPU_PACKAGES["dml"]

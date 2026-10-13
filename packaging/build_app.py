@@ -23,9 +23,18 @@ import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BENCH = os.path.join(REPO, "bench")
-APPS = [("bench-gui", "gui.py", True), ("bench-agent", "agent.py", False)]
-if sys.platform != "win32":            # the TUI needs curses (not in Windows CPython)
-    APPS.insert(1, ("bench-tui", "tui.py", False))
+# GUI + TUI dashboards and the agent. On Windows the TUI needs the windows-curses
+# wheel installed at build time (CPython on Windows ships no _curses).
+APPS = [("bench-gui", "gui.py", True), ("bench-tui", "tui.py", False),
+        ("bench-agent", "agent.py", False)]
+
+
+def _curses_ok():
+    try:
+        import curses  # noqa: F401
+        return True
+    except Exception:
+        return False
 
 
 def main():
@@ -36,6 +45,10 @@ def main():
         import PyInstaller  # noqa: F401
     except ImportError:
         print("PyInstaller not installed: pip install pyinstaller")
+        return 2
+    if not _curses_ok():
+        print("curses unavailable: install the TUI dependency first "
+              "(pip install windows-curses on Windows, or the system curses)")
         return 2
     os.makedirs(a.out, exist_ok=True)
     for name, script, noconsole in APPS:

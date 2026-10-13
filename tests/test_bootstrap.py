@@ -49,6 +49,9 @@ def run():
         c.check("windows amd selection includes DirectML",
                 "onnxruntime-directml" in bs.packages_for("amd"),
                 bs.packages_for("amd"))
+        c.check("windows selection includes windows-curses (TUI)",
+                "windows-curses" in bs.packages_for("nvidia"),
+                bs.packages_for("nvidia"))
     else:
         c.check("non-windows amd selection omits DirectML",
                 "onnxruntime-directml" not in bs.packages_for("amd"),
