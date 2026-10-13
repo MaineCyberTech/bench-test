@@ -53,7 +53,8 @@ bench/     runners (Run-*.{ps1,sh}, run_win.py), phases (*_bench.py), dashboards
 server/    benchd.py (API + web), web/ (dashboard), import_results.py, systemd units
 live/      Build-LiveUSB.sh + airootfs (launchers, units, conf examples)
 tests/     run_all.py + test_*.py (stdlib)
-docs/      METHODOLOGY.md, CONTROL_PLANE.md, FUTURE_WORK.md, PHASE_TIMINGS.md, DATA.md
+docs/      METHODOLOGY.md, CONTROL_PLANE.md, FUTURE_WORK.md, PHASE_TIMINGS.md,
+           DATA.md, PRIVACY.md, KNOWN_ISSUES.md
 packaging/ build_app.py — PyInstaller bundles (CI: .github/workflows/build-app.yml)
 examples/  real Windows + Linux result sets
 results/   output (mostly git-ignored; a few runs are tracked as history)
@@ -176,11 +177,17 @@ you add behaviour. Never commit with a failing suite.
 
 ## Security
 
-- The repo is **public**, and ISO releases are **public downloads** — anything
-  baked into the image is world-readable. The control-plane token and the GitHub
-  upload token are baked via the `BENCH_AGENT_CONF` / `BENCH_UPLOAD_CONF` secrets
-  by `.github/workflows/build-iso.yml`; rotate the token if an ISO is shared
-  outside the lab.
+- The repo is **public**, and app-bundle **and** ISO releases are **public
+  downloads** — anything baked into either artifact is world-readable. The
+  control-plane config is baked via the `BENCH_AGENT_CONF` secret by **both**
+  `.github/workflows/build-iso.yml` (live ISO) and
+  `.github/workflows/build-app.yml` (GUI/TUI/agent bundles), and the GitHub upload
+  token via `BENCH_UPLOAD_CONF` by `build-iso.yml`; rotate the token if a release
+  is shared outside the lab. That baked value is the shared join token (also the
+  operator bearer) today; when the registration-only join-token model lands it
+  should replace it, so a downloaded artifact cannot act as an operator (see
+  `docs/CONTROL_PLANE.md` § Roadmap). Report a leaked or baked credential
+  privately — see `SECURITY.md`.
 - `server/benchd.conf`, `server/data/`, `live/private/`, `~/.config/bench-agent.conf`
   are git-ignored. Never commit a token, key, or the SQLite db.
 - The remote `exec` command is a real shell on the runner — it's gated by the
@@ -202,10 +209,12 @@ you add behaviour. Never commit with a failing suite.
   checkout of the same release agree. `version_info()` is the single authoritative
   descriptor (release, build, commit, mode, ref, commits_since_tag, protocol) and
   every surface reads it: GUI/TUI headers, runner registration, the web, and the
-  control plane (`/health`, `/state`; deployed as a copy, so `VERSION` ships with
-  it — see `update_ct.py`). A malformed `VERSION` yields `0.0.0+invalid` rather
-  than being passed around as a release, and a runner whose `PROTOCOL` differs is
-  flagged in the fleet view. `tests/test_version.py` keeps this honest.
+  control plane (`/health`, `/state`; it is deployed as a copy with no `.git`, so
+  `VERSION` ships with it and a copy deploy writes a `.deployed-commit` /
+  `.bench-version` stamp — see `docs/CONTROL_PLANE.md` § Deployment). A malformed
+  `VERSION` yields `0.0.0+invalid` rather than being passed around as a release,
+  and a runner whose `PROTOCOL` differs is flagged in the fleet view.
+  `tests/test_version.py` keeps this honest.
 - **Tuning knobs beyond the four durations** (`cpu_soak`, `ram_soak`,
   `disk_seconds`, `disk_size_mb`, `gpu_size`, `cpu_size`, `ram_size_mb`, `passes`,
   `steady_gb`, `stable`) travel in a preset's `tune` field and in the start payload;

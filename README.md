@@ -210,17 +210,21 @@ closes dialogs, `/` jumps to search.
 
 ## Presets
 
-Identical across GUI/TUI/web; each sets every group and duration.
+Identical across GUI/TUI/web; each sets every group and duration. The source of
+truth is `gui.PRESETS` / `tui.PRESETS` / `PRESETS` in `server/web/app.js`, and
+`tests/test_presets.py` enforces parity between them.
 
 | Preset | Groups | Soaks |
 |---|---|---|
 | Quick check (short soaks) | all except llm/fan | gpu 60 · combined 60 · fullsoak 60 · gfx 30 |
+| Stabilized full soak (15 min) | all except llm | gpu 180 · combined 45 · fullsoak 90 · gfx 30 |
 | System info + 60s soak (all) | sys, fullsoak | fullsoak 60 |
 | Full run (defaults) | all 12 | gpu 600 · combined 300 · fullsoak 300 · gfx 60 |
 | GPU compute | gpu, sys | gpu 60 |
 | CPU + RAM + disk | cpu, ram, disk, sys | — |
 | Storage + network | disk, net, sys | — |
 | Video / graphics | nvenc, gfx, sys | gfx 60 |
+| Graphics only (FurMark/Valley) | gfx, sys | gfx 30 |
 | LLM inference (Ollama) | llm, sys | — |
 | Fan response | fan, sys | — |
 | Soak only (long) | gpu, fullsoak, sys | gpu 1800 · fullsoak 1800 |
@@ -337,7 +341,8 @@ bench/     PowerShell runners + Python phases + telemetry + dashboards + agent
 server/    benchd control plane (stdlib) + web dashboard + importer + systemd units
 live/      live-USB build + airootfs (launchers, units, conf)
 tests/     stdlib test suite (run_all.py)
-docs/      METHODOLOGY · CONTROL_PLANE · PHASE_TIMINGS · FUTURE_WORK · DATA
+docs/      METHODOLOGY · CONTROL_PLANE · PHASE_TIMINGS · FUTURE_WORK · DATA ·
+           PRIVACY · KNOWN_ISSUES
 examples/  real Windows + Linux result sets
 results/   output (mostly git-ignored; a few runs tracked as history)
 ```
@@ -370,9 +375,15 @@ telemetry of finished runs after 30 days — see
 
 The control plane uses a shared join token (operators) and per-runner keys
 (runners). Bind it to the LAN/lab; put TLS in front if exposed further. Tokens and
-the SQLite db are git-ignored — never commit them. The repo and its ISO releases
-are public, so a token baked into an ISO is world-readable; rotate it if a stick
-leaves the lab.
+the SQLite db are git-ignored — never commit them. The repo and both release
+streams are public — app bundles (`.github/workflows/build-app.yml`) and live ISOs
+(`.github/workflows/build-iso.yml`) — so the control-plane config baked into either
+is world-readable: use a limited, rotatable value, and rotate it if an artifact
+leaves the lab. Today that baked value is the shared join token, which is also the
+operator bearer; when the registration-only join-token model lands, bake that
+instead so a downloaded artifact cannot act as an operator (see
+[`docs/CONTROL_PLANE.md`](docs/CONTROL_PLANE.md) § Roadmap). Report a leaked or
+baked credential privately — see [`SECURITY.md`](SECURITY.md).
 
 ## License
 
