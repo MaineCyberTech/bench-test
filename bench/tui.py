@@ -49,7 +49,7 @@ try:
     from benchreport import (Reporter, PhaseTracker, ReporterPump, build_summary, build_summary_dir,
                              telemetry_summary, newest_report, load_identity, run_exec, system_info,
                              read_inventory, load_conf, CSV_ALIASES, power_action,
-                             supported_groups,
+                             supported_groups, group_keys,
                              update_toolkit, iso_fetch, iso_write, iso_write_slot,
                              self_update, restart_self,
                              toolkit_version, is_live, update_needs_restart, hardware_line,
@@ -59,6 +59,9 @@ try:
                          drop_stray_script_arg)
 except Exception:  # reporting is optional
     Reporter = None
+
+    def group_keys():
+        return []
 
 # Windows runs the Python battery directly - the .sh runner is Linux-only and
 # starting it there fails with WinError 193 - and it needs a real interpreter
@@ -107,7 +110,9 @@ def _kill_tree(proc):
             pass
 
 
-GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "llm", "fan", "sys", "gfx"]
+# Derived from the benchreport registry (EVOL-P2-001), not a second copy.
+GROUPS = list(group_keys())
+
 
 # Only offer toggles for the groups this platform's battery actually implements
 # (fan is Linux-only, llm is Windows-only): an offered no-op group is a silent lie.
