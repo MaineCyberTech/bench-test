@@ -159,6 +159,61 @@ def run():
             and all(k in ln_cols for k in ("throttle", "temp_limit_c", "video_mhz", "pcie_gen")),
             (win_cols[-9:], ln_cols[-9:]))
 
+    # ---- the CSV must stay rectangular (a short row shifts every column) ----
+    # Per-core columns are appended dynamically, so this is the check that the
+    # header and every row still line up on both platforms.
+    import csv as _csv
+    import subprocess as _sp
+    import threading as _th
+    import time as _t
+    import run_win as _rw
+    _out = os.path.join(tmpdir(), "align-win.telemetry.csv")
+    _stop = _th.Event()
+    _th.Thread(target=_rw.sampler, args=(_out, _stop, 0.25, 0.5), daemon=True).start()
+    _t.sleep(2.5)
+    _stop.set()
+    _t.sleep(0.5)
+    _rows = [r for r in _csv.reader(open(_out, newline="")) if r]
+    c.check("run_win rows match the header width",
+            bool(_rows) and all(len(r) == len(_rows[0]) for r in _rows),
+            [(i + 1, len(r)) for i, r in enumerate(_rows) if len(r) != len(_rows[0])][:4])
+    c.check("run_win writes per-core columns",
+            len([h for h in _rows[0] if h.startswith("cpu_core")]) >= 1, _rows[0][-4:])
+    _lout = os.path.join(tmpdir(), "align-linux.telemetry.csv")
+    _sp.run([sys.executable, os.path.join(BENCH, "telemetry_log.py"), "--out", _lout,
+             "--interval", "0.25", "--duration", "2"],
+            capture_output=True, timeout=90)
+    _lrows = [r for r in _csv.reader(open(_lout, newline="")) if r]
+    c.check("telemetry_log rows match the header width",
+            bool(_lrows) and all(len(r) == len(_lrows[0]) for r in _lrows),
+            [(i + 1, len(r)) for i, r in enumerate(_lrows) if len(r) != len(_lrows[0])][:4])
+
+    # ---- LibreHardwareMonitor line -> telemetry mapping (AMD/Intel Windows) ----
+    _line = ("1791870637 line=7 elevated=0 gpu_temp=58 gpu_power=26 gpu_clk=800 mem_clk=800 "
+             "gpu_util=8 gpu_3d=8.4 gpu_copy=0.2 gpu_enc= gpu_dec=0 vram_used=387 "
+             "vram_total=512 mem_util=75.6 gpu_fan_rpm=1184 gpu_fan_pct=30 cpu_temp= "
+             "cpu_power= cpu_util=23.8 cpu_max_core=37.1 cpu_mhz= storage_temp=58 "
+             "ncores=16 gpu_name=AMD_Radeon_Graphics cpu_name=AMD_Ryzen_Z1_Extreme "
+             "c1=28.6 c2=20 c16=37.1")
+    _u = _rw._parse_lhm_line(_line)
+    c.check("lhm: gpu temp/power/clocks mapped",
+            (_u["gpu_temp"], _u["gpu_power"], _u["gpu_clk"]) == (58.0, 26.0, 800.0), _u)
+    c.check("lhm: vram used + total + load mapped",
+            (_u["vram_used"], _u["vram_total"], _u["mem_util"]) == (387.0, 512.0, 75.6), _u)
+    c.check("lhm: fan rpm + pct mapped (previously dropped on the floor)",
+            (_u["gpu_fan_rpm"], _u["gpu_fan_pct"]) == (1184.0, 30.0), _u)
+    c.check("lhm: engine loads mapped", (_u["gpu_3d"], _u["gpu_copy"]) == (8.4, 0.2), _u)
+    c.check("lhm: an unreadable value stays blank, not zero",
+            _u["cpu_temp"] is None and _u["cpu_power"] is None, _u)
+    c.check("lhm: per-core loads become cpu_coreN keys",
+            _u["cores"] == {"cpu_core1": 28.6, "cpu_core2": 20.0, "cpu_core16": 37.1},
+            _u.get("cores"))
+    c.check("lhm: the hardware name comes through for the GPU identity",
+            _u["gpu_name"] == "AMD_Radeon_Graphics" and _u["cpu_name"] == "AMD_Ryzen_Z1_Extreme",
+            (_u["gpu_name"], _u["cpu_name"]))
+    c.check("lhm: an unknown key is ignored rather than fatal",
+            "no_such_key" not in _rw._parse_lhm_line("a=1 no_such_key=2"), "")
+
     # ---- hardware verdicts from the health report + inventory ----
     hv = tmpdir()
     with open(os.path.join(hv, "host-20260101-000000.health.json"), "w") as fh:

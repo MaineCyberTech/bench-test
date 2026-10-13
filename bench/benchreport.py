@@ -66,6 +66,8 @@ CSV_ALIASES = {
     "mem_util_pct": "mem_util", "mem_util": "mem_util",
     "mem_mhz": "mem_mhz",
     "vram_used_mib": "vram_used_mib",
+    "vram_total_mib": "vram_total_mib", "vram_total": "vram_total_mib",
+    "gpu_mem_total_mib": "vram_total_mib",
     "cpu_package_c": "cpu_temp_c", "cpu_temp_c": "cpu_temp_c",
     "cpu_max_core_c": "cpu_max_core_c",
     "cpu_fan_rpm": "cpu_fan_rpm",
@@ -300,6 +302,32 @@ def system_info():
                 info["vram"] = parts[2]
     except Exception:
         pass
+    if not info.get("gpu") and os.name == "nt":
+        # AMD/Intel on Windows have no nvidia-smi, so without this the runner
+        # registers with no GPU at all and the fleet view shows a blank card.
+        # WMI is the same source Get-SystemInfo.ps1 uses; skip the Microsoft
+        # Basic Display Adapter unless it is the only thing present.
+        try:
+            ps = ("Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | "
+                  "ForEach-Object { $_.Name + '|' + $_.DriverVersion + '|' + $_.AdapterRAM }")
+            out = run_hidden(["powershell", "-NoProfile", "-Command", ps],
+                             capture_output=True, text=True, timeout=15,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout.strip()
+            rows = [ln.split("|") for ln in out.splitlines() if "|" in ln]
+            pick = next((r for r in rows if r and "Basic Display" not in r[0]), None)
+            pick = pick or (rows[0] if rows else None)
+            if pick and pick[0].strip():
+                info["gpu"] = pick[0].strip()
+                if len(pick) > 1 and pick[1].strip():
+                    info["driver"] = pick[1].strip()
+                try:
+                    b = int(pick[2])
+                    if b > 0:
+                        info["vram"] = "%.0f MiB" % (b / 1048576.0)
+                except (IndexError, ValueError):
+                    pass
+        except Exception:
+            pass
     return info
 
 

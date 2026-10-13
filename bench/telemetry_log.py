@@ -257,6 +257,28 @@ def cpu_snapshot():
         return None
 
 
+def cpu_snapshot_percore():
+    """[(idle, total), ...] one entry per logical CPU, from /proc/stat.
+
+    stdlib only (no psutil needed), so per-core load works on the live image too.
+    """
+    out = []
+    try:
+        with open("/proc/stat") as fh:
+            for ln in fh:
+                if not ln.startswith("cpu") or ln.startswith("cpu "):
+                    continue
+                parts = ln.split()[1:]
+                if not parts:
+                    continue
+                vals = [int(x) for x in parts]
+                idle = vals[3] + (vals[4] if len(vals) > 4 else 0)
+                out.append((idle, sum(vals)))
+    except Exception:
+        pass
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
@@ -285,6 +307,7 @@ def main():
 
     t0 = time.time()
     prev_cpu = cpu_snapshot()
+    prev_pc = cpu_snapshot_percore()
     prev_io = disk_net_counters()
     prev_t = time.time()
     prev_e = rapl_uj()
@@ -296,8 +319,10 @@ def main():
     pkg = maxcore = maxfan = ""
     fan_rpm = ""
     slow_t = 0.0
+    # one column per logical CPU so per-core load can be charted
+    core_cols = ["cpu_core%d" % (i + 1) for i in range(os.cpu_count() or 0)]
     with open(a.out, "w") as fh:
-        fh.write(HEADER + "\n")
+        fh.write(HEADER + ("," + ",".join(core_cols) if core_cols else "") + "\n")
         fh.flush()
         while not stop["now"]:
             now = time.time()
@@ -354,10 +379,20 @@ def main():
                     pkg_w = round(de / 1e6 / (now - prev_e_t), 1)
             if e is not None:
                 prev_e, prev_e_t = e, now
+            # per-core load from /proc/stat deltas, padded so the row always has
+            # exactly one value per column (a short row would shift every column)
+            cur_pc = cpu_snapshot_percore()
+            core_pct = []
+            if len(cur_pc) == len(prev_pc):
+                for (pi, pt), (ci, ct) in zip(prev_pc, cur_pc):
+                    di, dt = ci - pi, ct - pt
+                    core_pct.append(round(100.0 * (1.0 - di / dt), 1) if dt > 0 else "")
+            prev_pc = cur_pc
+            core_pct = (core_pct + [""] * len(core_cols))[:len(core_cols)]
             row = ([round(time.time() - t0, 2), datetime.now().strftime("%H:%M:%S")] + gpu
                    + [pkg, ram, load1, maxcore, swap, cpu_pct, nvme_temp(), enc, dec,
                       maxfan, fan_rpm, plimit, drd, dwr, nrx, ntx] + extra
-                   + [pkg_w, cpu_mhz(), psi_io()])
+                   + [pkg_w, cpu_mhz(), psi_io()] + core_pct)
             fh.write(",".join(str(x) for x in row) + "\n")
             fh.flush()
             if a.duration and time.time() - t0 >= a.duration:

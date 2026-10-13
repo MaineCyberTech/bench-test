@@ -82,7 +82,13 @@ COLUMNS = ["elapsed_s", "gpu_util_pct", "mem_util_pct", "temp_c", "temp_mem_c", 
            "net_rx_mbs", "net_tx_mbs",
            "temp_limit_c", "power_default_w", "power_max_w", "video_mhz", "pcie_gen",
            "pcie_width", "retired", "throttle", "throttle_bits",
-           "gpu_3d_pct", "gpu_copy_pct"]
+           "gpu_3d_pct", "gpu_copy_pct",
+           # Appended (never reordered, so older CSVs keep lining up). These are
+           # the Linux logger's columns that the Windows sampler lacked, plus
+           # LibreHardwareMonitor-only facts; blank when nothing can read them.
+           "vram_total_mib", "gpu_fan_rpm", "cpu_mhz", "cpu_pkg_w", "nvme_c"]
+# per-core CPU load columns are appended to the header at sampler start
+# (cpu_core1..cpu_coreN) so a 16-thread APU and a 6-core desktop both fit.
 
 _CPU_TEMP = {"v": None}
 _GPU_ENGINE = {"3d": None, "copy": None}
@@ -171,6 +177,48 @@ def _fnum(s):
         return None
 
 
+def _parse_lhm_line(line):
+    """One `key=value ...` line from Sample-Sensors.ps1 -> the _LHM update dict.
+
+    Split out from the thread so the mapping can be tested without PowerShell.
+    Unknown keys are ignored, so extending the script stays safe.
+    """
+    d = {}
+    for tok in line.split():
+        if "=" in tok:
+            k, v = tok.split("=", 1)
+            d[k] = v
+    upd = {"gpu_temp": _fnum(d.get("gpu_temp")), "gpu_power": _fnum(d.get("gpu_power")),
+           "gpu_clk": _fnum(d.get("gpu_clk")), "mem_clk": _fnum(d.get("mem_clk")),
+           "gpu_util": _fnum(d.get("gpu_util")), "vram_used": _fnum(d.get("vram_used")),
+           "gpu_fan_pct": _fnum(d.get("gpu_fan_pct")), "cpu_temp": _fnum(d.get("cpu_temp")),
+           "cpu_power": _fnum(d.get("cpu_power")),
+           # the rest of what the library exposes: without these the AMD/Intel
+           # columns stayed blank even though the sensors were right there
+           "gpu_3d": _fnum(d.get("gpu_3d")), "gpu_copy": _fnum(d.get("gpu_copy")),
+           "gpu_enc": _fnum(d.get("gpu_enc")), "gpu_dec": _fnum(d.get("gpu_dec")),
+           "vram_total": _fnum(d.get("vram_total")),
+           "mem_util": _fnum(d.get("mem_util")),
+           "gpu_fan_rpm": _fnum(d.get("gpu_fan_rpm")),
+           "cpu_util": _fnum(d.get("cpu_util")),
+           "cpu_max_core": _fnum(d.get("cpu_max_core")),
+           "cpu_mhz": _fnum(d.get("cpu_mhz")),
+           "storage_temp": _fnum(d.get("storage_temp")),
+           "elevated": d.get("elevated"), "gpu_name": d.get("gpu_name"),
+           "cpu_name": d.get("cpu_name"), "ncores": d.get("ncores"),
+           "error": d.get("error")}
+    # per-core loads (c1=.. c2=..) -> {"cpu_core1": v, ...}
+    cores = {}
+    for k, v in d.items():
+        if len(k) > 1 and k[0] == "c" and k[1:].isdigit():
+            fv = _fnum(v)
+            if fv is not None:
+                cores["cpu_core%s" % k[1:]] = fv
+    if cores:
+        upd["cores"] = cores
+    return upd
+
+
 def lhm_thread(stop_evt):
     """Stream LibreHardwareMonitor sensors (Sample-Sensors.ps1) into _LHM.
 
@@ -193,16 +241,16 @@ def lhm_thread(stop_evt):
         for line in p.stdout:
             if stop_evt.is_set():
                 break
-            d = {}
-            for tok in line.split():
-                if "=" in tok:
-                    k, v = tok.split("=", 1)
-                    d[k] = v
-            upd = {"gpu_temp": _fnum(d.get("gpu_temp")), "gpu_power": _fnum(d.get("gpu_power")),
-                   "gpu_clk": _fnum(d.get("gpu_clk")), "mem_clk": _fnum(d.get("mem_clk")),
-                   "gpu_util": _fnum(d.get("gpu_util")), "vram_used": _fnum(d.get("vram_used")),
-                   "gpu_fan_pct": _fnum(d.get("gpu_fan_pct")), "cpu_temp": _fnum(d.get("cpu_temp")),
-                   "cpu_power": _fnum(d.get("cpu_power"))}
+            upd = _parse_lhm_line(line)
+            # A sensor backend that cannot start has to be visible: otherwise the
+            # GPU/CPU columns are simply blank on AMD/Intel and nothing says why.
+            if upd.get("error") and _LHM.get("error") != upd["error"]:
+                print("[win] LibreHardwareMonitor: %s - GPU/CPU sensor columns will be "
+                      "blank" % upd["error"], flush=True)
+            if upd.get("elevated") == "0" and not _LHM.get("elevation_warned"):
+                print("[win] sensor note: not elevated - CPU temp/power/clock sensors "
+                      "normally need an administrator shell", flush=True)
+                _LHM["elevation_warned"] = True
             with _LHM_LOCK:
                 _LHM.update(upd)
     except Exception:
@@ -284,9 +332,13 @@ def sampler(csv_path, stop_evt, interval=0.25, gpu_interval=0.5):
         import psutil
     except Exception:
         psutil = None
+    # one column per logical CPU so per-core load can be charted; the library
+    # reports per physical core on Intel, so the tail stays blank there
+    ncores = os.cpu_count() or 0
+    core_cols = ["cpu_core%d" % (i + 1) for i in range(ncores)]
     with open(csv_path, "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(COLUMNS)
+        w.writerow(COLUMNS + core_cols)
         fh.flush()
         if psutil is None:
             print("[win] WARNING: python psutil is not installed - disk/net telemetry will be "
@@ -326,10 +378,10 @@ def sampler(csv_path, stop_evt, interval=0.25, gpu_interval=0.5):
                 # no nvidia-smi (AMD/Intel GPU): LibreHardwareMonitor values.
                 # util, mem_util, temp, temp_mem, fan, power, power_limit, sm, mem, gr,
                 # vram_mib, pstate, enc, dec
-                row += [lhm.get("gpu_util"), None, lhm.get("gpu_temp"), None,
+                row += [lhm.get("gpu_util"), lhm.get("mem_util"), lhm.get("gpu_temp"), None,
                         lhm.get("gpu_fan_pct"), lhm.get("gpu_power"), None,
                         lhm.get("gpu_clk"), lhm.get("mem_clk"), lhm.get("gpu_clk"),
-                        lhm.get("vram_used"), None, None, None]
+                        lhm.get("vram_used"), None, lhm.get("gpu_enc"), lhm.get("gpu_dec")]
             if psutil:
                 try:
                     vm = psutil.virtual_memory()
@@ -367,6 +419,13 @@ def sampler(csv_path, stop_evt, interval=0.25, gpu_interval=0.5):
                         (_CPU_TEMP["v"] if _CPU_TEMP["v"] is not None else lhm.get("cpu_temp")),
                         None, None, None, None]
             row += extra
+            # the appended columns (see COLUMNS) + per-core loads; a value the
+            # library cannot read stays blank rather than becoming a fake zero
+            row += [lhm.get("vram_total"), lhm.get("gpu_fan_rpm"), lhm.get("cpu_mhz"),
+                    lhm.get("cpu_power"), lhm.get("storage_temp")]
+            lhm_cores = lhm.get("cores") or {}
+            for i in range(1, ncores + 1):
+                row += [lhm_cores.get("cpu_core%d" % i)]
             w.writerow(row)
             fh.flush()
             try:
