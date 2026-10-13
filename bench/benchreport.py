@@ -469,7 +469,12 @@ class Reporter:
         self.api_key = api_key
         self.persist = persist
         self.ephemeral = ephemeral
-        self.name = name or socket.gethostname()
+        # Runner label on the control plane. Explicit --name wins, then
+        # $BENCH_AGENT_NAME (set from bench-agent.conf on the live USB), then
+        # the hostname. Previously BENCH_AGENT_NAME was exported but unread
+        # (INFRA-P3-001), so the key silently did nothing.
+        self.name = (name or os.environ.get("BENCH_AGENT_NAME")
+                     or socket.gethostname())
         self.kind = kind
         # Lets several dashboards share a host without colliding: the live USB
         # runs a TUI on tty1 *and* ttyS0, so 'bench-live' alone is ambiguous.

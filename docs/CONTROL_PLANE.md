@@ -242,6 +242,15 @@ pct exec 108 -- systemctl mask tmp.mount run-lock.mount dev-mqueue.mount
   device present (`console=ttyS0,115200` counts). One-shot
   `--self-test` runners are flagged *ephemeral* and dropped once they stop
   heartbeating.
+- **`bench-agent.conf` is an allow-list.** The live launcher
+  (`live/airootfs/usr/local/bin/bench-agent-env`) honours exactly
+  `BENCHD_SERVER` / `BENCHD_TOKEN` (client config), `BENCH_AGENT_NAME` (the
+  runner label; default the hostname) and `BENCH_AGENT_INSTANCE` (the instance
+  suffix `bench-tui@.service` sets); every other key is ignored. There is **no**
+  `BENCHD_INSECURE` toggle: the client never disables TLS verification, so use a
+  real certificate (or the TLS reverse proxy above) for an HTTPS control plane.
+  (`BENCHD_INSECURE` and `BENCH_AGENT_NAME` used to be accepted but unread —
+  `BENCH_AGENT_NAME` is now wired to `Reporter.name`, `BENCHD_INSECURE` removed.)
 - `update` runs `git pull --ff-only` on the runner and reports the new commit;
   `restart` re-execs the agent so a fresh checkout takes effect. The GUI, TUI and
   agent repeat that check **at startup** and restart into the new code when they

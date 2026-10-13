@@ -247,7 +247,9 @@ class BenchTUI:
         try:
             import platform as _p
             ident = load_identity(self.server)
-            self.rep = Reporter(self.server, self.token, name=self.name or _p.node(),
+            # name=None lets Reporter fall back to $BENCH_AGENT_NAME or the
+            # hostname (an explicit --name still wins).
+            self.rep = Reporter(self.server, self.token, name=self.name or None,
                                 kind="tui", os_name=_p.system(), version=version_string(REPO),
                                 runner_id=ident.get("runner_id"), api_key=ident.get("api_key"),
                                 persist=True, instance=self.instance,

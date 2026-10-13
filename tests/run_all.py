@@ -30,11 +30,12 @@ import test_soak  # noqa: E402
 import test_version  # noqa: E402
 import test_bootstrap  # noqa: E402
 import test_packaging  # noqa: E402
+import test_build_left  # noqa: E402
 import test_robustness  # noqa: E402
 
 MODULES = [test_control_plane, test_reporting, test_import, test_update,
            test_presets, test_dashboards, test_soak, test_version, test_bootstrap,
-           test_packaging, test_robustness]
+           test_packaging, test_build_left, test_robustness]
 
 
 def _allow_skips(argv):

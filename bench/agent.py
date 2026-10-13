@@ -426,7 +426,9 @@ def main():
     _srv, _tok = load_conf()
     ap.add_argument("--server", default=_srv)
     ap.add_argument("--token", default=_tok)
-    ap.add_argument("--name", default=platform.node())
+    # runner label: explicit --name, else $BENCH_AGENT_NAME (bench-agent.conf on
+    # the live USB), else the hostname (INFRA-P3-001)
+    ap.add_argument("--name", default=os.environ.get("BENCH_AGENT_NAME") or platform.node())
     ap.add_argument("--out", default=os.path.join(REPO, "results"))
     ap.add_argument("--poll", type=float, default=2.0)
     ap.add_argument("--self-test", action="store_true")

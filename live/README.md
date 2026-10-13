@@ -33,6 +33,16 @@ Requirements: 16 GB+ USB (the nvidia/amd images are ~7 GB, the base system alone
 ~2.5 GB), network during build, ~25 GiB free disk for the work dir (the build
 refuses tmpfs paths - /tmp on many systems is RAM).
 
+### Provenance
+
+Each build writes `packages.txt` (the resolved package inventory, `pacman -Q`
+against the built rootfs, falling back to the declared names) and `SHA256SUMS`
+(the ISO digest) next to the image in `live/out-<variant>/`, so a shipped ISO can
+be inventoried and verified after the fact. The package set is still resolved
+from the rolling Arch mirrors (and, for `nvidia-legacy`, the third-party omarchy
+repo) at build time, so the image is not reproducible from the repo alone - see
+[`../docs/DEPENDENCIES.md`](../docs/DEPENDENCIES.md).
+
 ## On the target machine
 
 Boot the stick — the **TUI dashboard** auto-starts on the console (`bench-tui`,
