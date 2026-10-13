@@ -27,13 +27,24 @@ if ($Uninstall) {
     exit 0
 }
 
-# 1) fetch nvfancontrol (RTX build)
+# 1) fetch nvfancontrol (RTX build), pinned + SHA-256 verified before extraction
+$nvfcVersion = '0.5.1'
+$nvfcSha256 = 'C1D0B40FDE6814E5C431D1062DAA71192BF25EF47603C96C42D18A1342C24B2A'
 $zip = Join-Path $env:TEMP 'nvfancontrol-rtx.zip'
 if (-not (Test-Path (Join-Path $InstallDir 'nvfancontrol.exe'))) {
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-    $url = 'https://github.com/foucault/nvfancontrol/releases/download/0.5.1/nvfancontrol-rtx-win32-x64.zip'
-    Write-Host "[fan] downloading nvfancontrol ..."
+    # BENCH_NVFANCONTROL_URL may point at a mirror of the SAME pinned artifact.
+    $url = if ($env:BENCH_NVFANCONTROL_URL) { $env:BENCH_NVFANCONTROL_URL } else {
+        "https://github.com/foucault/nvfancontrol/releases/download/$nvfcVersion/nvfancontrol-rtx-win32-x64.zip"
+    }
+    Write-Host "[fan] downloading nvfancontrol $nvfcVersion ..."
     curl.exe -L --fail -o $zip $url | Out-Null
+    $got = (Get-FileHash $zip -Algorithm SHA256).Hash
+    if (-not $got -or $got.ToUpperInvariant() -ne $nvfcSha256) {
+        Remove-Item $zip -Force -ErrorAction SilentlyContinue
+        Write-Error "nvfancontrol.zip failed SHA-256 verification (expected $nvfcSha256, got $got) - refusing to extract or install the task"
+        exit 1
+    }
     Expand-Archive $zip -DestinationPath $InstallDir -Force
 }
 $exe = Join-Path $InstallDir 'nvfancontrol.exe'

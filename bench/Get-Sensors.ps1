@@ -11,10 +11,24 @@ param(
 $ErrorActionPreference = 'Continue'
 $dll = Join-Path $LibDir 'LibreHardwareMonitorLib.dll'
 if (-not (Test-Path $dll)) {
+    # Pin the release and verify its SHA-256 before loading the DLL in-process.
+    # A vendored copy under tools\lhm (or a caller-supplied -LibDir) skips this
+    # entirely, so offline machines are unaffected. BENCH_LHM_URL may point at a
+    # mirror of the SAME pinned artifact (it must match the hash).
+    $lhmVersion = 'v0.9.6'
+    $lhmSha256 = '086D9F1B5A99E643EDC2CFAAAC16051685B551E4C5AC0B32A57C58C0E529C001'
+    $url = if ($env:BENCH_LHM_URL) { $env:BENCH_LHM_URL } else {
+        "https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/download/$lhmVersion/LibreHardwareMonitor.zip"
+    }
     New-Item -ItemType Directory -Force -Path $LibDir | Out-Null
     $zip = Join-Path $env:TEMP 'lhm.zip'
-    Write-Host "[sensors] downloading LibreHardwareMonitor ..."
-    & curl.exe -L --fail -o $zip 'https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/latest/download/LibreHardwareMonitor.zip' | Out-Null
+    Write-Host "[sensors] downloading LibreHardwareMonitor $lhmVersion ..."
+    & curl.exe -L --fail -o $zip $url | Out-Null
+    $got = (Get-FileHash $zip -Algorithm SHA256).Hash
+    if (-not $got -or $got.ToUpperInvariant() -ne $lhmSha256) {
+        Remove-Item $zip -Force -ErrorAction SilentlyContinue
+        throw "LibreHardwareMonitor.zip failed SHA-256 verification (expected $lhmSha256, got $got) - refusing to load it"
+    }
     Expand-Archive $zip -DestinationPath $LibDir -Force
 }
 if (-not (Test-Path $dll)) { throw "LibreHardwareMonitorLib.dll not found in $LibDir" }
