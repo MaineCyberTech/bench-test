@@ -54,11 +54,33 @@ build_native() {
 
 build_container() {
     echo "[ci] non-Arch runner - building inside an archlinux container"
-    docker run --rm --privileged \
-        -v "$REPO:/work" -w /work \
-        -v "$WORKROOT:/bigwork" \
+    # Least privilege: NOT --privileged, and the repo is mounted READ-ONLY.
+    #
+    # SYS_ADMIN is the only capability added: pacstrap runs arch-chroot, which
+    # bind-mounts /proc, /sys, /dev and /run into the target to install the
+    # airootfs, and that needs CAP_SYS_ADMIN (plus the default SYS_CHROOT/MKNOD).
+    # Docker's default seccomp profile already permits mount/umount2/unshare once
+    # CAP_SYS_ADMIN is present, so no seccomp override is needed either.
+    # mkarchiso itself needs no loop or overlay devices - the EFI boot images are
+    # plain files built with mkfs.fat + mcopy and the ISO with xorriso - so the
+    # privileged mode the build used to run under is not required.
+    #
+    # The repo is read-only because the build only reads it. The writable state
+    # (venv, ISO output, pip cache) lives under $WORKROOT, which is bind-mounted
+    # at its own path so the host-side symlinks .venv and live/out-$GPU resolve
+    # inside the container instead of being re-pointed there.
+    #
+    # Even reduced, this runs as root with SYS_ADMIN, so it MUST run on a
+    # DISPOSABLE runner (GitHub-hosted or an ephemeral lab guest) - never a shared
+    # or long-lived host. If a future stage needs loop/overlay mounts, keep the
+    # least-privilege shape: add only the specific capability, mount the repo
+    # read-only, and keep the disposable-runner requirement.
+    docker run --rm \
+        --cap-add=SYS_ADMIN \
+        -v "$REPO:/work:ro" -w /work \
+        -v "$WORKROOT:$WORKROOT" \
         -v "$WORKROOT/pip:/root/.cache/pip" \
-        -e GPU="$GPU" -e BENCH_WORK_DIR=/bigwork/work \
+        -e GPU="$GPU" -e WORKROOT="$WORKROOT" -e BENCH_WORK_DIR="$WORKROOT/work" \
         archlinux:latest \
         bash -o pipefail -c '
             set -euo pipefail
@@ -69,10 +91,9 @@ build_container() {
                 pacman-key --lsign-key 40DFB630FF42BCFFB047046CF0134EE680CAC571 >/dev/null 2>&1 || true
             fi
             pacman -Sy --noconfirm --needed archiso dosfstools python python-pip rsync
-            [ -x /bigwork/venv/bin/python ] || python3 -m venv --clear /bigwork/venv
-            # host-side absolute symlinks do not resolve in here; re-point them
-            ln -sfn /bigwork/venv .venv
-            ln -sfn /bigwork/out-'"$GPU"' live/out-'"$GPU"'
+            [ -x "$WORKROOT/venv/bin/python" ] || python3 -m venv --clear "$WORKROOT/venv"
+            # .venv and live/out-'"$GPU"' are the host-created symlinks into
+            # $WORKROOT (mounted at the same path), so they resolve unchanged
             if [ "$GPU" != "amd" ] && ! .venv/bin/python -c "import torch" 2>/dev/null; then
                 .venv/bin/pip install torch numpy psutil cryptography \
                     --index-url https://download.pytorch.org/whl/cu126 \
@@ -80,9 +101,6 @@ build_container() {
             fi
             ./live/Build-LiveUSB.sh --gpu "$GPU" --comp '"$COMP"'
         '
-    # the container re-pointed the symlinks; restore them for host-side use
-    ln -sfn "$WORKROOT/venv" .venv
-    ln -sfn "$WORKROOT/out-$GPU" live/out-"$GPU"
 }
 
 if [ -f /etc/arch-release ] && command -v pacman >/dev/null 2>&1; then

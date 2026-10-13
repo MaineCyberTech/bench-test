@@ -19,7 +19,7 @@ import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import filedialog, font as tkfont, ttk
+from tkinter import filedialog, font as tkfont, messagebox, ttk
 
 def _repo_dir():
     """The toolkit checkout, resolved even when frozen (PyInstaller) or run from
@@ -841,6 +841,14 @@ class Dashboard:
         if bootstrap is None:
             self._set_status("environment helper unavailable", BAD)
             return
+        if self.running:
+            # the running battery executes from this interpreter/env, so deleting
+            # it mid-run breaks the run - same guard as the toolkit update
+            self._set_status("a run is in progress - clean once it finishes", WARN)
+            return
+        if not self._confirm_clean():
+            self._set_status("clean cancelled", MUTED)
+            return
         self.env_btn.configure(state="disabled")
         try:
             st = bootstrap.status()
@@ -853,6 +861,18 @@ class Dashboard:
             self._set_status("clean failed: %s" % exc, BAD)
         finally:
             self.env_btn.configure(state="normal")
+
+    def _confirm_clean(self):
+        """Ask before deleting the cached interpreter + env (irreversible)."""
+        try:
+            return bool(messagebox.askyesno(
+                "Clean up environment",
+                "Delete the cached runner interpreter and environment?\n\n"
+                "Results are kept. The next run re-provisions them "
+                "(this can need network).",
+                parent=self.root))
+        except Exception:
+            return False        # no display / no dialog: do not delete silently
 
     def _reader(self, proc):
         try:
