@@ -216,6 +216,18 @@ def run():
                 "bad start payload" in branch and "except Exception as e" in branch
                 and "return" in branch, "")
 
+    # ---- the GPU engine counter must not spawn PowerShell per read ----
+    # Measured: one Get-Counter call is ~2.5s, and the old code spawned one every 5s.
+    with open(os.path.join(BENCH, "run_win.py"), encoding="utf-8") as fh:
+        rw = fh.read()
+    fn = rw[rw.index("def gpu_engine_thread"):]
+    fn = fn[:fn.index("\ndef _fnum")]
+    c.check("the engine counter loops inside one long-lived PowerShell child (source)",
+            "while ($true)" in fn and "subprocess.Popen" in fn
+            and "subprocess.run" not in fn, "")
+    c.check("nvidia-smi is cached at 1 Hz, not 2",
+            '"--gpu-interval", default="1.0"' in rw, "")
+
     return c.fails
 
 

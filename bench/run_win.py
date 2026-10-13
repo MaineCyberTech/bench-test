@@ -60,8 +60,8 @@ def parse_args():
     ap.add_argument("--valley-bin", default=DEFAULT_VALLEY)
     ap.add_argument("--interval", default="0.25",
                     help="row rate for the cheap stats (psutil/GetSystemTimes)")
-    ap.add_argument("--gpu-interval", default="0.5",
-                    help="nvidia-smi cadence: ~66ms/call, so 2Hz keeps GPU "
+    ap.add_argument("--gpu-interval", default="1.0",
+                    help="nvidia-smi cadence: ~69ms/call, and those fields are thermal-mass, "
                          "util/temp/power traces smooth without polling it flat out")
     ap.add_argument("-o", "--out-dir", default=os.path.join(REPO, "results"))
     return ap.parse_args()
@@ -149,22 +149,43 @@ def gpu_engine_thread(stop_evt):
     """
     if os.name != "nt":
         return
-    ps = ("$c = Get-Counter '\\GPU Engine(*)\\Utilization Percentage' -ErrorAction SilentlyContinue; "
+    # One child, looping: each sample costs ~2.5s (the PDH window plus the interpreter
+    # startup), and spawning one per read burned half a core and starved the sampler -
+    # the AMD handheld managed 2.4 rows/s against 3.5-4.0 elsewhere. The cost now sits
+    # in the child's own process; we only read lines.
+    ps = ("while ($true) { "
+          "$c = Get-Counter '\\GPU Engine(*)\\Utilization Percentage' -ErrorAction SilentlyContinue; "
           "$d = 0.0; $p = 0.0; "
           "foreach ($s in $c.CounterSamples) { if ($s.InstanceName -match 'engtype_3D') { $d += $s.CookedValue } "
           "elseif ($s.InstanceName -match 'engtype_Copy') { $p += $s.CookedValue } }; "
-          "'{0} {1}' -f [math]::Min(100, [math]::Round($d)), [math]::Min(100, [math]::Round($p))")
+          "'{0} {1}' -f [math]::Min(100, [math]::Round($d)), [math]::Min(100, [math]::Round($p)); "
+          "Start-Sleep -Seconds 2 }")
     while not stop_evt.is_set():
+        proc = None
         try:
-            out = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                                 capture_output=True, text=True, timeout=12,
-                                 creationflags=subprocess.CREATE_NO_WINDOW).stdout.strip()
-            d, p = out.split()
-            _GPU_ENGINE["3d"] = float(d)
-            _GPU_ENGINE["copy"] = float(p)
+            proc = subprocess.Popen(["powershell", "-NoProfile", "-Command", ps],
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                    text=True, bufsize=1,
+                                    creationflags=subprocess.CREATE_NO_WINDOW)
+            for line in proc.stdout:
+                if stop_evt.is_set():
+                    break
+                try:
+                    d, c = line.split()
+                    _GPU_ENGINE["3d"] = float(d)
+                    _GPU_ENGINE["copy"] = float(c)
+                except Exception:
+                    pass
         except Exception:
             pass
-        stop_evt.wait(5.0)
+        finally:
+            if proc is not None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+        if not stop_evt.is_set():
+            stop_evt.wait(2.0)          # the child exited; start it again
 
 
 def _fnum(s):
