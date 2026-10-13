@@ -588,7 +588,11 @@ class BenchTUI:
             self.collect()
 
     def _read_telemetry(self):
-        files = glob.glob(os.path.join(self.results_dir, "*.telemetry.csv"))
+        # only this run's CSV: at run start the newest file is still the previous
+        # run's, and reading it fed stale samples (with the old clock) into the run
+        cutoff = (self.run_t0 or 0) - 1
+        files = [f for f in glob.glob(os.path.join(self.results_dir, "*.telemetry.csv"))
+                 if os.path.getmtime(f) >= cutoff]
         if not files:
             return
         newest = max(files, key=os.path.getmtime)

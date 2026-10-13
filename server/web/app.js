@@ -385,6 +385,7 @@ function runCardHTML(a) {
       <div class="gauges">
         ${GAUGES.map(([k, label]) => `<div class="gauge"><div class="gv" data-g="${k}">—</div><div class="gk">${esc(label)}</div></div>`).join("")}
       </div>
+      <div class="fhealth" data-h="health"></div>
       <div class="chartrow">
         <canvas class="runchart" height="180"></canvas>
         <select class="csel" data-chart="${a.id}">${Object.keys(CHART_PRESETS).map((k) => `<option${k === preset ? " selected" : ""}>${esc(k)}</option>`).join("")}</select>
@@ -437,6 +438,7 @@ function renderActive() {
     const card = el.querySelector(`[data-active="${a.id}"]`);
     if (!card) return;
     paintGauges(card, a.latest || {});
+    paintHealth(card.querySelector("[data-h=health]"), a.latest || {});
     paintHeader(card, a);
     updatePhases(card, a.phases || []);
     paintConsole(card, a.id);
@@ -505,6 +507,8 @@ function focusShell(r, live) {
           <h4>Gauges</h4>
           <div class="gauges" data-f="gauges">${GAUGES.map(([k, label]) =>
             `<div class="gauge"><div class="gv" data-g="${k}">—</div><div class="gk">${esc(label)}</div></div>`).join("")}</div>
+          <h4>Health</h4><div class="fhealth" data-f="health"></div>
+          <h4>Temps</h4><div class="fhealth" data-f="temps"></div>
         </div>
         <div class="fcard"><h4>Telemetry</h4>
           <div class="chartrow"><canvas class="runchart" height="240"></canvas>
@@ -558,6 +562,7 @@ function paintFocus(el, r, live) {
   paintFocusSpecs(el, r);
   paintGauges(el, v);
   paintFocusBars(el, v);
+  paintFocusHealth(el, v);
   paintFocusStats(el, r.id);
   drawRunChart(el, r.id);
   updatePhases(el, r.phases || []);
@@ -599,6 +604,43 @@ function paintFocusBars(el, v) {
       <span class="bt"><span class="bf" style="width:${pct}%;background:${col}"></span></span>
       <span class="bv">${val == null ? "—" : fmt(val, 0) + (unit ? " " + esc(unit) : "")}</span></div>`;
   }).join("");
+}
+
+/* One line summarising the things that indicate trouble, shared by the live card
+ * and the focus view (the TUI's "health" line). */
+function healthBits(v) {
+  const hot = !!numOrNull(v.throttle);
+  const bits = [hot ? "THROTTLED" : "no throttle"];
+  if (v.temp_limit_c != null) bits.push("limit " + fmt(v.temp_limit_c, 0) + "°C");
+  if (v.power_limit_w != null) bits.push("cap " + fmt(v.power_limit_w, 0) + "W");
+  if (v.cpu_pkg_w != null) bits.push("cpu " + fmt(v.cpu_pkg_w, 0) + "W");
+  if (v.pcie_gen != null && v.pcie_width != null) {
+    bits.push("pcie " + fmt(v.pcie_gen, 0) + "×" + fmt(v.pcie_width, 0));
+  }
+  if (v.video_mhz != null) bits.push("nvenc " + fmt(v.video_mhz, 0));
+  if (hot && v.throttle_bits != null) bits.push("bits " + fmt(v.throttle_bits, 0));
+  return { text: bits.join(" · "), hot };
+}
+
+function paintHealth(node, v) {
+  if (!node) return;
+  const h = healthBits(v);
+  node.textContent = h.text;
+  node.className = "fhealth" + (h.hot ? " hot" : "");
+}
+
+function paintFocusHealth(el, v) {
+  paintHealth(el.querySelector("[data-f=health]"), v);
+  const temps = el.querySelector("[data-f=temps]");
+  if (!temps) return;
+  const t = [];
+  if (v.temp_c != null) t.push("gpu " + fmt(v.temp_c, 0) + "°");
+  if (v.cpu_temp_c != null) t.push("cpu " + fmt(v.cpu_temp_c, 0) + "°");
+  if (v.cpu_max_core_c != null) t.push("core-max " + fmt(v.cpu_max_core_c, 0) + "°");
+  if (v.temp_mem_c != null) t.push("vram " + fmt(v.temp_mem_c, 0) + "°");
+  if (v.nvme_c != null) t.push("nvme " + fmt(v.nvme_c, 0) + "°");
+  if (v.gpu_fan_rpm != null) t.push("fan " + fmt(v.gpu_fan_rpm, 0) + "rpm");
+  temps.textContent = t.join(" · ") || "—";
 }
 
 function paintFocusStats(el, id) {
@@ -930,16 +972,21 @@ function drawChart(cv, series, opt = {}) {
 }
 
 /* Legend for a telemetry chart: swatch, name, latest value, and the observed
-   range - the real numbers behind the normalised plot. */
+   range - the real numbers behind the normalised plot. A series this runner
+   never emitted is listed too, so a missing line is stated rather than implied. */
 function chartLegendHTML(series) {
   const use = (series || []).filter((s) => s && s.points && s.points.length >= 2);
-  if (!use.length) return "";
-  return use.map((s) => {
+  const empty = (series || []).filter((s) => s && (!s.points || s.points.length < 2));
+  const draw = use.map((s) => {
     const ys = s.points.map((p) => p.y);
     const mn = Math.min.apply(null, ys), mx = Math.max.apply(null, ys);
     return `<span class="cl"><i style="background:${s.color}"></i>${esc(s.name)}
       <b>${fmt(ys[ys.length - 1], 1)}</b><span class="muted">${fmt(mn, 0)}–${fmt(mx, 0)}</span></span>`;
   }).join("");
+  const missing = empty.map((s) => `<span class="cl nodata" title="this runner did not report it">
+      <i style="background:${s.color}"></i>${esc(s.name)} <b>—</b>
+      <span class="muted">no data on this runner</span></span>`).join("");
+  return draw + missing;
 }
 
 function fmtElapsed(s) {
@@ -993,31 +1040,39 @@ function attachHover(cv) {
 }
 function niceMax(v) { const p = Math.pow(10, Math.floor(Math.log10(v || 1))); return Math.ceil((v || 1) / p) * p; }
 
-/* x for a telemetry sample: seconds since the run started.
+/* x for a telemetry sample, relative to the start of the run's data.
  *
- * `elapsed` is the sampler's own clock and is the right axis; `ts` is stored at
- * ~1s granularity, so two samples can share a ts and draw a vertical line. Sort
- * and collapse same-instant duplicates (keeping the newest value), and drop a
- * stray elapsed that would stretch the axis past the run. */
-function seriesPoints(buf, key, runStart, runEnd) {
-  const span = (runStart && runEnd) ? (runEnd - runStart) + 15 : null;
-  const raw = [];
-  for (const b of buf) {
-    if (b[key] == null) continue;
-    let x = b.elapsed;
+ * `elapsed` comes from the sampler's own clock, which can predate this run (the
+ * dashboard tails whichever CSV is newest, so early samples of a run can carry a
+ * previous run's clock) - rebase it to the first sample we hold. `ts` is aligned
+ * to the run but stored at ~1s granularity, so it is only the fallback. */
+function teleBase(buf) {
+  let base = Infinity;
+  for (const b of buf || []) {
+    if (b.elapsed != null && b.elapsed < base) base = b.elapsed;
+  }
+  return isFinite(base) ? base : 0;
+}
+
+function seriesPoints(buf, key, base, runStart) {
+  const rows = (buf || []).filter((b) => b[key] != null);
+  const out = [];
+  for (const b of rows) {
+    let x = b.elapsed != null ? b.elapsed - base : null;
     if (x == null && b.ts != null && runStart != null) x = b.ts - runStart;
     if (x == null || x < 0) continue;
-    if (span != null && x > span) continue;
-    raw.push({ x, y: b[key] });
+    out.push({ x, y: b[key] });
   }
-  raw.sort((a, b) => a.x - b.x);
-  const out = [];
-  for (const p of raw) {
-    const prev = out[out.length - 1];
+  out.sort((a, b) => a.x - b.x);
+  // collapse same-instant duplicates (coarse ts) to the newest value, so no
+  // vertical line is drawn between two samples that share an x
+  const clean = [];
+  for (const p of out) {
+    const prev = clean[clean.length - 1];
     if (prev && p.x - prev.x < 0.05) { prev.y = p.y; continue; }
-    out.push(p);
+    clean.push(p);
   }
-  return out;
+  return clean;
 }
 
 function runWindow(runId) {
@@ -1028,13 +1083,14 @@ function runWindow(runId) {
 function drawRunChart(card, runId) {
   const cv = card.querySelector(".runchart");
   if (!cv) return;
-  const buf = (TEL[runId] || []).slice(-600);
+  const buf = (TEL[runId] || []).slice(-1500);
+  const base = teleBase(buf);
   const win = runWindow(runId);
   const preset = CHART[runId] || Object.keys(CHART_PRESETS)[0];
   const keys = CHART_PRESETS[preset] || [];
   const series = keys.map((k) => {
     const meta = SERIES[k] || [k, "#4c9aff"];
-    return { name: meta[0], color: meta[1], points: seriesPoints(buf, k, win.start, win.end) };
+    return { name: meta[0], color: meta[1], points: seriesPoints(buf, k, base, win.start) };
   });
   drawChart(cv, series, { normalize: true, xElapsed: true });
   const lg = card.querySelector(".chartlegend");
@@ -1235,7 +1291,9 @@ async function showDetail(runId) {
   const s = r.summary || {};
   const sy = r.system || {};
   const tel = await api("/runs/" + runId + "/telemetry?max=1500");
-  const pts = (n) => seriesPoints((tel.rows || []).filter((x) => x[n] != null), n, r.started, r.ended);
+  const telBuf = tel.rows || [];
+  const telBase0 = teleBase(telBuf);
+  const pts = (n) => seriesPoints(telBuf.filter((x) => x[n] != null), n, telBase0, r.started);
   const st = (r.telemetry_stats && r.telemetry_stats.stats) || {};
   const dv = (r.telemetry_stats && r.telemetry_stats.derived) || {};
   const prev = await findPrev(r);

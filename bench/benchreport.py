@@ -1850,18 +1850,23 @@ def iso_write(iso_path, device, confirm=False, log=None):
 
 
 class TelemetryTail:
-    """Tails the newest telemetry CSV (sampled at 2 Hz) and yields canonical rows."""
+    """Tails this run's telemetry CSV (sampled at 2 Hz) and yields canonical rows."""
 
-    def __init__(self, results_dir, interval=0.5):
+    def __init__(self, results_dir, interval=0.5, since=None):
         self.dir = results_dir
         self.interval = interval
         self.path = None
         self.fh = None
         self.cols = {}
         self._n = 0
+        # Only consider CSVs written from here on: at run start the newest file is
+        # still the PREVIOUS run's, and tailing it posted that run's samples (with
+        # its clock) under the new run id - which is what stretched the charts.
+        self.since = time.time() if since is None else since
 
     def _find(self):
-        files = glob.glob(os.path.join(self.dir, "*.telemetry.csv"))
+        files = [f for f in glob.glob(os.path.join(self.dir, "*.telemetry.csv"))
+                 if os.path.getmtime(f) >= self.since - 1]
         if not files:
             return None
         newest = max(files, key=os.path.getmtime)
