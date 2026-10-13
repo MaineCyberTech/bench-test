@@ -140,7 +140,8 @@ class Metrics:
 # request path and refreshed by a daemon thread, so a liveness probe can never
 # block on a SQLite lock or on the GitHub compare's 8s timeout.
 _HEALTH_LOCK = threading.Lock()
-_HEALTH = {"capacity": None, "runners": 0, "latest": "", "git": "", "version": ""}
+_HEALTH = {"capacity": None, "runners": 0, "latest": "", "git": "", "version": "",
+           "version_source": ""}
 _ACTIVE_STORE = {"s": None}
 _HEALTH_THREAD = {"t": None}
 HEALTH_REFRESH_S = 5.0
@@ -170,12 +171,14 @@ def refresh_health(store=None, with_network=True):
         runners = store.one("SELECT COUNT(*) c FROM runners")["c"]
         git = server_git()
         version = server_version()
+        version_source = server_version_source()
         latest = latest_git() if with_network else _HEALTH.get("latest", "")
     except Exception:
         return
     with _HEALTH_LOCK:
         _HEALTH.update({"capacity": cap, "runners": runners, "git": git,
-                        "version": version, "latest": latest})
+                        "version": version, "version_source": version_source,
+                        "latest": latest})
 
 
 def health_snapshot():
@@ -685,7 +688,31 @@ def online(last_seen):
 
 
 _SERVER_GIT = {"v": None}
-_SERVER_VER = {"v": None}
+_SERVER_VER = {"v": None, "src": None}
+
+
+def _stamp_text(repo, rel):
+    """A deploy stamp file as a dict ({} when absent or unreadable).
+
+    ``.bench-version`` is JSON (``{"version", "commit", ...}``); a plain-text
+    stamp such as ``.deployed-commit`` is a single token. One helper so the
+    commit and the release resolve from the same stamp.
+    """
+    try:
+        with open(os.path.join(repo, rel), encoding="utf-8") as fh:
+            txt = fh.read().strip()
+    except OSError:
+        return {}
+    if not txt:
+        return {}
+    if txt.startswith("{"):
+        try:
+            obj = json.loads(txt)
+            return obj if isinstance(obj, dict) else {}
+        except ValueError:
+            return {}
+    tok = txt.split()[0]
+    return {"commit": tok, "version": tok}
 
 
 def server_git():
@@ -707,37 +734,59 @@ def server_git():
             val = ""
         if not val:
             for rel in (".deployed-commit", ".bench-version"):
-                try:
-                    with open(os.path.join(repo, rel), encoding="utf-8") as fh:
-                        txt = fh.read().strip()
-                    if rel.endswith(".json") or txt.startswith("{"):
-                        val = str(json.loads(txt).get("commit") or "")
-                    else:
-                        val = txt.split()[0] if txt else ""
-                except Exception:
-                    val = ""
+                val = str(_stamp_text(repo, rel).get("commit") or "").strip()
                 if val:
                     break
         _SERVER_GIT["v"] = val
     return _SERVER_GIT["v"]
 
 
-def server_version():
-    """The control plane's release version, from the VERSION file next to it.
+def _read_server_version(repo):
+    """(version, source) for a control-plane checkout or a copy-deploy.
+
+    A copy-deployed server has no .git and the release workflow may not have
+    shipped the repo-root ``VERSION`` next to it, so the release also resolves
+    from the same ``.bench-version`` stamp ``server_git`` reads for the commit
+    (the stamp a copy/app deploy bakes). Mirrors ``bench/benchreport.py:
+    bench_version``; a failure sentinel is never echoed as a release, and with
+    neither source the caller reports ``0.0.0+unknown``.
+    """
+    try:
+        with open(os.path.join(repo, "VERSION"), encoding="utf-8") as fh:
+            val = fh.read().strip().splitlines()[0].strip()
+        if val:
+            return val, "VERSION"
+    except (OSError, IndexError):
+        pass
+    val = str(_stamp_text(repo, ".bench-version").get("version") or "").strip()
+    if val.endswith(("+unknown", "+invalid")):
+        val = ""
+    return (val, ".bench-version") if val else ("", "")
+
+
+def server_version(root=None):
+    """The control plane's release version, from ``VERSION`` or a deploy stamp.
 
     The server is deployed as a copy (no .git), so the version is what identifies
-    a deployment; ``0.0.0+unknown`` when the file was not shipped.
+    a deployment; ``root`` lets a caller (or a test) point at a copy. With
+    neither a ``VERSION`` file nor a ``.bench-version`` stamp the answer is
+    ``0.0.0+unknown`` - never an invented release (OBS-P3-003).
     """
+    if root is not None:
+        val, _src = _read_server_version(root)
+        return val or "0.0.0+unknown"
     if _SERVER_VER["v"] is None:
         repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        val = ""
-        try:
-            with open(os.path.join(repo, "VERSION"), encoding="utf-8") as fh:
-                val = fh.read().strip().splitlines()[0].strip()
-        except (OSError, IndexError):
-            val = ""
+        val, src = _read_server_version(repo)
         _SERVER_VER["v"] = val or "0.0.0+unknown"
+        _SERVER_VER["src"] = src or "none"
     return _SERVER_VER["v"]
+
+
+def server_version_source():
+    """Where server_version() resolved from: 'VERSION', '.bench-version' or 'none'."""
+    server_version()
+    return _SERVER_VER["src"]
 
 
 REPO_SLUG = os.environ.get("BENCH_REPO_SLUG") or "MaineCyberTech/bench-test"
@@ -1435,6 +1484,7 @@ class Handler(BaseHTTPRequestHandler):
             snap = health_snapshot()
             return self._send(200, {"ok": True, "time": now(), "git": snap["git"],
                                     "version": snap["version"],
+                                    "version_source": snap["version_source"],
                                     "protocol": PROTOCOL,
                                     "latest": snap["latest"],
                                     "capacity": snap["capacity"],
@@ -1472,6 +1522,12 @@ class Handler(BaseHTTPRequestHandler):
         path, q = u.path, parse_qs(u.query)
         if not path.startswith("/api/"):
             return self._err(404, "not found")
+        # FILE-P3-002: one artifact of a run can be removed by that run's owner
+        # (its runner api_key) or the operator. Handled before the operator-only
+        # gate below, so a runner bearer is not refused before ownership is read.
+        m = re.match(r"^/api/v1/runs/([^/]+)/artifact/([^/]+)$", path)
+        if m:
+            return self._delete_artifact(m.group(1), m.group(2), q)
         if not self._is_operator(q):
             return self._deny(401, "unauthorized")
         actor = self._actor(q)
@@ -1650,7 +1706,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"runners": runners, "active": active, "recent": recent,
                                     "metrics": METRICS, "hosts": hosts,
                                     "server_git": server_git(), "latest_git": latest_git(),
-                            "version": server_version(), "protocol": PROTOCOL,
+                            "version": server_version(),
+                            "version_source": server_version_source(),
+                            "protocol": PROTOCOL,
                                     "server_time": now()})
         if path == "/api/v1/metrics":
             return self._send(200, {"metrics": METRICS})
@@ -1804,6 +1862,30 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, raw=data, ctype=ctype,
                           headers={"Content-Disposition":
                                    'attachment; filename="%s"' % safe_filename(a["name"])})
+
+    def _delete_artifact(self, run_id, name, q=None):
+        """FILE-P3-002: remove one attached artifact (owner or operator only).
+
+        404 when the run or the artifact is absent, 403 when the caller is a
+        runner that does not own the run; the deletion is audited.
+        """
+        S = self.store
+        op, r = self._caller()
+        if not (op or r):
+            return self._deny(401, "unauthorized")
+        row = S.one("SELECT runner_id FROM runs WHERE id=?", (run_id,))
+        if not row:
+            return self._err(404, "no such run")
+        if not (op or (r and row["runner_id"] == r["id"])):
+            return self._err(403, "not your run")
+        a = S.one("SELECT id FROM artifacts WHERE run_id=? AND name=?", (run_id, name))
+        if not a:
+            return self._err(404, "no such artifact")
+        S.ex("DELETE FROM artifacts WHERE run_id=? AND name=?", (run_id, name))
+        S.audit(self._actor(q), "artifact_delete", target=name, detail=run_id)
+        self.bus.publish({"event": "artifact",
+                          "data": {"run_id": run_id, "name": name, "deleted": True}})
+        return self._send(200, {"ok": True})
 
     def _trends(self, q):
         host = q.get("host", [None])[0]
@@ -2317,6 +2399,10 @@ def scheduler_tick(store, bus):
 RETENTION_DAYS = float(os.environ.get("BENCHD_RETENTION_DAYS") or 30)
 RETENTION_EVERY_S = 3600.0        # a full sweep does not need to run every tick
 _RETENTION_LAST = [0.0]
+# FILE-P3-002: artifacts are pruned by the same sweep/window but from their own
+# throttle slot, so retain_old_data's per-sample behaviour (and its test) is
+# untouched.
+_ARTIFACT_RETENTION_LAST = [0.0]
 
 
 def retain_old_data(store, force=False):
@@ -2351,6 +2437,37 @@ def retain_old_data(store, force=False):
                 gone += cur.rowcount
     if gone:
         print("[benchd] retention: removed %d row(s) older than %.0f days"
+              % (gone, days), flush=True)
+    return gone
+
+
+def prune_old_artifacts(store, force=False):
+    """Delete artifacts of finished runs older than RETENTION_DAYS.
+
+    FILE-P3-002: attached artifacts (a report, a manifest, a telemetry CSV) are
+    bulky and were never pruned, so they grew the database without bound. They go
+    under the same window and sweep as telemetry/logs/events; the run row, its
+    phases and its summary survive (History, Trends, Compare and Fleet read
+    those). Running runs are never touched, and ``BENCHD_RETENTION_DAYS=0`` keeps
+    everything.
+    """
+    days = RETENTION_DAYS
+    if days <= 0:
+        return 0
+    t = now()
+    if not force and t - _ARTIFACT_RETENTION_LAST[0] < RETENTION_EVERY_S:
+        return 0
+    _ARTIFACT_RETENTION_LAST[0] = t
+    cutoff = t - days * 86400
+    old = store.q("SELECT id FROM runs WHERE status != 'running' AND "
+                  "COALESCE(ended, started) < ?", (cutoff,))
+    gone = 0
+    for r in old:
+        cur = store.ex("DELETE FROM artifacts WHERE run_id=?", (r["id"],))
+        if cur.rowcount and cur.rowcount > 0:
+            gone += cur.rowcount
+    if gone:
+        print("[benchd] retention: removed %d artifact row(s) older than %.0f days"
               % (gone, days), flush=True)
     return gone
 
@@ -2456,6 +2573,7 @@ def scheduler_loop(store, bus, stop):
             reap_ephemeral_runners(store, bus)
             reap_stale_commands(store, bus)
             retain_old_data(store)
+            prune_old_artifacts(store)
         except Exception as e:
             print("[benchd] scheduler error: %s" % e, flush=True)
         stop.wait(10.0)
@@ -2542,6 +2660,11 @@ def main():
     stop = threading.Event()
     threading.Thread(target=scheduler_loop, args=(store, Handler.bus, stop), daemon=True).start()
 
+    # OBS-P3-003 / CI-P3-001: record which source the version resolved from, so a
+    # copy-deployed server (no .git) can tie a release tag to a build.
+    print("[benchd] version %s (source: %s)  commit %s"
+          % (server_version(), server_version_source(), server_git() or "unknown"),
+          flush=True)
     print("[benchd] listening on http://%s:%d  db=%s  auth=%s"
           % (a.host, a.port, a.db, "token+login" if token else "OPEN (no token)"), flush=True)
     if join_token:

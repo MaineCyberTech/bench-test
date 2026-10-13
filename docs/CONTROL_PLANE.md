@@ -118,16 +118,17 @@ UI-facing:
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/state` | snapshot: runners, active runs (+latest telemetry, phases), recent, `hosts`, `server_git` |
-| GET | `/stream?token=` | SSE: `snapshot`/`runner`/`run`/`phase`/`telemetry`/`command`/`log`/`schedule`/`event` |
+| GET | `/state` | snapshot: runners, active runs (+latest telemetry, phases), recent, `hosts`, `server_git`, `version`, `version_source` |
+| GET | `/stream?token=` | SSE: `snapshot`/`runner`/`run`/`phase`/`telemetry`/`command`/`log`/`schedule`/`event`/`artifact` |
 | GET | `/runners` · `/runs` · `/runs/<id>` | fleet / history / detail |
 | GET | `/runs/<id>/telemetry?max=N` | downsampled series (named fields) |
 | GET | `/runs/<id>/logs?after=&limit=` | the run's live console lines |
 | GET | `/runs/<id>/stats` | per-field n / min / avg / max / std / p50 / p95 / p99 (+ derived: energy, clock residency, throttled %, headroom) |
 | GET | `/runs/<id>/telemetry.csv?token=` | full telemetry as CSV (download) |
 | GET | `/runs/<id>/artifact/<name>?token=` | download an attached artifact (binary-safe) |
+| DELETE | `/runs/<id>/artifact/<name>` | remove one attached artifact (its run's owner or the operator; audited) |
 | GET | `/trends?host=&metric=` | metric-over-time series + per-series median/p95/p99 |
-| GET | `/health` | public liveness + the control plane's commit (`git`) |
+| GET | `/health` | public liveness + the control plane's `version`, commit (`git`) and `version_source` |
 | GET | `/metrics` | the metric catalogue (key → label) |
 | GET | `/audit?limit=N` | audit trail (newest first): `ts`, `actor`, `action`, `target`, `detail` (operator only) |
 | GET/POST/DELETE | `/schedules` · `/schedules/<id>` | list / create / remove recurring runs (operator only) |
@@ -140,10 +141,11 @@ caller's own runner/run; the shared operator token may act on anything. The
 **join token** (`BENCHD_JOIN_TOKEN`) is accepted by `/register` alone — it can
 mint a runner and nothing else.
 
-**Who handles which command:** the headless agent implements every kind; the
-GUI/TUI dashboards implement `start`/`stop`/`fan_curve`/`shutdown`/`reboot` and
-the remote terminal (`exec`/`shell`), and fail `update`/`power_limit`/`restart`
-(it acks them as unsupported rather than pretending).
+**Who handles which command:** the headless agent implements every kind. The
+GUI/TUI dashboards implement `start`/`stop`/`fan_curve`/`shutdown`/`reboot`, the
+toolkit update set (`update`/`update_toolkit`/`iso_fetch`/`iso_write`/
+`iso_write_slot`), `restart`, and the remote terminal (`exec`/`shell`); only
+`power_limit` is unsupported — they ack it as failed rather than pretending.
 
 Telemetry sample order (10 floats): `elapsed, temp_c, fan_pct, power_w, gpu_util,
 gpu_fan_rpm, cpu_util, ram_used, sm_mhz` (plus `vram_used_mib` / `vram_total_mib`).
@@ -189,6 +191,14 @@ pct exec 108 -- systemctl mask tmp.mount run-lock.mount dev-mqueue.mount
 ```
 
 `onboot=1` starts it with the node. Live-USB and workstation runners reach it over the LAN/overlay.
+
+A copy-deploy has no `.git`, so `/health` and `/state` resolve the control plane's
+**commit** and **release version** from files shipped with the code: the repo-root
+`VERSION`, and/or a `.bench-version` stamp (JSON `{"version": ..., "commit": ...}`).
+Push them alongside `server/` (or `git clone` the server) so `/health` reports the
+real version and the commit that a release tag maps to — otherwise the version
+reads `0.0.0+unknown`. The startup log line records which source was used, and
+`/health`/`/state` expose it as `version_source`.
 
 ## Data captured per run
 
@@ -261,9 +271,15 @@ pct exec 108 -- systemctl mask tmp.mount run-lock.mount dev-mqueue.mount
   `mode` git|copy, `ref`, `commit`, `sha256`) and the server compares its commit
   with the control plane's own (`/health` → `git`, `/state` → `server_git`) —
   surfaced as `update_available` on each runner (Live badge, Fleet "toolkit"
-  column, a "stale" topstat). A server deployed by copying files (no `.git`) reads
-  a `.deployed-commit` / `.bench-version` stamp instead, so write one in the
-  deploy (or `git clone` the server and it works for free).
+  column, a "stale" topstat). A server deployed by copying files (no `.git`) has
+  no git at all, so both its **commit** and its **release version** resolve from a
+  stamp shipped with the deploy: `.deployed-commit` (a plain commit) or
+  `.bench-version` (JSON: `{"version": ..., "commit": ...}`), the same stamp the
+  app bundle bakes. `/health` and `/state` report `version`, `git` and the
+  `version_source` (`VERSION` / `.bench-version` / `none`), so a release tag can
+  be tied to the exact build — write a stamp in the deploy (or `git clone` the
+  server and it works for free). With neither a `VERSION` file nor a stamp the
+  version stays `0.0.0+unknown`, never an invented release.
 - **Runner identity is stable per machine + role + instance.** Each runner sends
   a `machine_id` (Windows `MachineGuid`, Linux DMI uuid / `/etc/machine-id`, else
   a random id persisted next to the agent config; `$BENCH_MACHINE_ID` overrides)
@@ -297,10 +313,11 @@ pct exec 108 -- systemctl mask tmp.mount run-lock.mount dev-mqueue.mount
   dashboard assets are served with `ETag`/`Last-Modified` and a short
   `max-age`; the API stays `Cache-Control: no-store`.
 - SQLite uses WAL; a run at 4 Hz writes ~4.5 MB per 15 minutes. The scheduler sweeps
-  the per-sample tables (telemetry/logs/events) of **finished** runs older than
-  `BENCHD_RETENTION_DAYS` (default 30 days, `0` keeps everything) once an hour; the
-  run rows, phases, artifacts and summaries are never deleted, because that is what
-  History, Trends, Compare and Fleet read. See
+  the per-sample tables (telemetry/logs/events) **and the artifacts** of **finished**
+  runs older than `BENCHD_RETENTION_DAYS` (default 30 days, `0` keeps everything) once
+  an hour; the run rows, phases and summaries are never deleted, because that is what
+  History, Trends, Compare and Fleet read (an artifact is downloadable data, not a
+  headline metric, so it ages out with the samples). See
   [`DATA.md`](DATA.md#5-retention) for the runner-side knobs too.
 
 ## Tests
@@ -313,7 +330,8 @@ Stdlib only; each module starts an in-process `benchd` on an ephemeral port. It
 covers the API (auth, per-runner keys, runs/phases/telemetry/logs/artifacts/stats,
 commands, schedules, delete, reaper, SSE), control-plane P3 hardening (malformed
 input → generic 4xx, the late-finish guard, command re-queue/expiry, artifact
-sha256 verification, hot-path indexes, static-asset caching), the reporting client
+sha256 verification and per-artifact delete, hot-path indexes, static-asset
+caching, artifact retention, the version stamp), the reporting client
 (Reporter, PhaseTracker, ReporterPump, exec, inventory/summary builders), preset
 parity across GUI/TUI/web, and the dashboard phase-table logic.
 
