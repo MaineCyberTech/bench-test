@@ -694,6 +694,30 @@ def run():
         c.check("the closing fsync is outside the measured time",
                 wall - dt >= 0.3, (round(wall, 3), round(dt, 3)))
 
+    # ---- hardware verdicts: this run's reports, and say which window they cover ----
+    # The health report scans the last 7 days (Get-EventHealth.ps1 -Days 7), so
+    # "unexpected shutdown (Kernel-Power 41): 8" on a run that saw none reads as if it
+    # happened during the run - and the counts came from every health report in the
+    # results dir, previous runs included.
+    from benchreport import _hardware_verdicts
+    hd = tmpdir()
+    with open(os.path.join(hd, "host.health.json"), "w") as fh:
+        json.dump({"host": "h", "days": 7,
+                   "summary": [{"id": 41, "provider": "Microsoft-Windows-Kernel-Power",
+                                "count": 8},
+                               {"id": 153, "provider": "nvlddmkm", "count": 7}]}, fh)
+    v = _hardware_verdicts(hd)
+    txt = " | ".join(x["text"] for x in v)
+    c.check("hardware verdicts say which window the counts cover",
+            "in the last 7 days" in txt, txt)
+    c.check("and the counts are still reported", "8" in txt and "7" in txt, txt)
+    c.check("a health report older than the run is ignored",
+            _hardware_verdicts(hd, since=time.time() + 10) == [], "")
+    c.check("the good case names the window too",
+            "in the last 7 days" in " | ".join(
+                x["text"] for x in _hardware_verdicts(hd) if x["level"] == "good") or
+            not [x for x in v if x["level"] == "good"], v)
+
     srv.stop()
     return c.fails
 

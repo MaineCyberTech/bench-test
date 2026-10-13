@@ -2503,7 +2503,7 @@ def _merge_into(s, j):
         s["combined"] = {"gpu": j.get("gpu"), "cpu": j.get("cpu")}
 
 
-def _hardware_verdicts(results_dir):
+def _hardware_verdicts(results_dir, since=None, window_h=8):
     """Pass/fail signals from the Windows health report and the Linux inventory.
 
     The results dir accumulates one health/inventory report per phase (and earlier
@@ -2527,12 +2527,21 @@ def _hardware_verdicts(results_dir):
         if rank.get(level, 0) > rank.get(cur["level"], 0):
             cur["level"] = level
 
+    days = None
     for p in glob.glob(os.path.join(results_dir, "*.health.json")):
+        mt = os.path.getmtime(p)
+        if since is not None:
+            if mt < since - 5:            # a previous run's report, not this one's
+                continue
+        elif time.time() - mt > window_h * 3600:
+            continue
         try:
             with open(p, encoding="utf-8-sig") as fh:
                 h = json.load(fh)
         except Exception:
             continue
+        if days is None and h.get("days"):
+            days = int(h["days"])
         summ = h.get("summary") or []
         whea = sum(int(s.get("count") or 0) for s in summ if "WHEA" in str(s.get("provider", "")))
         tdr = sum(int(s.get("count") or 0) for s in summ
@@ -2546,22 +2555,25 @@ def _hardware_verdicts(results_dir):
                           for k in ("disk", "storahci", "stornvme", "ntfs", "volmgr")))
         therm = sum(int(s.get("count") or 0) for s in summ
                     if "Thermal" in str(s.get("provider", "")))
+        # The health report scans a window (7 days by default), so a count is the
+        # machine's recent history, not necessarily this run: say which window it is.
+        win = " in the last %d days" % days if days else " recently"
         if kp:
-            add("bad", "kp", "unexpected shutdown (Kernel-Power 41): %d" % kp, kp)
+            add("bad", "kp", "unexpected shutdown (Kernel-Power 41)%s: %d" % (win, kp), kp)
         if bc:
-            add("bad", "bc", "bugcheck / BSOD: %d" % bc, bc)
+            add("bad", "bc", "bugcheck / BSOD%s: %d" % (win, bc), bc)
         if stor:
-            add("warn", "stor", "storage events: %d" % stor, stor)
+            add("warn", "stor", "storage events%s: %d" % (win, stor), stor)
         if therm:
-            add("warn", "therm", "thermal events: %d" % therm, therm)
+            add("warn", "therm", "thermal events%s: %d" % (win, therm), therm)
         if whea:
-            add("bad", "whea", "WHEA hardware errors: %d event(s)" % whea, whea)
+            add("bad", "whea", "WHEA hardware errors%s: %d event(s)" % (win, whea), whea)
         if tdr:
-            add("bad", "tdr", "display driver resets (TDR): %d" % tdr, tdr)
+            add("bad", "tdr", "display driver resets (TDR)%s: %d" % (win, tdr), tdr)
         if not whea and not tdr:
-            add("good", "whea_ok", "no WHEA / TDR events in the window")
+            add("good", "whea_ok", "no WHEA / TDR events%s" % win)
         if not kp and not bc:
-            add("good", "kp_ok", "no unexpected shutdowns or bugchecks")
+            add("good", "kp_ok", "no unexpected shutdowns or bugchecks%s" % win)
         for d in (h.get("disks") or []):
             if d.get("read_errors") or d.get("write_errors"):
                 add("bad", "disk_io_%s" % d.get("name"),
@@ -2655,7 +2667,7 @@ def build_summary_dir(results_dir, window_h=8, since=None):
     if main:
         out["host"] = main.get("host")
         out["timestamp"] = main.get("timestamp")
-    verdicts = _hardware_verdicts(results_dir)
+    verdicts = _hardware_verdicts(results_dir, since=since, window_h=window_h)
     if verdicts:
         out["verdicts"] = verdicts
     # Windows gfx is a Unigine Valley run kept as a screenshot. Scope it to this
