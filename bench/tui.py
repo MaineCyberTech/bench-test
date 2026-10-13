@@ -53,7 +53,8 @@ try:
                              self_update, restart_self,
                              toolkit_version, is_live, update_needs_restart, hardware_line,
                              DASH_FIELDS, auto_update, should_restart_after_update, venv_python,
-                         upload_telemetry_csv, persist_root, upload_run_files)
+                         upload_telemetry_csv, persist_root, upload_run_files,
+                         extra_runner_args, tune_summary)
 except Exception:  # reporting is optional
     Reporter = None
 
@@ -75,10 +76,20 @@ def _g(*on):
 
 _DEF_DUR = {"gpu": "600", "combined": "300", "fullsoak": "300", "gfx": "60"}
 
+# Extra knobs the runner accepts but the four duration fields do not expose; a
+# preset carries them in "tune". Without them a run uses the runner's long
+# defaults (cpu 120s, ram 120s, gpu matrix 12288, steady 10GB).
+_TUNE = {"cpu_soak": 45, "ram_soak": 30, "disk_seconds": 30, "gpu_size": 4096,
+         "cpu_size": 2048, "ram_size_mb": 512, "passes": 1, "steady_gb": 2, "stable": 1}
+
 PRESETS = [
     ("Quick check (short soaks)", {"groups": _g("gpu", "cpu", "ram", "disk", "combined", "fullsoak",
                                                 "net", "nvenc", "sys", "gfx"),
                                    "dur": {"gpu": "60", "combined": "60", "fullsoak": "60", "gfx": "30"}}),
+    ("Stabilized full soak (15 min)", {"groups": _g("gpu", "cpu", "ram", "disk", "combined", "fullsoak",
+                                                    "net", "nvenc", "fan", "sys", "gfx"),
+                                       "dur": {"gpu": "180", "combined": "45", "fullsoak": "90", "gfx": "30"},
+                                       "tune": dict(_TUNE)}),
     ("System info + 60s soak (all)", {"groups": _g("sys", "fullsoak"),
                                       "dur": {**_DEF_DUR, "fullsoak": "60"}}),
     ("Full run (defaults)", {"groups": list(GROUPS), "dur": dict(_DEF_DUR)}),
@@ -115,6 +126,8 @@ class BenchTUI:
         self.preset = 1
         self.groups = dict.fromkeys(GROUPS, True)
         self.dur = {"gpu": "600", "combined": "300", "fullsoak": "300", "gfx": "60"}
+        # extra tuning knobs from the selected preset / a control-plane start
+        self.tune = {}
 
         self.q = queue.Queue()
         self.proc = None
@@ -283,6 +296,9 @@ class BenchTUI:
                          "fullsoak": profile.get("fullsoak"), "gfx": profile.get("gfx")}.items():
             if val not in (None, "") and key in self.dur:
                 self.dur[key] = str(val)
+        # keep the remaining knobs the control plane sent (cpu/ram soak, sizes,
+        # passes, steady GB, soak-until-stable) for extra_runner_args
+        self.tune = dict(profile or {})
 
     # ------------------------------------------------------------- presets --
     def _apply_preset(self, idx):
@@ -292,6 +308,7 @@ class BenchTUI:
         for g in spec["groups"]:
             self.groups[g] = True
         self.dur.update(spec["dur"])
+        self.tune = dict(spec.get("tune") or {})
 
     def _args(self):
         args = []
@@ -301,6 +318,7 @@ class BenchTUI:
         args += ["--gpu-soak", self.dur["gpu"], "--combined-seconds", self.dur["combined"],
                  "--fullsoak-seconds", self.dur["fullsoak"], "--gfx-seconds", self.dur["gfx"],
                  "-o", self.results_dir]
+        args += extra_runner_args(getattr(self, "tune", None))
         # disk phases on the internal SSD when it has been unlocked and mounted
         # (live session:  cryptsetup open /dev/sda2 cryptroot
         #                  mkdir -p /mnt/internal && mount /dev/mapper/cryptroot /mnt/internal)
@@ -342,9 +360,16 @@ class BenchTUI:
         if self.rep and self.rep.runner_id:
             self.tracker = PhaseTracker(self.rep)
             si = getattr(self, "sysinfo", None) or {}
-            self.rep.start_run((profile or {}).get("label") or PRESETS[self.preset][0], profile or {},
+            # record the effective profile (including tune knobs) so a locally
+            # started run is reproducible from history
+            prof = profile or {
+                "preset": PRESETS[self.preset][0],
+                "groups": {k: (1 if v else 0) for k, v in self.groups.items()},
+                **self.dur, **(getattr(self, "tune", None) or {}),
+            }
+            self.rep.start_run(prof.get("label") or PRESETS[self.preset][0], prof,
                                gpu=si.get("gpu"), driver=si.get("driver"), system=si,
-                               preset=(profile or {}).get("preset") or PRESETS[self.preset][0])
+                               preset=prof.get("preset") or PRESETS[self.preset][0])
         threading.Thread(target=self._reader, args=(self.proc,), daemon=True).start()
 
     def _reader(self, proc):
@@ -827,6 +852,9 @@ class BenchTUI:
                   curses.color_pair(8))
         self._put(dy + 1, 2, "       full %ss · gfx %ss" % (self.dur["fullsoak"], self.dur["gfx"]),
                   curses.color_pair(8))
+        ts = tune_summary(getattr(self, "tune", None))
+        if ts and dy + 2 < top + left_h:
+            self._put(dy + 2, 2, ("tune: " + ts)[:LW - 4], curses.color_pair(8))
         if dy + 3 < top + left_h:
             state = "on: %s" % self.curve if self.curve else "off (auto)"
             self._put(dy + 3, 2, "fan curve: %s" % state,

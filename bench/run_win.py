@@ -36,6 +36,16 @@ def parse_args():
     ap.add_argument("--combined-seconds", default="300")
     ap.add_argument("--fullsoak-seconds", default="300")
     ap.add_argument("--gfx-seconds", default="60")
+    ap.add_argument("--cpu-soak", default="120")
+    ap.add_argument("--ram-soak", default="120")
+    ap.add_argument("--disk-seconds", default="15")
+    ap.add_argument("--steady-gb", default="10")
+    ap.add_argument("--gpu-size", default="12288")
+    ap.add_argument("--cpu-size", default="4096")
+    ap.add_argument("--ram-size-mb", default="1024")
+    ap.add_argument("--passes", default="2")
+    ap.add_argument("--soak-until-stable", action="store_true",
+                    help="soak until the GPU temperature plateaus (the soak ceiling still applies)")
     ap.add_argument("--valley-bin", default=DEFAULT_VALLEY)
     ap.add_argument("-o", "--out-dir", default=os.path.join(REPO, "results"))
     return ap.parse_args()
@@ -292,7 +302,17 @@ def main():
           "-OutDir", a.out_dir,
           "-SoakSeconds", str(a.gpu_soak),
           "-CombinedSeconds", str(a.combined_seconds),
+          "-CpuSoakSeconds", str(a.cpu_soak),
+          "-RamSoakSeconds", str(a.ram_soak),
+          "-Size", str(a.gpu_size),
+          "-CpuSize", str(a.cpu_size),
+          "-RamSizeMB", str(a.ram_size_mb),
+          "-Passes", str(a.passes),
+          "-DiskSeconds", str(a.disk_seconds),
+          "-SteadyGB", str(a.steady_gb),
           "-FullSystemSeconds", ("0" if a.skip_fullsoak else str(a.fullsoak_seconds))]
+    if a.soak_until_stable:
+        ps.append("-SoakUntilStable")
     if a.skip_cpu:
         ps.append("-SkipCpu")
     if a.skip_gpu:

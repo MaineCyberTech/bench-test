@@ -163,6 +163,16 @@ you add behaviour. Never commit with a failing suite.
 
 - **Presets** live in `gui.PRESETS` (dict), `tui.PRESETS` (list), and
   `ALL_GROUPS`/`gset`/`PRESETS` in `app.js`. Change all three together.
+- **Tuning knobs beyond the four durations** (`cpu_soak`, `ram_soak`,
+  `disk_seconds`, `gpu_size`, `cpu_size`, `ram_size_mb`, `passes`, `steady_gb`,
+  `stable`) travel in a preset's `tune` field and in the start payload; both
+  runners accept them as flags, and `benchreport.extra_runner_args` is the single
+  mapping. Without them a run falls back to the runner's long defaults (cpu 120 s,
+  ram 120 s, gpu matrix 12288, 10 GiB steady write) — which is why a "Quick check"
+  used to take ~31 min.
+- **`--soak-until-stable`** (Linux) / `-SoakUntilStable` (Windows) runs the GPU
+  soak until the temperature plateaus; both runners accept it, so keep them in
+  step. The plateau test is `gpu_bench._temp_stable` / `_soak_continue`.
 - **Phase lines:** runners emit `[group] label`; the dashboards and
   `benchreport.PhaseTracker` parse them. A new phase closes every still-open row.
   `run_win.py` also rewrites the bench scripts' `[phase] X` lines to `[group] X`

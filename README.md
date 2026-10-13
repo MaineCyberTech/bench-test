@@ -78,11 +78,20 @@ BENCH_PY=.venv/bin/python ./bench/gui.py     # or ./bench/tui.py
 ```
 
 Common flags: `--gpu-soak S`, `--combined-seconds S`, `--fullsoak-seconds S`,
+`--cpu-soak S`, `--ram-soak S`, `--disk-seconds S`, `--steady-gb G`, `--passes N`,
+`--gpu-size N`, `--cpu-size N`, `--ram-size-mb N`, `--soak-until-stable`,
 `--skip-<group>` for the groups the platform implements — all of them except
 `fan` (Linux-only) on Windows and `llm` (Windows-only) on Linux; `--skip-fan`
 and `--skip-llm` are accepted everywhere so the same profile can be sent to any
 runner. `--gfx-seconds S` applies to the Linux graphics phase (Unigine Valley's
 length is fixed by its preset on Windows).
+
+`--soak-until-stable` makes the GPU soak stop early once the temperature has
+plateaued (2 s-spaced samples; stable when the mean drift across ~16 s is under
+0.5 °C, and never before 45 s) — `--gpu-soak` / `--fullsoak-seconds` become the
+ceiling, not a fixed clock. The result records `"stable"` and the achieved
+`seconds`. It is applied to the GPU soak, the combined soak and the fullsoak's
+GPU component (the heat source).
 
 ## Dashboards
 
@@ -91,6 +100,13 @@ groups, set soak durations, watch the live phase table + telemetry, and collect
 results. Both show **control-plane link status** and, when connected, stream
 phases/telemetry/logs and accept remote start/stop. **Closing a dashboard cancels
 its run.**
+
+**Stabilized full soak (15 min)** is the "everything, but bounded" preset: all
+groups except `llm`, small compute sizes (`gpu 4096`, `cpu 2048`, `ram 512 MiB`,
+1 pass, 2 GB steady write) and short soaks, with the GPU soak running *until the
+temperature plateaus* rather than for a fixed time. A preset carries those extra
+knobs in its `tune` field (see `extra_runner_args`); they are the same flags the
+runners already accepted, so the web start dialog exposes them directly.
 
 Other flags: `gui.py --tab N --self-test`, `tui.py --demo --exit-after S`, and
 `--instance NAME` on both (a label used when several dashboards share a host,e.g.

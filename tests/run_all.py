@@ -18,9 +18,10 @@ import test_import  # noqa: E402
 import test_update  # noqa: E402
 import test_presets  # noqa: E402
 import test_dashboards  # noqa: E402
+import test_soak  # noqa: E402
 
 MODULES = [test_control_plane, test_reporting, test_import, test_update,
-           test_presets, test_dashboards]
+           test_presets, test_dashboards, test_soak]
 
 
 def main():

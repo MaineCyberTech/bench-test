@@ -5,8 +5,14 @@ const GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nve
 const ALL_GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "llm", "fan", "sys", "gfx"];
 const gset = (...on) => Object.fromEntries(ALL_GROUPS.map((g) => [g, on.includes(g) ? 1 : 0]));
 const DEF_SPIN = { gpu: 600, combined: 300, fullsoak: 300, gfx: 60 };
+// Tuning knobs the runner accepts but the four duration boxes do not cover. Left
+// at these defaults a run inherits the runner's long values (cpu 120s, ram 120s,
+// gpu matrix 12288, steady 10GB); a preset overrides them via `tune`.
+const TUNE_DEFAULT = { cpu_soak: 120, ram_soak: 120, disk_seconds: 15, gpu_size: 12288,
+  cpu_size: 4096, ram_size_mb: 1024, passes: 2, steady_gb: 10, stable: 0 };
 const PRESETS = {
   "Quick check (short soaks)": { groups: gset("gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "sys", "gfx"), spin: { gpu: 60, combined: 60, fullsoak: 60, gfx: 30 } },
+  "Stabilized full soak (15 min)": { groups: gset("gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "fan", "sys", "gfx"), spin: { gpu: 180, combined: 45, fullsoak: 90, gfx: 30 }, tune: { ...TUNE_DEFAULT, cpu_soak: 45, ram_soak: 30, disk_seconds: 30, gpu_size: 4096, cpu_size: 2048, ram_size_mb: 512, passes: 1, steady_gb: 2, stable: 1 } },
   "System info + 60s soak (all)": { groups: gset("sys", "fullsoak"), spin: { ...DEF_SPIN, fullsoak: 60 } },
   "Full run (defaults)": { groups: gset(...ALL_GROUPS), spin: { ...DEF_SPIN } },
   "GPU compute": { groups: gset("gpu", "sys"), spin: { ...DEF_SPIN, gpu: 60 } },
@@ -730,6 +736,16 @@ async function startRun(runnerId) {
       combined <input id="mComb" type="number" value="300" style="width:80px">
       full soak <input id="mFull" type="number" value="300" style="width:80px">
       graphics <input id="mGfx" type="number" value="60" style="width:80px"></div>
+    <div class="formrow"><label>Tuning</label>
+      GPU size <input id="mGpuSize" type="number" value="12288" style="width:80px">
+      CPU size <input id="mCpuSize" type="number" value="4096" style="width:80px">
+      RAM MB <input id="mRamSize" type="number" value="1024" style="width:80px">
+      CPU soak <input id="mCpuSoak" type="number" value="120" style="width:80px">
+      RAM soak <input id="mRamSoak" type="number" value="120" style="width:80px">
+      disk s <input id="mDiskSec" type="number" value="15" style="width:80px">
+      steady GB <input id="mSteady" type="number" value="10" style="width:80px">
+      passes <input id="mPasses" type="number" value="2" style="width:80px">
+      <label><input type="checkbox" id="mStable"> soak until stable</label></div>
     <div class="formrow" style="justify-content:flex-end">
       <button class="ghost" id="mCancel">cancel</button>
       <button class="accent" id="mGo">start</button></div>`);
@@ -740,6 +756,12 @@ async function startRun(runnerId) {
     const spin = p.spin || DEF_SPIN;
     $("#mGpu").value = spin.gpu; $("#mComb").value = spin.combined;
     $("#mFull").value = spin.fullsoak; $("#mGfx").value = spin.gfx;
+    const tune = { ...TUNE_DEFAULT, ...(p.tune || {}) };
+    $("#mGpuSize").value = tune.gpu_size; $("#mCpuSize").value = tune.cpu_size;
+    $("#mRamSize").value = tune.ram_size_mb; $("#mCpuSoak").value = tune.cpu_soak;
+    $("#mRamSoak").value = tune.ram_soak; $("#mDiskSec").value = tune.disk_seconds;
+    $("#mSteady").value = tune.steady_gb; $("#mPasses").value = tune.passes;
+    $("#mStable").checked = !!tune.stable;
     const want = GROUPS.filter((g) => groups[g]);
     const un = want.filter((g) => !sup.includes(g));
     const info = $("#mPresetInfo");
@@ -761,6 +783,11 @@ async function startRun(runnerId) {
       label: $("#mPreset").value, preset: $("#mPreset").value, skip, groups,
       gpu_soak: +$("#mGpu").value, combined: +$("#mComb").value,
       fullsoak: +$("#mFull").value, gfx: +$("#mGfx").value,
+      cpu_soak: +$("#mCpuSoak").value, ram_soak: +$("#mRamSoak").value,
+      disk_seconds: +$("#mDiskSec").value, gpu_size: +$("#mGpuSize").value,
+      cpu_size: +$("#mCpuSize").value, ram_size_mb: +$("#mRamSize").value,
+      passes: +$("#mPasses").value, steady_gb: +$("#mSteady").value,
+      stable: $("#mStable").checked ? 1 : 0,
     };
     closeModal();
     try {
@@ -964,6 +991,21 @@ async function showDetail(runId) {
     <table class="kvtable">${resultRows(s).map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(String(v))}</td></tr>`).join("") || `<tr><td class="muted">no structured results</td></tr>`}</table>
     <h4 class="sechead">System</h4>
     <table class="kvtable">${sysrows.map(([k, val]) => `<tr><th>${esc(k)}</th><td>${esc(String(val))}</td></tr>`).join("")}</table>
+    <h4 class="sechead">Profile</h4>
+    <table class="kvtable">${(() => {
+      const prof = r.profile || {};
+      const rows = [["preset", prof.preset || r.preset],
+        ["gpu soak (s)", prof.gpu_soak], ["combined (s)", prof.combined],
+        ["full soak (s)", prof.fullsoak], ["graphics (s)", prof.gfx],
+        ["cpu soak (s)", prof.cpu_soak], ["ram soak (s)", prof.ram_soak],
+        ["disk (s)", prof.disk_seconds], ["steady write (GB)", prof.steady_gb],
+        ["passes", prof.passes], ["gpu matrix", prof.gpu_size],
+        ["cpu size", prof.cpu_size], ["ram size (MB)", prof.ram_size_mb],
+        ["soak until stable", prof.stable == null ? null : (prof.stable ? "yes" : "no")],
+      ].filter((x) => x[1] != null && x[1] !== "");
+      return rows.map(([k, val]) => `<tr><th>${esc(k)}</th><td>${esc(String(val))}</td></tr>`).join("")
+        || `<tr><td class="muted">no profile recorded</td></tr>`;
+    })()}</table>
     ${Object.keys(sy.inventory || {}).length ? `<details><summary class="muted">full inventory</summary>
       <pre class="mono muted invjson">${esc(JSON.stringify(sy.inventory, null, 1))}</pre></details>` : ""}
     <h4 class="sechead">Telemetry (min / avg / max · std · p95 / p99)</h4>
@@ -1067,6 +1109,7 @@ function newSchedule() {
         skip: p.groups ? GROUPS.filter((g) => !p.groups[g]) : [] };
       if (p.spin) Object.assign(profile, { gpu_soak: p.spin.gpu, combined: p.spin.combined,
         fullsoak: p.spin.fullsoak, gfx: p.spin.gfx });
+      if (p.tune) Object.assign(profile, p.tune);
       await api("/schedules", "POST", {
         runner_id: $("#scRunner").value, label: $("#scLabel").value, profile,
         kind: $("#scKind").value, every_s: +$("#scEvery").value, at_time: $("#scAt").value });

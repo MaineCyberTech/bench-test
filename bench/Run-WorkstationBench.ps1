@@ -19,7 +19,13 @@ param(
     [int]$RamSoakSeconds = 120,
     [string]$DiskDrive = 'C',
     [int]$DiskSizeMB = 2048,
+    [int]$DiskSeconds = 15,
+    [int]$SteadyGB = 10,
+    [int]$CpuSize = 4096,
+    [int]$RamSizeMB = 1024,
+    [int]$Passes = 2,
     [int]$FullSystemSeconds = 0,
+    [switch]$SoakUntilStable,
     [switch]$SkipRam,
     [switch]$SkipDisk,
     [switch]$SkipNet,
@@ -61,7 +67,7 @@ $summary.artifacts.env = "$base.env.json"
 
 if (-not $SkipGpu) {
     Write-Host "=== [2/11] GPU compute battery (telemetry + report) ===" -ForegroundColor Yellow
-    & "$PSScriptRoot\Invoke-GpuBench.ps1" -OutDir $OutDir -SoakSeconds $SoakSeconds -TorchIndex $TorchIndex -Size $Size -NoInstall:$NoInstall
+    & "$PSScriptRoot\Invoke-GpuBench.ps1" -OutDir $OutDir -SoakSeconds $SoakSeconds -TorchIndex $TorchIndex -Size $Size -UntilStable:$SoakUntilStable -NoInstall:$NoInstall
 } else {
     Write-Host "=== [2/11] GPU battery skipped ===" -ForegroundColor DarkGray
 }
@@ -69,7 +75,7 @@ if (-not $SkipGpu) {
 if (-not $SkipCpu) {
     Write-Host "=== [3/11] CPU compute battery ===" -ForegroundColor Yellow
     try {
-        & "$PSScriptRoot\Invoke-CpuBench.ps1" -OutDir $OutDir -SoakSeconds $CpuSoakSeconds | Out-Null
+        & "$PSScriptRoot\Invoke-CpuBench.ps1" -OutDir $OutDir -SoakSeconds $CpuSoakSeconds -Size $CpuSize | Out-Null
         $f = Get-NewestArtifact "$($env:COMPUTERNAME)-cpu-*.json"
         if ($f) { $summary.artifacts.cpu = $f.FullName }
     } catch { Write-Host "  cpu skipped: $($_.Exception.Message)" }
@@ -109,7 +115,7 @@ if (-not $SkipValley) {
 if (-not $SkipRam) {
     Write-Host "=== [8/11] RAM bandwidth / latency / integrity / soak ===" -ForegroundColor Yellow
     try {
-        & "$PSScriptRoot\Invoke-RamBench.ps1" -OutDir $OutDir -SoakSeconds $RamSoakSeconds | Out-Null
+        & "$PSScriptRoot\Invoke-RamBench.ps1" -OutDir $OutDir -SoakSeconds $RamSoakSeconds -SizeMB $RamSizeMB -Passes $Passes | Out-Null
         $f = Get-NewestArtifact "$($env:COMPUTERNAME)-ram-*.json"
         if ($f) { $summary.artifacts.ram = $f.FullName }
     } catch { Write-Host "  ram skipped: $($_.Exception.Message)" }
@@ -118,7 +124,7 @@ if (-not $SkipRam) {
 if (-not $SkipDisk) {
     Write-Host "=== [9/11] disk throughput + SMART health ===" -ForegroundColor Yellow
     try {
-        & "$PSScriptRoot\Invoke-DiskBench.ps1" -OutDir $OutDir -Drive $DiskDrive -SizeMB $DiskSizeMB | Out-Null
+        & "$PSScriptRoot\Invoke-DiskBench.ps1" -OutDir $OutDir -Drive $DiskDrive -SizeMB $DiskSizeMB -Seconds $DiskSeconds -SteadyGB $SteadyGB | Out-Null
         $f = Get-NewestArtifact "$($env:COMPUTERNAME)-disk-*.json"
         if ($f) { $summary.artifacts.disk = $f.FullName }
     } catch { Write-Host "  disk skipped: $($_.Exception.Message)" }
@@ -136,7 +142,7 @@ if (-not $SkipNet) {
 if ($FullSystemSeconds -gt 0) {
     Write-Host "=== [11/11] full-system simultaneous soak (GPU+CPU+RAM+disk) ===" -ForegroundColor Yellow
     try {
-        & "$PSScriptRoot\Invoke-FullSystemSoak.ps1" -OutDir $OutDir -Seconds $FullSystemSeconds | Out-Null
+        & "$PSScriptRoot\Invoke-FullSystemSoak.ps1" -OutDir $OutDir -Seconds $FullSystemSeconds -GpuSize $Size -CpuSize $CpuSize -RamSizeMB $RamSizeMB -DiskSizeMB $DiskSizeMB -UntilStable:$SoakUntilStable | Out-Null
         $f = Get-NewestArtifact "$($env:COMPUTERNAME)-fullsoak-*.json"
         if ($f) { $summary.artifacts.fullsoak = $f.FullName }
     } catch { Write-Host "  fullsoak skipped: $($_.Exception.Message)" }

@@ -47,7 +47,7 @@ try:
                              toolkit_version, is_live, update_needs_restart, hardware_line,
                              DASH_FIELDS, auto_update, should_restart_after_update,
                              venv_python, upload_telemetry_csv, persist_root,
-                             upload_run_files)
+                             upload_run_files, extra_runner_args, tune_summary)
 except Exception:  # reporting is optional
     Reporter = None
 
@@ -93,11 +93,22 @@ def _g(*on):
 
 _DEF_DUR = {"gpu": 600, "combined": 300, "fullsoak": 300, "gfx": 60}
 
+# Knobs the runner already accepts but the four spin boxes above do not expose.
+# A preset carries them in "tune"; the runner's long defaults apply otherwise
+# (cpu 120s, ram 120s, gpu matrix 12288, steady 10GB) - the reason a "Quick check"
+# used to take over half an hour.
+_TUNE = {"cpu_soak": 45, "ram_soak": 30, "disk_seconds": 30, "gpu_size": 4096,
+         "cpu_size": 2048, "ram_size_mb": 512, "passes": 1, "steady_gb": 2, "stable": 1}
+
 PRESETS = {
     "Select a preset...": None,
     "Quick check (short soaks)": {"groups": _g("gpu", "cpu", "ram", "disk", "combined", "fullsoak",
                                                "net", "nvenc", "sys", "gfx"),
                                   "spin": {"gpu": 60, "combined": 60, "fullsoak": 60, "gfx": 30}},
+    "Stabilized full soak (15 min)": {"groups": _g("gpu", "cpu", "ram", "disk", "combined", "fullsoak",
+                                                   "net", "nvenc", "fan", "sys", "gfx"),
+                                      "spin": {"gpu": 180, "combined": 45, "fullsoak": 90, "gfx": 30},
+                                      "tune": dict(_TUNE)},
     "System info + 60s soak (all)": {"groups": _g("sys", "fullsoak"),
                                      "spin": {**_DEF_DUR, "fullsoak": 60}},
     "Full run (defaults)": {"groups": _ALL_G, "spin": dict(_DEF_DUR)},
@@ -282,6 +293,10 @@ class Dashboard:
         self.preset.current(0)
         self.preset.pack(fill="x", pady=(4, 12))
         self.preset.bind("<<ComboboxSelected>>", self._apply_preset)
+        # extra tuning knobs carried by a preset / a control-plane start command
+        # (cpu/ram soak, sizes, passes, steady GB, soak-until-stable). They have no
+        # spin boxes of their own; the preset or the control plane supplies them.
+        self._tune = {}
 
         ttk.Label(side, text="GROUPS", style="Sect.TLabel").pack(anchor="w")
         grid = ttk.Frame(side, style="Card.TFrame")
@@ -304,6 +319,12 @@ class Dashboard:
             self.svars[key] = var
             ttk.Spinbox(dgrid, from_=5, to=7200, textvariable=var, width=6).grid(
                 row=i, column=1, sticky="e", pady=2)
+
+        # the extra knobs a preset carries (cpu/ram soak, sizes, passes, ...) have
+        # no spin box of their own; show them so the profile is not a black box
+        self.tune_lbl = ttk.Label(side, text="", style="Card.TLabel", font=self.f_small,
+                                  wraplength=210, justify="left")
+        self.tune_lbl.pack(anchor="w", pady=(0, 8))
 
         btns = ttk.Frame(side, style="Card.TFrame")
         btns.pack(fill="x", side="bottom")
@@ -679,6 +700,10 @@ class Dashboard:
                          "fullsoak": profile.get("fullsoak"), "gfx": profile.get("gfx")}.items():
             if val not in (None, "") and key in self.svars:
                 self.svars[key].set(str(val))
+        # keep every other knob the control plane sent (cpu/ram soak, sizes, passes,
+        # steady GB, soak-until-stable) - extra_runner_args picks out the known keys
+        self._tune = dict(profile or {})
+        self._show_tune()
 
     # -------------------------------------------------------- run control ---
     def _apply_preset(self, _evt=None):
@@ -694,6 +719,15 @@ class Dashboard:
         for key, val in (preset.get("spin") or {}).items():
             if key in self.svars:
                 self.svars[key].set(str(val))
+        self._tune = dict(preset.get("tune") or {})
+        self._show_tune()
+
+    def _show_tune(self):
+        lbl = getattr(self, "tune_lbl", None)
+        if lbl is None:
+            return
+        s = tune_summary(getattr(self, "_tune", None))
+        lbl.configure(text=("tune: " + s) if s else "")
 
     def start(self, profile=None):
         if self.running:
@@ -707,6 +741,7 @@ class Dashboard:
                  "--fullsoak-seconds", self.svars["fullsoak"].get(),
                  "--gfx-seconds", self.svars["gfx"].get(),
                  "-o", self.results_dir]
+        args += extra_runner_args(getattr(self, "_tune", None))
         for row in self.tree.get_children():
             self.tree.delete(row)
         self.last_row, self.starts = {}, {}
@@ -731,9 +766,18 @@ class Dashboard:
         if self.rep and self.rep.runner_id:
             self.tracker = PhaseTracker(self.rep)
             si = getattr(self, "sysinfo", None) or {}
-            self.rep.start_run((profile or {}).get("label") or self.preset.get() or "run", profile or {},
+            # record the effective profile (including the tune knobs) so a locally
+            # started run is reproducible from history, not just a remote one
+            prof = profile or {
+                "preset": self.preset.get(),
+                "groups": {k: (1 if v.get() else 0) for k, v in self.gvars.items()},
+                "gpu_soak": self.svars["gpu"].get(), "combined": self.svars["combined"].get(),
+                "fullsoak": self.svars["fullsoak"].get(), "gfx": self.svars["gfx"].get(),
+                **(getattr(self, "_tune", None) or {}),
+            }
+            self.rep.start_run(prof.get("label") or self.preset.get() or "run", prof,
                                gpu=si.get("gpu"), driver=si.get("driver"), system=si,
-                               preset=(profile or {}).get("preset") or self.preset.get())
+                               preset=prof.get("preset") or self.preset.get())
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
         self._set_status("running · %s" % (self.preset.get() or "run").split(" (")[0], ACCENT)

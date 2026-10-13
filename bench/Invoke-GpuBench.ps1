@@ -5,6 +5,7 @@ param(
     [int]$SoakSeconds = 600,
     [string]$TorchIndex = 'https://download.pytorch.org/whl/cu128',
     [int]$Size = 12288,
+    [switch]$UntilStable,
     [switch]$NoInstall
 )
 
@@ -73,7 +74,9 @@ $phases += Invoke-Phase 'pcie' @('--seconds', '8') 0
 $phases += Invoke-Phase 'conv' @('--seconds', '15') 0
 $phases += Invoke-Phase 'integrity' @() 0
 $phases += Invoke-Phase 'streams' @('--seconds', '8') 0
-$phases += Invoke-Phase 'soak' @('--seconds', "$SoakSeconds") $SoakSeconds
+$soakArgs = @('--seconds', "$SoakSeconds")
+if ($UntilStable) { $soakArgs += '--until-stable' }
+$phases += Invoke-Phase 'soak' $soakArgs $SoakSeconds
 
 # --- stability scan ---
 $ev = Get-WinEvent -FilterHashtable @{ LogName = 'System'; StartTime = (Get-Date).AddMinutes(-1) } -ErrorAction SilentlyContinue |

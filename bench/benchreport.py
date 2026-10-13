@@ -885,6 +885,21 @@ def extra_runner_args(profile):
     return args
 
 
+def tune_summary(profile):
+    """One short human line for the extra tuning knobs (empty when none are set)."""
+    t = profile or {}
+    parts = []
+    for key, fmt in (("cpu_soak", "cpu %ss"), ("ram_soak", "ram %ss"),
+                     ("disk_seconds", "disk %ss"), ("gpu_size", "gpu %s"),
+                     ("cpu_size", "cpuN %s"), ("ram_size_mb", "ramN %sMB"),
+                     ("passes", "%s pass"), ("steady_gb", "steady %sG")):
+        if t.get(key) is not None:
+            parts.append(fmt % t[key])
+    if t.get("stable"):
+        parts.append("until stable")
+    return " · ".join(parts)
+
+
 def is_live():
     """True on a booted live image (archiso) rather than a normal install."""
     return os.path.isdir("/run/archiso") or os.path.exists("/etc/arch-release")
