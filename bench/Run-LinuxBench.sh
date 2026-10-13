@@ -110,11 +110,11 @@ TELE_PID=""
 trap 'cp -f "$JSONL" "$LOGDIR/records.jsonl" 2>/dev/null; rm -f "$JSONL"; [ -n "$TELE_PID" ] && kill "$TELE_PID" 2>/dev/null' EXIT
 
 echo "[env] python: $($PY -c 'import sys; print(sys.version.split()[0])')  out: $BASE.json|.md"
-echo "[telemetry] $PY $BENCH/telemetry_log.py --out $TELEMETRY --interval 0.25 --gpu-interval 0.5 --slow-interval 1.0"
+echo "[telemetry] $PY $BENCH/telemetry_log.py --out $TELEMETRY --interval 0.25 --gpu-interval 1.0 --slow-interval 1.0"
 # 4Hz rows; nvidia-smi (~66ms/call) at 2Hz and sensors/nvidia-settings at 1Hz,
 # so the row rate is actually delivered instead of being capped at ~3/s
 "$PY" "$BENCH/telemetry_log.py" --out "$TELEMETRY" --interval 0.25 \
-     --gpu-interval 0.5 --slow-interval 1.0 &
+     --gpu-interval 1.0 --slow-interval 1.0 &
 TELE_PID=$!
 nvidia-smi -q > "$LOGDIR/nvidia-smi-q.start.txt" 2>&1 || true
 sensors -j > "$LOGDIR/sensors.start.json" 2>&1 || true

@@ -4,7 +4,7 @@
 Accepts the same flags as Run-LinuxBench.sh, runs the Windows battery
 (bench/Run-WorkstationBench.ps1), re-emits its phases as "[group] ..." lines the
 dashboards parse, and writes a telemetry CSV (<host>-win-<stamp>.telemetry.csv)
-at 4 Hz by default (`--interval`; nvidia-smi is cached at 2 Hz, sensors at 1 Hz).
+at 4 Hz by default (`--interval`; nvidia-smi is cached at 1 Hz, sensors at 1 Hz).
 
     python bench/run_win.py [-o DIR] [--gpu-soak S] [--combined-seconds S]
         [--fullsoak-seconds S] [--gfx-seconds S] [--skip-gpu] ... [--valley-bin DIR]

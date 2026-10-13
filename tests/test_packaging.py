@@ -228,6 +228,33 @@ def run():
     c.check("nvidia-smi is cached at 1 Hz, not 2",
             '"--gpu-interval", default="1.0"' in rw, "")
 
+    # ---- an unreadable sensor must not be averaged as zero ----
+    # Measure-Object counts a $null property as 0: {72, 73, $null} averaged 48.3.
+    with open(os.path.join(BENCH, "Invoke-GpuBench.ps1"), encoding="utf-8") as fh:
+        gsrc = fh.read()
+    m = re.search(r"^function Get-TelemetryStats.*?^\}", gsrc, re.S | re.M)
+    c.check("the shipped Get-TelemetryStats is the one under test", bool(m), "")
+    if m and ps:
+        head = m.group(0) + "\n"
+        r = subprocess.run([ps, "-NoProfile", "-NonInteractive", "-Command", head +
+                            "$s = @([pscustomobject]@{util=90; temp=72; power=200; sm=1800; mem=8000; fan=40},"
+                            "[pscustomobject]@{util=91; temp=73; power=201; sm=1810; mem=8010; fan=41},"
+                            "[pscustomobject]@{util=$null; temp=$null; power=$null; sm=$null; mem=$null; fan=$null})\n"
+                            "$r = Get-TelemetryStats $s\n"
+                            "'{0}|{1}' -f $r.temp.avg, $r.temp.max"],
+                           capture_output=True, text=True, timeout=120)
+        c.check("an unreadable sample does not drag the average down",
+                r.stdout.strip() == "72.5|73", (r.stdout.strip(), r.stderr.strip()[:140]))
+        r = subprocess.run([ps, "-NoProfile", "-NonInteractive", "-Command", head +
+                            "$s = @([pscustomobject]@{util=90; temp=$null; power=200; sm=1800; mem=8000; fan=40})\n"
+                            "$r = Get-TelemetryStats $s\n"
+                            "if ($null -eq $r.temp) { 'OMITTED' } else { 'PRESENT' }"],
+                           capture_output=True, text=True, timeout=120)
+        c.check("a property with no readings is omitted, not reported as 0",
+                r.stdout.strip() == "OMITTED", (r.stdout.strip(), r.stderr.strip()[:140]))
+    else:
+        print("  SKIP the telemetry-average behaviour check (no powershell/pwsh here)")
+
     return c.fails
 
 

@@ -24,11 +24,14 @@ $runStart = Get-Date
 
 function Get-TelemetryStats($samples) {
     if (-not $samples -or $samples.Count -eq 0) { return $null }
-    $m = $samples | Measure-Object util, temp, power, sm, mem, fan -Average -Maximum
+    # Measure-Object counts a $null property as 0 in the average, so an unreadable
+    # sensor drags the mean down ({72,73,$null} averaged 48.3). Filter per property,
+    # and omit one that has no readings at all instead of reporting 0.
     $o = @{}
     foreach ($p in 'util', 'temp', 'power', 'sm', 'mem', 'fan') {
-        $x = $m | Where-Object { $_.Property -eq $p }
-        $o[$p] = @{ avg = [math]::Round($x.Average, 1); max = [math]::Round($x.Maximum, 1) }
+        $vals = @($samples | ForEach-Object { $_.$p } | Where-Object { $null -ne $_ })
+        if ($vals.Count -eq 0) { continue }
+        $o[$p] = @{ avg = [math]::Round((($vals | Measure-Object -Average).Average), 1); max = [math]::Round((($vals | Measure-Object -Maximum).Maximum), 1) }
     }
     return $o
 }

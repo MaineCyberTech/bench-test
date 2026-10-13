@@ -69,11 +69,12 @@ $cpuRes = if ($cpuLine) { ($cpuLine -replace '^RESULT_JSON:', '') | ConvertFrom-
 
 function Get-Stats($samples) {
     if (-not $samples -or $samples.Count -eq 0) { return $null }
-    $m = $samples | Measure-Object util, temp, power, sm, mem, fan, cpu -Average -Maximum
+    # see Get-TelemetryStats: Measure-Object averages a $null property as 0
     $o = @{}
     foreach ($p in 'util', 'temp', 'power', 'sm', 'mem', 'fan', 'cpu') {
-        $x = $m | Where-Object { $_.Property -eq $p }
-        $o[$p] = @{ avg = [math]::Round($x.Average, 1); max = [math]::Round($x.Maximum, 1) }
+        $vals = @($samples | ForEach-Object { $_.$p } | Where-Object { $null -ne $_ })
+        if ($vals.Count -eq 0) { continue }
+        $o[$p] = @{ avg = [math]::Round((($vals | Measure-Object -Average).Average), 1); max = [math]::Round((($vals | Measure-Object -Maximum).Maximum), 1) }
     }
     return $o
 }

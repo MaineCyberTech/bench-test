@@ -294,7 +294,7 @@ def main():
     ap.add_argument("--interval", type=float, default=0.25,
                     help="row rate for the cheap stats (/proc reads, psutil, "
                          "cpufreq) - sub-millisecond each, so this can be fast")
-    ap.add_argument("--gpu-interval", type=float, default=0.5,
+    ap.add_argument("--gpu-interval", type=float, default=1.0,
                     help="nvidia-smi cadence. Measured ~66 ms/call, so it is the "
                          "expensive part of a row; 2 Hz costs ~13%% of a core and "
                          "thermal/util traces stay smooth. The value is reused "
