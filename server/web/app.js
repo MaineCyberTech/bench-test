@@ -2409,3 +2409,15 @@ setInterval(() => {
   for (const a of STATE.active) reloadTel(a.id);
   if (FOCUS) { delete STATS[FOCUS]; ensureStats(FOCUS); }
 }, 15000);
+
+/* -------------------------------------------------------------- PWA -- */
+/* Register the service worker that precaches the static shell for offline
+   use. Guarded twice: a browser without service workers, and a file:// page
+   (where there is no server to cache and the worker would only add noise),
+   both fall through to exactly the old behaviour. A blocked/failed
+   registration is swallowed so it can never break the dashboard. */
+if ("serviceWorker" in navigator && location.protocol !== "file:") {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  });
+}

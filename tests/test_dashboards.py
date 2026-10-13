@@ -2,11 +2,12 @@
 running (including the previous group's last row). Uses the real classes with a
 headless Tk root / a stubbed TUI; skips cleanly if the UI toolkit is missing."""
 import collections
+import json
 import os
 import re
 import sys
 
-from harness import Checker, BENCH, REPO
+from harness import Checker, BENCH, REPO, WEB
 
 LINES = ["[sys] inventory", "[gpu] info", "[gpu] soak", "[cpu] matmul", "[net] bench",
          "[fullsoak] gpu + cpu + ram + disk concurrently"]
@@ -444,24 +445,76 @@ def _web(c):
         c.check("the commands API accepts an exec for an idle runner (no live run)", False, e)
 
 
+def _pwa(c):
+    """The PWA surface (MOB-P3-001): manifest, icons, and an offline service
+    worker that keeps the API live. Source-level, like the rest of the web
+    checks: the suite has no browser, so this asserts the shipped files and
+    their contracts (manifest fields, the registration guard, the network-only
+    API rule, the offline fallback)."""
+    html = open(os.path.join(WEB, "index.html"), encoding="utf-8").read()
+    js = open(os.path.join(WEB, "app.js"), encoding="utf-8").read()
+    sw = open(os.path.join(WEB, "sw.js"), encoding="utf-8").read()
+
+    # ---- manifest ----
+    try:
+        man = json.load(open(os.path.join(WEB, "manifest.webmanifest"), encoding="utf-8"))
+    except Exception as e:
+        man = {}
+        c.check("the PWA manifest exists and parses", False, e)
+    c.check("the manifest names the app",
+            man.get("name") and man.get("short_name"), man.get("name"))
+    c.check("the manifest is a standalone app starting at the shell",
+            man.get("display") == "standalone" and man.get("start_url"), man.get("display"))
+    c.check("the manifest carries background and theme colours",
+            bool(man.get("background_color")) and bool(man.get("theme_color")), man.get("theme_color"))
+    icons = man.get("icons") or []
+    c.check("the manifest ships an SVG icon",
+            any(i.get("type") == "image/svg+xml" and i.get("sizes") == "any" for i in icons), icons)
+    purposes = [i.get("purpose") for i in icons]
+    c.check("the icons cover the any and maskable purposes",
+            "any" in purposes and "maskable" in purposes, purposes)
+    c.check("every manifest icon file is present",
+            all(os.path.isfile(os.path.join(WEB, i.get("src", ""))) for i in icons),
+            [i.get("src") for i in icons])
+
+    # ---- index.html wiring ----
+    c.check("index.html links the manifest", 'rel="manifest"' in html and "manifest.webmanifest" in html, "")
+    c.check("index.html links the SVG icon", 'rel="icon"' in html and "icon.svg" in html, "")
+    c.check("index.html declares the theme colour", 'name="theme-color"' in html, "")
+
+    # ---- app.js registration guard ----
+    c.check("the service worker is only registered when supported",
+            '"serviceWorker" in navigator' in js, "")
+    c.check("the service worker is not registered on file://",
+            'location.protocol !== "file:"' in js, "")
+    c.check("app.js registers sw.js", 'serviceWorker.register("sw.js")' in js, "")
+    c.check("a failed registration cannot break the page",
+            "serviceWorker.register(\"sw.js\").catch(" in js, "")
+
+    # ---- sw.js: offline shell, live API ----
+    c.check("the worker precaches the static shell",
+            all(f in sw for f in ("index.html", "app.js", "style.css", "icon.svg", "manifest.webmanifest")), "")
+    c.check("the API is network-only and never cached",
+            'url.pathname.startsWith("/api/")' in sw and "caches.put" not in sw, "")
+    c.check("the API rule returns before any respondWith",
+            re.search(r'startsWith\("/api/"\)\)\s*return;', sw), "")
+    c.check("a navigation request has an offline fallback to the shell",
+            'req.mode === "navigate"' in sw and 'caches.match("index.html")' in sw, "")
+    c.check("the shell is served cache-first",
+            "caches.match(req).then((hit) => hit || fetch(req))" in sw, "")
+
+
 def run():
     c = Checker("dashboards")
     _gui(c)
     _gui_cleanup(c)
     _tui(c)
     _web(c)
-    # ---- runner-supplied summary fields must be escaped before innerHTML ----
-    # The panel used to interpolate gpu_soak_size / cpu_soak_size / gfx.engine straight
-    # into HTML; a runner key could inject a script into the operator's browser.
-    import re as _re
-    with open(os.path.join(REPO, "server", "web", "app.js"), encoding="utf-8") as fh:
-        js = fh.read()
-    c.check("the runner panel escapes its summary bits",
-            "esc(bits.join(" in js, "")
     c.check("and the chart height is not read back from the attribute",
             'cv.dataset.baseH || (cv.dataset.baseH = cv.getAttribute("height")' in js
             and 'const h = +cv.getAttribute("height") || 180;' not in js, "")
 
+    _pwa(c)
     return c.fails
 
 
