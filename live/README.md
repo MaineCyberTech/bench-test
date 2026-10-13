@@ -108,8 +108,15 @@ python bench/live_update.py iso-write /mnt/benchdata/iso/bench-live-nvidia-legac
 | `nvidia-legacy` | Maxwell/Pascal/Volta (+ Turing..Ada) via 580 branch | PyTorch CUDA | uses the omarchy repo; the DKMS module is compiled into the ISO at build time (a boot service rebuilds it if needed) |
 | `amd` | GCN+ for graphics (Mesa/RADV) | PyTorch ROCm | ROCm compute only on supported cards (RDNA+); older cards still run graphics/telemetry and skip compute |
 
-The GPU phases call `nvidia-smi` or `rocm-smi`/amdgpu sysfs through
-`bench/gpu_util.py`; on unsupported hardware they record a skip instead of failing.
+APU iGPUs (Phoenix `gfx1103` e.g. Radeon 780M/880M, Strix `gfx1150/1151`) are not
+in ROCm's supported list; `Run-LinuxBench.sh` detects them via `rocminfo` and sets
+`HSA_OVERRIDE_GFX_VERSION` (11.0.0 / 11.5.0) so the compute phases run. Set it
+yourself to override. Graphics, telemetry and fan control need no ROCm.
+
+Boot note: the image is unsigned — disable **Secure Boot** to boot it (Arch
+installs are not signed). The GPU phases call `nvidia-smi` or
+`rocm-smi`/amdgpu sysfs through `bench/gpu_util.py`; on unsupported hardware they
+record a skip instead of failing.
 
 ## Layout
 

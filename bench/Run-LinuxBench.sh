@@ -22,6 +22,21 @@ BENCH="$ROOT/bench"
 PY="${BENCH_PY:-$ROOT/.venv/bin/python}"
 [ -x "$PY" ] || PY="$(command -v python3)"
 
+# ROCm ships kernels for the discrete RDNA3/3.5 targets but not for the APU
+# iGPUs, which report gfx1103 (Phoenix - e.g. Radeon 780M/880M) or gfx1150/1151
+# (Strix). With no override the ROCm runtime refuses the device and every GPU
+# phase errors out (torch.cuda.is_available() is False), so present the closest
+# supported target. Only when ROCm is actually present; a user override wins.
+if [ -z "${HSA_OVERRIDE_GFX_VERSION:-}" ] && command -v rocminfo >/dev/null 2>&1; then
+    _gfx="$(rocminfo 2>/dev/null | grep -oE 'gfx[0-9]+' | head -1)"
+    case "$_gfx" in
+        gfx1103)      export HSA_OVERRIDE_GFX_VERSION=11.0.0 ;;
+        gfx1150|gfx1151) export HSA_OVERRIDE_GFX_VERSION=11.5.0 ;;
+    esac
+    [ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ] && \
+        echo "[gpu] ROCm: $_gfx iGPU -> HSA_OVERRIDE_GFX_VERSION=$HSA_OVERRIDE_GFX_VERSION"
+fi
+
 OUT="$ROOT/results"
 GPU_SOAK=600; CPU_SOAK=120; RAM_SOAK=120
 COMBINED_SECONDS=300; FULLSOAK_SECONDS=300; GFX_SECONDS=60; FAN_SECONDS=90
