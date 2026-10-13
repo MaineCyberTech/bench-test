@@ -51,6 +51,19 @@ jobs:
             fi
           done
 
+      - name: No generated results tracked
+        run: |
+          set -euo pipefail
+          # HYGIENE-P1-001 / PRIV-P1-001: results/ is generated output (and carries
+          # host PII); it must never be tracked. examples/ is the curated set.
+          tracked=$(git ls-files -- 'results/**')
+          if [ -n "$tracked" ]; then
+            echo "::error::generated results/ files are tracked; results/ is git-ignored output"
+            echo "$tracked" | head -20
+            exit 1
+          fi
+          echo "no results/ files are tracked"
+
   gitleaks:
     runs-on: ubuntu-latest
     permissions:
