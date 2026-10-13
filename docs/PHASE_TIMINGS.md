@@ -17,6 +17,13 @@ The same preset is comfortably inside the 15-minute target on the live stick and
 **over it on this desktop** — the fixed phases, not the soaks, are the difference.
 Trim with the preset's `tune` knobs (below) or drop groups.
 
+> **Live-stick total.** The measured stabilized-preset total on `bench-live` is
+> **845 s (~14.1 min)**, consistent with the 843 s (before the disk-size trim) and
+> 853 s (after) recorded below — the live stick runs no disk phases, so the trim
+> changes nothing there. An earlier **~11.5 min** figure for the same preset was an
+> estimate that disagrees with these measurements; the measured total supersedes
+> it.
+
 ## Measured per-phase durations
 
 ### Live stick (GTX 1080, Linux)
@@ -80,7 +87,7 @@ preset. Add the hold to the plateau time when budgeting.
 | Storage + network | ~6.5 min |
 | GPU compute (gpu 60) | ~11 min |
 | CPU + RAM + disk | ~14 min |
-| **Stabilized full soak (15 min)** | **~11.5 min** (live stick) · ~26 min (old desktop, slow disk) |
+| **Stabilized full soak (15 min)** | **~14.1 min** (845 s, live stick) · ~26 min (old desktop, slow disk) |
 | Quick check (short soaks) | ~14 min — it carries lean knobs (cpu 60, ram 30, disk 15 s / 256 MB, matrix 4096); without them it inherits the runner's long defaults and took ~31 min |
 | Full run (defaults) | ~48 min |
 | Full-system soak (long) | ~32 min |
