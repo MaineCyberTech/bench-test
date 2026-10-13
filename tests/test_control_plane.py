@@ -39,6 +39,45 @@ def run():
     st, reg2 = cl.call("POST", "/api/v1/register", {"runner_id": rid, "api_key": key, "name": "lab-1"})
     c.check("re-register keeps id+key", reg2.get("runner_id") == rid and reg2.get("api_key") == key, reg2)
 
+    # ---- join token: registration only, never an operator or runner key ----
+    # A public release bakes a registration-only join token so one-click
+    # onboarding still works, but it must only be able to register a runner:
+    # never satisfy an operator check (state, commands, delete, schedules,
+    # exec/shell, SSE) and never act as a runner api_key.
+    prev_join = getattr(B.Handler, "join_token", None)
+    B.Handler.join_token = "join-token"
+    try:
+        st, jreg = cl.call("POST", "/api/v1/register",
+                           {"name": "joined", "os": "Linux", "kind": "agent"},
+                           token="join-token")
+        c.check("join token registers a runner",
+                st == 200 and jreg.get("runner_id") and jreg.get("api_key"), jreg)
+        jrid, jkey = jreg.get("runner_id"), jreg.get("api_key")
+
+        st, _ = cl.call("GET", "/api/v1/state", token="join-token")
+        c.check("join token is not an operator (state)", st == 401, st)
+        st, _ = cl.call("POST", "/api/v1/runners/%s/commands" % rid,
+                        {"kind": "exec", "payload": {"cmd": "id"}}, token="join-token")
+        c.check("join token cannot issue commands", st == 401, st)
+        st, jrun = cl.call("POST", "/api/v1/runs", {"runner_id": jrid, "host": "joined"},
+                           token=jkey)
+        st, _ = cl.call("DELETE", "/api/v1/runs/%s" % jrun.get("run_id"), token="join-token")
+        c.check("join token cannot delete a run", st == 401, st)
+        st, _ = cl.call("POST", "/api/v1/runners/%s/heartbeat" % jrid,
+                        {"status": "idle"}, token="join-token")
+        c.check("join token is not a runner api_key", st == 401, st)
+
+        # the operator token still works everywhere, and a key issued via the
+        # join token is a real runner key
+        st, _ = cl.call("GET", "/api/v1/state")
+        c.check("operator token still reaches operator endpoints", st == 200, st)
+        st, _ = cl.call("POST", "/api/v1/runners/%s/heartbeat" % jrid,
+                        {"status": "idle"}, token=jkey)
+        c.check("a key issued via the join token is a real runner key", st == 200, st)
+        cl.call("DELETE", "/api/v1/runs/%s" % jrun.get("run_id"))
+    finally:
+        B.Handler.join_token = prev_join
+
     # ---- stable machine identity (dedupe across lost config / live boots) ----
     st, m1 = cl.call("POST", "/api/v1/register",
                      {"name": "box", "os": "Linux", "kind": "agent", "machine_id": "dmi-abc123"})

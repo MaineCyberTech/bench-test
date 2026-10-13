@@ -45,7 +45,8 @@ rollback and backup/restore: [`OPERATIONS.md`](OPERATIONS.md).
 # on the lab box (172.23.128.0/20), toolkit at /opt/bench-test
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"   # make a token
 sudo install -m600 /dev/stdin /etc/benchd.conf <<'EOF'
-BENCHD_TOKEN=<paste token>
+BENCHD_TOKEN=<operator token>          # never bake into a release
+BENCHD_JOIN_TOKEN=<join token>         # optional: registration-only, safe to bake
 EOF
 
 python3 /opt/bench-test/server/benchd.py --host 0.0.0.0 --port 8722
@@ -139,7 +140,9 @@ UI-facing:
 
 Runner-scoped routes (`/register`, heartbeat, `/runners/<id>/commands`, command
 `ack`, and run writes) require a **per-runner API key** and are scoped to the
-caller's own runner/run; the shared operator token may act on anything.
+caller's own runner/run; the shared operator token may act on anything. The
+**join token** (`BENCHD_JOIN_TOKEN`) is accepted by `/register` alone — it can
+mint a runner and nothing else.
 
 ### Live stream (SSE)
 
@@ -280,19 +283,21 @@ firewall rule on the node or `--host <lab-ip>` narrows it further — see
 
 ## Security
 
-- Two auth tiers: **runners** use a per-runner API key issued at registration
-  (stored in `~/.config/bench-agent.json`); **operators/UI** use the shared join
-  token (`BENCHD_TOKEN`) as a bearer, or `?token=` for the SSE stream and file
-  downloads (EventSource / link navigation can't set headers).
-- **Network exposure.** The shipped unit and the deployment snippet bind
-  `0.0.0.0`, because the unprivileged LXC has a single lab-bridge interface — so
-  that is the same as binding its lab address, and the runners on the LAN/overlay
-  have to reach it. The container lives on the isolated lab network
-  (`172.23.128.0/20`, reached over the `wgaudit0` WireGuard overlay — keep `wg0`
-  untouched) and every request still has to pass the token gate (operator token
-  or per-runner key). To narrow it, pass `--host <lab-ip>` or add a firewall rule
-  on the Proxmox node. Put a TLS reverse proxy in front if it is ever exposed
-  beyond the lab.
+- **Two tokens, two roles.** `BENCHD_TOKEN` is the **operator** token: as a bearer
+  (API/CLI) or `?token=` for the SSE stream and file downloads (EventSource / link
+  navigation can't set headers), it authorizes everything — state, runs, commands,
+  schedules, delete, `exec`/`shell`, SSE. `BENCHD_JOIN_TOKEN` is the
+  **registration-only join token**: it is accepted by `POST /api/v1/register` and
+  nowhere else, so it registers a runner but can never satisfy an operator check or
+  act as a runner api_key. Runners then use the per-runner API key issued at
+  registration (stored in `~/.config/bench-agent.json`).
+- **Never bake the operator token into a public artifact.** The repo is public and
+  ISO/app releases are public downloads, so anything baked in is world-readable.
+  Bake the **join token** (`BENCHD_JOIN_TOKEN`) into public releases for one-click
+  onboarding; keep `BENCHD_TOKEN` operator-only and rotate it if it ever leaks.
+- Bind to the LAN/lab address only. On the lab overlay it is reachable over the
+  `wgaudit0` WireGuard network — keep `wg0` untouched.
+- Put a TLS reverse proxy in front if it is ever exposed beyond the lab.
 - `server/benchd.conf`, `server/data/` and `~/.config/bench-agent.json` are
   git-ignored — never commit the token, keys or the database.
 

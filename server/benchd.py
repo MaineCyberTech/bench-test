@@ -12,18 +12,23 @@ A dependency-free HTTP + SSE server that:
     runs, trends and side-by-side comparisons.
 
 Auth model
-  operators   the shared join token, as a bearer (API/CLI) or ?token= (web UI/SSE)
+  operators   the shared operator token (BENCHD_TOKEN), as a bearer (API/CLI) or
+              ?token= (web UI/SSE)
   runners     per-runner API keys, issued at registration and used as a bearer
-              thereafter; the join token also registers a *new* runner
+              thereafter
+  joiners     the registration-only join token (BENCHD_JOIN_TOKEN): accepted by
+              POST /register alone, so a public release can ship one-click
+              onboarding without shipping the operator token
 
 Storage is SQLite (stdlib); nothing outside the Python standard library is
 required, so it runs on the Proxmox lab box and on the live USB alike.
 
     python3 server/benchd.py --host 0.0.0.0 --port 8722
 
-Config (first wins): --token flag, $BENCHD_TOKEN, server/benchd.conf,
-~/.config/benchd.conf, /etc/benchd.conf   (key=value).
-  BENCHD_TOKEN=...              join/registration token + operator API bearer
+Config (first wins): --token/--join-token flags, $BENCHD_TOKEN/$BENCHD_JOIN_TOKEN,
+server/benchd.conf, ~/.config/benchd.conf, /etc/benchd.conf   (key=value).
+  BENCHD_TOKEN=...              operator API bearer (never bake into a release)
+  BENCHD_JOIN_TOKEN=...         registration-only token (safe to bake)
 """
 import argparse
 import base64
@@ -847,6 +852,7 @@ class Handler(BaseHTTPRequestHandler):
     store = None
     bus = None
     token = None
+    join_token = None
     web_dir = WEB_DIR
     # resolved once per request (see _caller); a keep-alive connection reuses
     # the handler instance, so parse_request clears it
@@ -989,6 +995,19 @@ class Handler(BaseHTTPRequestHandler):
             v = None
         return self._token_eq(v, self.token)
 
+    def _is_join(self):
+        """The registration-only join token, accepted by POST /register alone.
+
+        It is deliberately NOT checked by any operator gate (state, runs,
+        commands, delete, schedules, exec/shell, SSE) and is not a runner
+        api_key, so a public release can bake it for one-click onboarding
+        without handing out fleet-wide control.
+        """
+        if not self.join_token:
+            return False
+        b = self._bearer()
+        return bool(b and secrets.compare_digest(b, self.join_token))
+
     def _runner_ok(self, rid=None):
         op, r = self._caller()
         return bool(op or (r and (rid is None or r["id"] == rid)))
@@ -1106,7 +1125,13 @@ class Handler(BaseHTTPRequestHandler):
         path, q = u.path, parse_qs(u.query)
         if not path.startswith("/api/"):
             return self._err(404, "not found")
-        if not self._is_operator() and not self._runner_ok():
+        # The join token may register a runner and nothing else: it is accepted
+        # only on /register, so it can never satisfy an operator gate elsewhere.
+        if path == "/api/v1/register":
+            allowed = self._is_operator() or self._runner_ok() or self._is_join()
+        else:
+            allowed = self._is_operator() or self._runner_ok()
+        if not allowed:
             return self._err(401, "unauthorized")
         try:
             b = self._body()
@@ -2165,12 +2190,23 @@ def auth_refusal(token, allow_anonymous):
             "instance, pass --allow-anonymous.")
 
 
+def find_join_token(cli_token):
+    """The registration-only join token; None when unset (feature disabled)."""
+    return (cli_token or os.environ.get("BENCHD_JOIN_TOKEN")
+            or find_conf_value("BENCHD_JOIN_TOKEN"))
+
+
 def main():
     ap = argparse.ArgumentParser(description="bench-test control plane")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8722)
     ap.add_argument("--db", default=DEFAULT_DB)
-    ap.add_argument("--token", default=None, help="join/registration + operator API bearer")
+    ap.add_argument("--token", default=None, help="operator API bearer (required "
+                    "unless --allow-anonymous)")
+    ap.add_argument("--join-token", default=None,
+                    help="registration-only join token: accepted by POST "
+                         "/api/v1/register and nothing else, so it is safe to bake "
+                         "into a public release")
     ap.add_argument("--web", default=WEB_DIR)
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--allow-anonymous", action="store_true",
@@ -2179,12 +2215,14 @@ def main():
 
 
     token = find_token(a.token)
+    join_token = find_join_token(a.join_token)
     refusal = auth_refusal(token, a.allow_anonymous)
     if refusal:
         print("[benchd] %s" % refusal, file=sys.stderr, flush=True)
         return 2
     store = Store(a.db)
     Handler.store, Handler.bus, Handler.token, Handler.web_dir = store, Bus(), token, a.web
+    Handler.join_token = join_token
     httpd = ThreadingHTTPServer((a.host, a.port), Handler)
     httpd.quiet = a.quiet
     httpd.daemon_threads = True
@@ -2194,6 +2232,9 @@ def main():
 
     print("[benchd] listening on http://%s:%d  db=%s  auth=%s"
           % (a.host, a.port, a.db, "token+login" if token else "OPEN (no token)"), flush=True)
+    if join_token:
+        print("[benchd] join token enabled: POST /api/v1/register accepts it "
+              "(registration only)", flush=True)
     if not token:
         print("[benchd] WARNING: --allow-anonymous is set - anyone who can reach "
               "%s:%d can register/control" % (a.host, a.port), flush=True)
