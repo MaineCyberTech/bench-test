@@ -1,0 +1,23 @@
+# Compute dependencies for bench-test - the GPU phases only.
+#
+# Mirror of bench/bootstrap.py GPU_PACKAGES / packages_for() and the runtime
+# installs in bench/Invoke-GpuBench.ps1, bench/Run-WorkstationBench.ps1,
+# bench-gui.cmd, bench-tui.cmd and live/ci-build.sh. Keep in sync with them.
+# See docs/DEPENDENCIES.md.
+#
+# Like the base manifest these are installed UNPINNED by the code; no version is
+# invented here. Pin/hash hardening is tracked separately.
+#
+# --- AMD / Intel on Windows: DirectML backend (from PyPI) ---
+# bootstrap installs these for vendor amd|intel; Invoke-GpuBench.ps1 also
+# installs onnxruntime-directml + onnx when no backend is present.
+onnxruntime-directml
+onnx
+
+# --- NVIDIA: CUDA PyTorch ---
+# Installed with a driver-matched index. The runners default -TorchIndex to the
+# CUDA 12.8 wheel index, e.g.:
+#     pip install torch --index-url https://download.pytorch.org/whl/cu128
+# README.md uses .../cu126 for pre-Turing cards on Linux. The index is
+# caller-controllable; see the pinning follow-up in docs/DEPENDENCIES.md.
+torch
