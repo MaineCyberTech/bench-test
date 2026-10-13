@@ -410,6 +410,7 @@ def run():
     _bdm.latest_git = lambda: "bbb"
     c.check("auto-update defers while a run is active",
             _bdm.auto_update(_BusyStore(True)) is None and not _pulled, _pulled)
+    _bdm._AUTO_UPDATE_LAST[0] = 0.0        # the calls above consumed the window
     c.check("auto-update pulls when behind and idle",
             _bdm.auto_update(_BusyStore(False)) and _pulled, _pulled)
     _bdm.AUTO_UPDATE_OFF = True
