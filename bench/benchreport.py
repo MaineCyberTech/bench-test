@@ -2202,24 +2202,31 @@ def build_summary_dir(results_dir, window_h=8, since=None):
     return out
 
 
-def upload_run_files(rep, results_dir, log=None, limit=40, max_bytes=512 * 1024):
-    """Attach the run's own report files (JSON/MD) and its gfx screenshot.
+def upload_run_files(rep, results_dir, log=None, limit=60, max_bytes=512 * 1024):
+    """Attach the run's own report files, per-phase logs and gfx screenshot.
 
     Everything a phase writes otherwise stays on the machine that ran it: the
-    per-phase reports, the inventory, the nvenc report and the Valley frame.
-    They are small, so they go up as artifacts next to the telemetry CSV.
+    per-phase reports, the inventory, the nvenc report, the Valley frame and the
+    logs (including the gfx diagnostics). They are small, so they go up as
+    artifacts next to the telemetry CSV.
     """
     log = log or (lambda _m: None)
     if rep is None or not getattr(rep, "run_id", None):
         return 0
     keep = []
+
+    def add(p):
+        try:
+            if os.path.isfile(p) and os.path.getsize(p) <= max_bytes:
+                keep.append(p)
+        except OSError:
+            pass
+
     for pat in ("*.json", "*.md"):
         for p in glob.glob(os.path.join(results_dir, pat)):
-            try:
-                if os.path.getsize(p) <= max_bytes:
-                    keep.append(p)
-            except OSError:
-                continue
+            add(p)
+    for p in glob.glob(os.path.join(results_dir, "*-logs", "**", "*"), recursive=True):
+        add(p)
     keep.sort(key=os.path.getmtime, reverse=True)
     keep = keep[:limit]
     shots = sorted(glob.glob(os.path.join(results_dir, "valley-*.png")),

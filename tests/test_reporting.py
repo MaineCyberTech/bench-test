@@ -314,6 +314,16 @@ def run():
     c.check("upload_run_files skips oversized files",
             all("big.json" not in a[0] for a in fr2.arts), fr2.arts)
     c.check("upload_run_files is a no-op without a run", upload_run_files(None, fdir) == 0, "")
+
+    ldir2 = tmpdir()
+    os.makedirs(os.path.join(ldir2, "HOST-linux-1-logs"))
+    open(os.path.join(ldir2, "HOST-linux-1-logs", "gfx-diag.txt"), "w").write("display: :9")
+    open(os.path.join(ldir2, "HOST-linux-1-logs", "gfx-furmark.log"), "w").write("rc=139")
+    open(os.path.join(ldir2, "HOST-linux-1.json"), "w").write("{}")
+    fr3 = _FakeRep2()
+    n3 = upload_run_files(fr3, ldir2)
+    c.check("upload_run_files attaches the per-phase logs and gfx diagnostics",
+            n3 == 3 and any(a[0] == "gfx-diag.txt" for a in fr3.arts), fr3.arts)
     for f in ("gui.py", "tui.py", "agent.py"):
         src = open(os.path.join(BENCH, f), encoding="utf-8").read()
         c.check("%s attaches the run's files" % f, "upload_run_files(" in src, f)

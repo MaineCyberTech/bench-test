@@ -247,6 +247,16 @@ if [ "$DO_GFX" = 1 ]; then
             GSCORE="$(printf '%s\n' "$GM_OUT" | grep -oE "glmark2 Score: [0-9]+" | tail -1 | grep -oE "[0-9]+")"
             printf '{"group":"gfx","phase":"glmark2","result":{"score":%s,"furmark_rc":%s}}\n' "${GSCORE:-0}" "$GFRC" >> "$JSONL"
         fi
+        # last resort: EGL/GLES off-screen, which needs no X output/CRTC (the
+        # headless NVIDIA server has none, which is what kills the GL apps above)
+        if [ "${GSCORE:-0}" = "0" ] && command -v glmark2-es2 >/dev/null 2>&1; then
+            echo "    trying glmark2-es2 --off-screen (EGL, no X output needed)"
+            GME_OUT="$(DISPLAY= timeout $((GFX_SECONDS * 2 + 120)) glmark2-es2 --off-screen -b 2>&1)"; GMERC=$?
+            printf '%s\n' "$GME_OUT" > "$LOGDIR/gfx-glmark2-es2.log"
+            printf '%s\n' "$GME_OUT" | grep -E "glmark2 Score|FPS:" | tail -3 | sed 's/^/    /'
+            GESCORE="$(printf '%s\n' "$GME_OUT" | grep -oE "glmark2 Score: [0-9]+" | tail -1 | grep -oE "[0-9]+")"
+            printf '{"group":"gfx","phase":"glmark2-es2","result":{"score":%s,"exit":%s,"furmark_rc":%s}}\n' "${GESCORE:-0}" "$GMERC" "$GFRC" >> "$JSONL"
+        fi
         cp "$(dirname "$FM")/_furmark_log.txt" "$LOGDIR/" 2>/dev/null || true
         cp "$(dirname "$FM")/_geexlab_log.txt" "$LOGDIR/" 2>/dev/null || true
         "$PY" - "$LOGDIR" "$JSONL" "$GFX_SECONDS" "$GFRC" <<'PYEOF'
