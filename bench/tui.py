@@ -359,7 +359,7 @@ class BenchTUI:
             self._apply_profile(profile)
         self.phases, self.last_phase, self.scroll, self.follow = [], {}, 0, True
         self.tel = {k: deque(maxlen=1000) for k in ("t", "temp", "fan", "power", "util")}
-        self.tel_path, self.tel_cols, self.csv_last = None, {}, None
+        self.tel_path, self.tel_cols, self.csv_last, self.tel_ncols = None, {}, None, 0
         self.exited = False
         self._stopped = False
         self.run_t0 = time.time()
@@ -614,11 +614,13 @@ class BenchTUI:
         newest = max(files, key=os.path.getmtime)
         if newest != self.tel_path:
             self.tel_path = newest
-            self.tel_cols, self.csv_last = {}, None
+            self.tel_cols, self.csv_last, self.tel_ncols = {}, None, 0
             try:
                 with open(newest) as fh:
                     self.tel_cols = {}
-                    for i, n in enumerate(fh.readline().strip().split(",")):
+                    hdr = fh.readline().strip().split(",")
+                    self.tel_ncols = len(hdr)
+                    for i, n in enumerate(hdr):
                         canon = CSV_ALIASES.get(n.strip().lower(), n.strip().lower())
                         if canon and canon not in self.tel_cols:
                             self.tel_cols[canon] = i
@@ -629,7 +631,17 @@ class BenchTUI:
                 lines = fh.read().strip().splitlines()
             if len(lines) < 2:
                 return
-            vals = lines[-1].split(",")
+            # the sampler rewrites this file several times a second, so the final
+            # line is often a partial row - that made every column read as None and
+            # the GPU tiles show "--". Take the last COMPLETE row.
+            vals = None
+            for line in reversed(lines[1:]):
+                parts = line.split(",")
+                if len(parts) >= self.tel_ncols:
+                    vals = parts
+                    break
+            if vals is None:
+                return
         except OSError:
             return
 
