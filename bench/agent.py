@@ -172,6 +172,12 @@ class Agent:
         last_hb = 0.0
         pending = []
         logbuf = []
+        # The same pipeline counters the dashboards get from ReporterPump:
+        # produced counts rows read from the CSV; sent only what the server
+        # ACKNOWLEDGED (a failed POST used to be counted as sent); failed what it
+        # rejected. dropped stays 0: tailing a file has no bounded queue.
+        tel = {"produced": 0, "sent": 0, "failed": 0, "dropped": 0}
+        hbs = 0
         while True:
             try:
                 ln = line_q.get(timeout=0.5)
@@ -187,14 +193,30 @@ class Agent:
                     self.rep.event("\n".join(pending)); pending = []
                 if len(logbuf) >= 40:
                     self.rep.log(logbuf); logbuf = []
-            for row in tail.read():
-                self.rep.telemetry([row])
+            rows = tail.read()
+            if rows:
+                tel["produced"] += len(rows)
+                # batch per tail.read() (<=200 per POST), like ReporterPump's
+                # <=120 per tick: one POST per row was 4 req/s with a fresh
+                # connection each, and a slow server blocked the run loop up to
+                # its 6s timeout for every single row
+                for i in range(0, len(rows), 200):
+                    batch = rows[i:i + 200]
+                    if self.rep.telemetry(batch) == 200:
+                        tel["sent"] += len(batch)
+                    else:
+                        tel["failed"] += len(batch)
             now = time.time()
             if now - last_hb >= 5:
                 last_hb = now
                 if logbuf:
                     self.rep.log(logbuf); logbuf = []
                 self.rep.heartbeat(status="busy")
+                hbs += 1
+                if hbs % 5 == 0 and (tel["produced"] or tel["failed"]):
+                    self.log("[agent] telemetry %d produced, %d sent, %d failed, "
+                             "%d dropped"
+                             % (tel["produced"], tel["sent"], tel["failed"], tel["dropped"]))
         rc = self.proc.wait()
         self.running = False
         tracker.close()
@@ -203,13 +225,22 @@ class Agent:
             self.rep.log(logbuf)
         if pending:
             self.rep.event("\n".join(pending))
+        if tel["produced"] or tel["failed"]:
+            self.log("[agent] telemetry %d produced, %d sent, %d failed, %d dropped"
+                     % (tel["produced"], tel["sent"], tel["failed"], tel["dropped"]))
         self._finish(rc)
 
     def _finish(self, rc):
         summary = read_runs_index(self.out_dir)
         if not summary:
             summary = build_summary_dir(self.out_dir, since=self.run_t0)
-            csvs = glob.glob(os.path.join(self.out_dir, "*.telemetry.csv"))
+            # only a CSV THIS run wrote: at run end the newest file can still be
+            # the previous run's, which would give this run a stale telemetry block
+            try:
+                csvs = [p for p in glob.glob(os.path.join(self.out_dir, "*.telemetry.csv"))
+                        if self.run_t0 is None or os.path.getmtime(p) >= self.run_t0 - 5]
+            except OSError:
+                csvs = []
             if csvs:
                 ts = telemetry_summary(max(csvs, key=os.path.getmtime))
                 if ts:
@@ -217,7 +248,7 @@ class Agent:
         summary.setdefault("host", self.a.name)
         status = "done" if rc == 0 else ("stopped" if self.stop_flag else "failed")
         system = read_inventory(self.out_dir) or self.sysinfo
-        upload_telemetry_csv(self.rep, self.out_dir)
+        upload_telemetry_csv(self.rep, self.out_dir, since=self.run_t0)
         upload_run_files(self.rep, self.out_dir)
         self.rep.finish(status, rc, summary, platform=self.caps.get("platform"),
                         gpu=self.caps.get("gpu"), driver=self.caps.get("driver"),

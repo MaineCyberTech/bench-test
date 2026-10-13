@@ -105,6 +105,15 @@ CSV_ALIASES = {
     "gpu_copy_pct": "gpu_copy_pct",
 }
 
+# Fields whose domain really is 0..100. The server drops impossible percentages
+# from live samples (`_PCT_0_100` in benchd.py) because one nvidia-smi spike
+# flattens a chart that scales each series to its own max; the stored summary is
+# built from the raw CSV, so it must apply the same rule or it re-introduces the
+# spike. Out-of-range readings are DROPPED, not clamped: clamping to 100 invents
+# a plausible-looking value. mem_util and the encoder percentages are
+# deliberately unbounded - some drivers legitimately report them above 100.
+PCT_0_100 = ("fan_pct", "gpu_util", "cpu_util")
+
 
 def _pstate(v):
     """'P0'/'P8' -> 0/8 (numeric, so it can be streamed as an extra metric)."""
@@ -468,6 +477,9 @@ class Reporter:
         self.timeout = timeout
         self.logfn = log or (lambda *_a: None)
         self.run_id = None
+        # when the current run was created; upload_telemetry_csv uses it to scope
+        # the end-of-run CSV to this run when the caller does not pass `since`
+        self.run_started = None
         self.enabled = bool(self.server and self.token)
         self.last_error = None
         self.last_ok = None
@@ -548,6 +560,7 @@ class Reporter:
             "preset": preset})
         if s == 200:
             self.run_id = r.get("run_id")
+            self.run_started = time.time()
             return self.run_id
         return None
 
@@ -559,9 +572,17 @@ class Reporter:
                    "t0": t0, "t1": t1, "detail": detail})
 
     def telemetry(self, samples):
+        """POST a batch and return the HTTP status (0 when nothing was sent).
+
+        The status lets a caller count an acknowledged sample instead of an
+        attempted one: `_req` fails soft with status 0 when the server is
+        unreachable, so incrementing a 'sent' counter before the call claimed
+        rows the server never stored.
+        """
         if not self.run_id or not samples:
-            return
-        self._req("POST", "/api/v1/runs/%s/telemetry" % self.run_id, {"samples": samples})
+            return 0
+        return self._req("POST", "/api/v1/runs/%s/telemetry" % self.run_id,
+                         {"samples": samples})[0]
 
     def event(self, message, level="info"):
         if not self.run_id:
@@ -579,12 +600,14 @@ class Reporter:
                   {"stream": stream, "lines": [str(x) for x in lines]})
 
     def artifact(self, name, text, kind="json"):
+        """Attach one artifact; returns the HTTP status (0 when not sent)."""
         if not self.run_id:
-            return
+            return 0
         import base64
         raw = text.encode("utf-8", "replace") if isinstance(text, str) else text
-        self._req("POST", "/api/v1/runs/%s/artifact" % self.run_id,
-                  {"name": name, "kind": kind, "content": base64.b64encode(raw).decode()})
+        return self._req("POST", "/api/v1/runs/%s/artifact" % self.run_id,
+                         {"name": name, "kind": kind,
+                          "content": base64.b64encode(raw).decode()})[0]
 
     def finish(self, status="done", exit_code=0, summary=None, platform=None, gpu=None,
                driver=None, torch=None, ended=None, system=None):
@@ -713,6 +736,7 @@ class ReporterPump:
         self.logs = queue.Queue(maxsize=2000)
         self.produced = 0
         self.sent = 0
+        self.failed = 0
         self.dropped = 0
         self.ticks = 0
         self._stop = False
@@ -761,8 +785,15 @@ class ReporterPump:
             except Exception:
                 break
         if batch:
-            self.sent += len(batch)
-            self.rep.telemetry(batch)
+            # `sent` counts rows the server ACKNOWLEDGED. The reporter fails soft
+            # (status 0 on a timeout, 4xx/5xx on a rejection), and incrementing
+            # before the call made a run whose uploads were all rejected report
+            # every row as sent while the server stored nothing.
+            status = self.rep.telemetry(batch)
+            if status == 200:
+                self.sent += len(batch)
+            else:
+                self.failed += len(batch)
         lines = []
         while len(lines) < 200:
             try:
@@ -773,9 +804,10 @@ class ReporterPump:
             self.rep.log(lines)
 
     def stats(self):
-        """produced / sent / dropped since the pump started."""
+        """produced / sent / failed / dropped since the pump started."""
         return {"produced": self.produced, "sent": self.sent,
-                "dropped": self.dropped, "queued": self.samples.qsize()}
+                "failed": self.failed, "dropped": self.dropped,
+                "queued": self.samples.qsize()}
 
     def _loop(self):
         while not self._stop:
@@ -786,9 +818,10 @@ class ReporterPump:
                 self.ticks += 1
                 # every ~20s: a run's own console then says whether the pipeline kept
                 # up, instead of a silent loss being found by hand later
-                if self.ticks % 20 == 0 and (self.produced or self.dropped):
-                    self.log("[report] telemetry %d produced, %d sent, %d dropped"
-                             % (self.produced, self.sent, self.dropped))
+                if self.ticks % 20 == 0 and (self.produced or self.failed or self.dropped):
+                    self.log("[report] telemetry %d produced, %d sent, %d failed, "
+                             "%d dropped"
+                             % (self.produced, self.sent, self.failed, self.dropped))
                 if self.ticks % 2 == 0:
                     self.rep.heartbeat()
                     for c in self.rep.poll_commands():
@@ -2854,8 +2887,9 @@ def upload_run_files(rep, results_dir, log=None, limit=60, max_bytes=512 * 1024)
     return n
 
 
-def upload_telemetry_csv(rep, results_dir, log=None, cap=20000, sent=None):
-    """Send the run's full 1 Hz CSV and attach the raw file.
+def upload_telemetry_csv(rep, results_dir, log=None, cap=None, sent=None,
+                         since=None, chunk_rows=50000, chunk_bytes=8 * 1024 * 1024):
+    """Send the run's full telemetry CSV and attach the raw file.
 
     The live stream carries only the ten fields the charts use, so everything
     else (disk/net throughput, CPU temp, PCIe link, throttle bits, power limits,
@@ -2863,20 +2897,41 @@ def upload_telemetry_csv(rep, results_dir, log=None, cap=20000, sent=None):
     (the server keeps the ones outside its fixed schema in its `extra` column)
     and the CSV itself is attached, so nothing is lost.
 
-    `sent` is what the dashboard already streamed live, as
+    `sent` is what the client already streamed live, as
     {csv basename: {elapsed, ...}}. Those rows are skipped: without it every
     sample was stored twice, because the live stream posts the run and this
     upload posted the whole file again at the end (the charts then drew each
-    point twice, and the stored rate looked ~2x the configured one). Headless
-    runners (agent.py) stream nothing, pass nothing, and still send every row.
+    point twice, and the stored rate looked ~2x the configured one). A headless
+    agent that streams nothing passes nothing and still sends every row.
 
-    Returns the number of samples sent.
+    `since` (a unix time, normally the run's start) scopes the upload to a CSV
+    THIS run wrote - the same mechanism build_summary_dir uses. The results dir
+    keeps earlier runs' files, and picking the newest unscoped sent a whole
+    previous run's telemetry under this run's id when a run died before writing
+    its own (a four-second failure uploaded the previous run's 4,995 rows).
+    When `since` is None the reporter's own run start is used; only a reporter
+    that knows neither falls back to the newest file.
+
+    Long runs are no longer truncated silently: `cap` defaults to None (every
+    row is posted) and, if a caller does pass one, truncation is logged. The CSV
+    is attached in chunks (`chunk_rows` rows and/or `chunk_bytes` of raw text per
+    artifact, whichever comes first) named `base.part0001`... so they sort; a
+    file that fits goes up under its own name as before. That keeps each
+    artifact below the server's 24 MiB body limit instead of a whole-run upload
+    being rejected at the door.
+
+    Returns the number of samples the server acknowledged (a rejected POST is
+    not counted, and is logged).
     """
     log = log or (lambda _m: None)
     if rep is None or not getattr(rep, "run_id", None):
         return 0
+    if since is None:
+        since = getattr(rep, "run_started", None)
     try:
         files = glob.glob(os.path.join(results_dir, "*.telemetry.csv"))
+        if since is not None:
+            files = [p for p in files if os.path.getmtime(p) >= since - 5]
     except Exception:
         return 0
     if not files:
@@ -2891,10 +2946,15 @@ def upload_telemetry_csv(rep, results_dir, log=None, cap=20000, sent=None):
         return 0
     if len(lines) < 2:
         return 0
+    if cap is not None and len(lines) - 1 > cap:
+        # the old default silently sent only the first ~83 min of a longer run
+        log("[report] telemetry CSV truncated: %d of %d rows (cap %d) + %s"
+            % (cap, len(lines) - 1, cap, base))
+        lines = lines[:cap + 1]
     hdr = [h.strip().lower() for h in lines[0].split(",")]
     canon = [CSV_ALIASES.get(h, h) for h in hdr]
     samples = []
-    for ln in lines[1:cap + 1]:
+    for ln in lines[1:]:
         vals = ln.split(",")
         s = {}
         for i, key in enumerate(canon):
@@ -2908,18 +2968,51 @@ def upload_telemetry_csv(rep, results_dir, log=None, cap=20000, sent=None):
             if already and s["elapsed"] in already:
                 continue        # already streamed live; sending it again doubles the chart
             samples.append(s)
+    acked = failed = 0
     for i in range(0, len(samples), 200):
-        rep.telemetry(samples[i:i + 200])
-    rep.artifact(os.path.basename(path), "\n".join(lines) + "\n", kind="csv")
-    log("[report] telemetry: %d samples%s + %s"
-        % (len(samples),
-           " (%d already streamed live)" % len(already) if already else "",
-           os.path.basename(path)))
-    return len(samples)
+        batch = samples[i:i + 200]
+        if rep.telemetry(batch) == 200:
+            acked += len(batch)
+        else:
+            failed += len(batch)
+    # attach the raw file in sortable parts; a file that fits stays one artifact
+    # (`chunk_rows` counts DATA rows; the header rides with the first part, so
+    # concatenating the parts in name order reproduces the CSV exactly)
+    parts, cur, cur_bytes, rows_in = [], [lines[0]], len(lines[0]) + 1, 0
+    for ln in lines[1:]:
+        n = len(ln) + 1             # + newline
+        if cur and (rows_in >= chunk_rows or cur_bytes + n > chunk_bytes):
+            parts.append(cur)
+            cur, cur_bytes, rows_in = [], 0, 0
+        cur.append(ln)
+        cur_bytes += n
+        rows_in += 1
+    if cur:
+        parts.append(cur)
+    for i, part in enumerate(parts):
+        name = base if len(parts) == 1 else "%s.part%04d" % (base, i + 1)
+        if rep.artifact(name, "\n".join(part) + "\n", kind="csv") != 200:
+            log("[report] telemetry CSV artifact %s REJECTED by the server" % name)
+    if failed:
+        log("[report] telemetry: %d samples stored, %d REJECTED by the server + %s"
+            % (acked, failed, base))
+    elif parts:
+        log("[report] telemetry: %d samples%s + %s"
+            % (acked,
+               " (%d already streamed live)" % len(already) if already else "",
+               base))
+    return acked
 
 
 def telemetry_summary(csv_path):
-    """min/avg/max for key telemetry fields from a 1 Hz CSV."""
+    """min/avg/max for key telemetry fields from a 1 Hz CSV.
+
+    Applies the server's 0..100 rule to percentage fields: a live sample with an
+    impossible fan_pct is dropped before it is stored, and the summary is built
+    from the raw CSV, so without the same filter a stored summary carried
+    fan_pct [20.0, 48.6, 572.0] - the spike the server had removed from every
+    live row. Dropped, not clamped: clamping invents a plausible reading.
+    """
     try:
         with open(csv_path, encoding="utf-8-sig") as fh:
             header = fh.readline().strip().split(",")
@@ -2937,8 +3030,11 @@ def telemetry_summary(csv_path):
                 n += 1
                 for c, i in cols.items():
                     val = _f(v[i]) if i < len(v) else None
-                    if val is not None:
-                        acc[c].append(val)
+                    if val is None:
+                        continue
+                    if c in PCT_0_100 and not (0 <= val <= 100):
+                        continue    # impossible reading: drop it, never clamp it
+                    acc[c].append(val)
     except OSError:
         return None
     out = {"samples": n}

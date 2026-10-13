@@ -97,6 +97,21 @@ def run():
     ts = telemetry_summary(os.path.join(d, "host-win-20260101-000000.telemetry.csv"))
     c.check("telemetry_summary", ts and ts["samples"] == 5 and ts["temp_c"] == [50, 52, 54], ts)
 
+    # the server drops an impossible fan_pct from LIVE samples, but the summary
+    # is built from the raw CSV: without the same rule a stored summary carried
+    # fan_pct [20.0, 48.6, 572.0]. Dropped, never clamped to 100.
+    badd = tmpdir()
+    with open(os.path.join(badd, "host-bad.telemetry.csv"), "w") as fh:
+        fh.write("elapsed_s,fan_pct,gpu_util_pct\n")
+        fh.write("0.0,20.0,50.0\n")
+        fh.write("1.0,48.6,60.0\n")
+        fh.write("2.0,572.0,70.0\n")
+        fh.write("3.0,-3.0,80.0\n")
+    ts_bad = telemetry_summary(os.path.join(badd, "host-bad.telemetry.csv"))
+    c.check("an impossible fan_pct is dropped from the summary, not clamped",
+            ts_bad and ts_bad["samples"] == 4 and ts_bad["fan_pct"] == [20.0, 34.3, 48.6]
+            and ts_bad["gpu_util"] == [50, 65, 80], ts_bad)
+
     # ---- several gfx records: the one that scored must win ----
     # A monitor-less stick writes a furmark "skipped" record and then a glmark2
     # fallback that actually scored. Whichever record came last used to win, so
@@ -448,9 +463,11 @@ def run():
 
         def telemetry(self, samples):
             self.samples.extend(samples)
+            return 200          # ack, like Reporter.telemetry now does
 
         def artifact(self, name, text, kind="json"):
             self.arts.append((name, kind, len(text)))
+            return 200
 
     tdir = tmpdir()
     with open(os.path.join(tdir, "host-win-1.telemetry.csv"), "w") as fh:
@@ -499,6 +516,80 @@ def run():
         src = open(os.path.join(BENCH, f), encoding="utf-8").read()
         c.check("%s tells the upload what it already streamed" % f,
                 "upload_telemetry_csv(self.rep, self.results_dir, sent=" in src, f)
+
+    # ---- the upload is scoped to THIS run's CSV ----
+    # Field failure: a run that died in 4 seconds uploaded the PREVIOUS run's
+    # telemetry - 4,995 rows, the previous run's exact count - under its own run
+    # id, because the end-of-run upload picked the newest CSV and the failed run
+    # wrote none of its own. Scope it with the run's start, like build_summary_dir.
+    sdir = tmpdir()
+    oldc = os.path.join(sdir, "host-win-prev.telemetry.csv")
+    with open(oldc, "w") as fh:
+        fh.write("elapsed_s,temp_c\n8.0,40.0\n8.25,41.0\n")
+    past = time.time() - 3600
+    os.utime(oldc, (past, past))
+    fr5 = _FakeRep()
+    n5 = upload_telemetry_csv(fr5, sdir, since=time.time() - 5)
+    c.check("a run with no CSV of its own uploads nothing",
+            n5 == 0 and fr5.samples == [] and fr5.arts == [], (n5, fr5.samples, fr5.arts))
+    ownc = os.path.join(sdir, "host-win-own.telemetry.csv")
+    with open(ownc, "w") as fh:
+        fh.write("elapsed_s,temp_c\n0.0,50.0\n0.25,51.0\n")
+    fr6 = _FakeRep()
+    n6 = upload_telemetry_csv(fr6, sdir, since=time.time() - 5)
+    c.check("a run with its own CSV uploads exactly its rows",
+            n6 == 2 and [s["temp_c"] for s in fr6.samples] == [50.0, 51.0], (n6, fr6.samples))
+    # a reporter that remembers its start is scoped even without an explicit
+    # `since` (the dashboards pass none), so a failed run cannot borrow a CSV
+    fr7 = _FakeRep()
+    fr7.run_started = time.time() + 60
+    c.check("a reporter's own run start scopes the upload",
+            upload_telemetry_csv(fr7, sdir) == 0 and fr7.arts == [], fr7.arts)
+
+    # ---- a long CSV is paged; truncation is never silent ----
+    bdir = tmpdir()
+    with open(os.path.join(bdir, "host-big.telemetry.csv"), "w") as fh:
+        fh.write("elapsed_s,temp_c\n")
+        for i in range(8):
+            fh.write("%d,%d\n" % (i, 40 + i))
+    fr8 = _FakeRep()
+    n8 = upload_telemetry_csv(fr8, bdir, chunk_rows=3)
+    names8 = [a[0] for a in fr8.arts]
+    c.check("a long CSV is paged into artifacts named so they sort",
+            n8 == 8 and len(names8) == 3 and names8 == sorted(names8)
+            and all(nm.startswith("host-big.telemetry.csv") for nm in names8), names8)
+    c.check("a small CSV still goes up as one artifact under its own name",
+            [a[0] for a in fr6.arts] == ["host-win-own.telemetry.csv"], fr6.arts)
+    notes9 = []
+    fr9 = _FakeRep()
+    n9 = upload_telemetry_csv(fr9, bdir, cap=2, log=notes9.append)
+    c.check("a capped upload truncates and says so",
+            n9 == 2 and any("truncat" in m for m in notes9), (n9, notes9))
+
+    # a rejected POST/artifact must not be reported as a successful upload
+    class _RejectRep(_FakeRep):
+        def telemetry(self, batch):
+            self.samples.extend(batch)
+            return 500
+
+        def artifact(self, name, text, kind="json"):
+            self.arts.append((name, kind, len(text)))
+            return 500
+
+    notes10 = []
+    fr10 = _RejectRep()
+    n10 = upload_telemetry_csv(fr10, bdir, log=notes10.append)
+    c.check("a rejected upload is not counted as stored",
+            n10 == 0 and any("REJECTED" in m for m in notes10), (n10, notes10))
+
+    # the agent scopes its own upload and batches like the pump (no per-row POST)
+    asrc = open(os.path.join(BENCH, "agent.py"), encoding="utf-8").read()
+    c.check("agent.py scopes the upload to its own run start",
+            "upload_telemetry_csv(self.rep, self.out_dir, since=self.run_t0)" in asrc, "")
+    c.check("agent.py batches telemetry instead of one POST per row",
+            "self.rep.telemetry([row])" not in asrc and "tail.read()" in asrc, "")
+    c.check("agent.py reports produced/sent/failed/dropped like the pump",
+            all(k in asrc for k in ('"produced"', '"sent"', '"failed"', '"dropped"')), "")
 
     # ---- the net phase must not record a 403 as a 0 Mbps measurement ----
     netps = open(os.path.join(BENCH, "Invoke-NetBench.ps1"), encoding="utf-8").read()
@@ -755,6 +846,7 @@ def run():
 
         def telemetry(self, batch):
             self.batches.append(list(batch))
+            return 200          # ack, like Reporter.telemetry now does
 
         def log(self, lines, stream="out"):
             pass
@@ -816,6 +908,35 @@ def run():
     c.check("telemetry drains on every tick, the heartbeat every other tick",
             calls["drain"] > cad.beats and cad.polls == cad.beats,
             (calls["drain"], cad.beats, cad.polls))
+
+    # `sent` must count ACKNOWLEDGED rows: Reporter.telemetry fails soft (status
+    # 0 when unreachable, 4xx/5xx on rejection), and the old pump counted the
+    # attempted POST as sent while the server stored nothing.
+    class _RejectRep2:
+        def __init__(self):
+            self.batches = []
+
+        def telemetry(self, batch):
+            self.batches.append(list(batch))
+            return 504
+
+        def log(self, lines, stream="out"):
+            pass
+
+        def heartbeat(self):
+            pass
+
+        def poll_commands(self):
+            return []
+
+    rp = _RejectRep2()
+    pump2 = ReporterPump(rp)
+    pump2.push_sample({"elapsed": 0})
+    pump2.push_sample({"elapsed": 1})
+    pump2._drain()
+    c.check("a failed POST is counted as failed, not sent",
+            pump2.sent == 0 and pump2.failed == 2 and pump2.stats()["failed"] == 2,
+            pump2.stats())
 
     # ---- a phase that reports its own elapsed time is believed ----
     class _Rec:
