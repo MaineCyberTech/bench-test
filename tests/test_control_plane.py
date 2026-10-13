@@ -386,6 +386,10 @@ def run():
 
     # ---- a run orphaned by a runner restart must not stay 'running' ----
     # The runner comes back, registers and goes idle; the heartbeat rule cannot see it.
+    _spec_or = importlib.util.spec_from_file_location(
+        "benchd_orphan", os.path.join(REPO, "server", "benchd.py"))
+    _bdm = importlib.util.module_from_spec(_spec_or)
+    _spec_or.loader.exec_module(_bdm)
     import time as _t
     _orph = {"id": "run-orphan", "runner_id": "r1", "started": _t.time() - 600}
     _idle = {"id": "r1", "last_seen": _t.time(), "status": "idle", "current_run": None}
