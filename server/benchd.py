@@ -47,6 +47,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -80,6 +81,118 @@ REGISTER_RATE_LIMIT = 10
 REGISTER_RATE_WINDOW = 60.0
 RATE_LIMITS = {"auth": (AUTH_RATE_LIMIT, AUTH_RATE_WINDOW),
                "register": (REGISTER_RATE_LIMIT, REGISTER_RATE_WINDOW)}
+
+# OBS-P2-002: one JSON object per line on stderr, so an operator (or a log
+# shipper) can filter by level or join every line of a request by its
+# request_id. Kept tiny and dependency-free; `extras` is a free-form object
+# (route, error, traceback, run_id, ...).
+def log_json(level, msg, request_id=None, **extras):
+    rec = {"ts": round(time.time(), 3), "level": level, "msg": str(msg),
+           "request_id": request_id}
+    if extras:
+        rec["extras"] = extras
+    try:
+        sys.stderr.write(json.dumps(rec, default=str) + "\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+# OBS-P2-005: in-process counters for a stdlib Prometheus text endpoint. They are
+# attached to the HTTP server (like the rate limiter), so a test run that spins up
+# several servers does not carry state between them.
+class Metrics:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.started = time.time()
+        self.requests = {"1xx": 0, "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0}
+        self.auth_failures = 0
+        self.rate_limited = 0
+
+    def status(self, code):
+        cls = "%dxx" % (int(code) // 100)
+        with self.lock:
+            if cls in self.requests:
+                self.requests[cls] += 1
+
+    def auth_failure(self):
+        with self.lock:
+            self.auth_failures += 1
+
+    def rate_limit(self):
+        with self.lock:
+            self.rate_limited += 1
+
+    def uptime(self):
+        return time.time() - self.started
+
+
+# OBS-P2-004: /health is a cheap liveness probe. Its expensive fields (per-table
+# row counts, db size and the cached "latest main" commit) are computed off the
+# request path and refreshed by a daemon thread, so a liveness probe can never
+# block on a SQLite lock or on the GitHub compare's 8s timeout.
+_HEALTH_LOCK = threading.Lock()
+_HEALTH = {"capacity": None, "runners": 0, "latest": "", "git": "", "version": ""}
+_ACTIVE_STORE = {"s": None}
+_HEALTH_THREAD = {"t": None}
+HEALTH_REFRESH_S = 5.0
+
+
+def _health_capacity(store):
+    rows = {}
+    for t in ("runs", "telemetry", "logs", "events", "artifacts"):
+        rows[t] = store.one("SELECT COUNT(*) c FROM %s" % t)["c"]
+    db_bytes = 0
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            db_bytes += os.path.getsize((store.path or "") + suffix)
+        except OSError:
+            pass
+    return {"rows": rows, "db_bytes": db_bytes, "retention_days": RETENTION_DAYS}
+
+
+def refresh_health(store=None, with_network=True):
+    """Recompute the cached /health fields. Best-effort: a store closed by test
+    teardown (or a transient DB error) must not spam the log."""
+    store = store or _ACTIVE_STORE["s"]
+    if store is None:
+        return
+    try:
+        cap = _health_capacity(store)
+        runners = store.one("SELECT COUNT(*) c FROM runners")["c"]
+        git = server_git()
+        version = server_version()
+        latest = latest_git() if with_network else _HEALTH.get("latest", "")
+    except Exception:
+        return
+    with _HEALTH_LOCK:
+        _HEALTH.update({"capacity": cap, "runners": runners, "git": git,
+                        "version": version, "latest": latest})
+
+
+def health_snapshot():
+    with _HEALTH_LOCK:
+        snap = dict(_HEALTH)
+    if snap.get("capacity") is None:
+        snap["capacity"] = {"rows": {}, "db_bytes": 0, "retention_days": RETENTION_DAYS}
+    return snap
+
+
+def _health_loop():
+    while True:
+        time.sleep(HEALTH_REFRESH_S)
+        refresh_health()
+
+
+def start_health_refresher(store):
+    """Prime the /health cache (no network) and keep it fresh in the background."""
+    _ACTIVE_STORE["s"] = store
+    refresh_health(store, with_network=False)
+    t = _HEALTH_THREAD["t"]
+    if t is None or not t.is_alive():
+        t = threading.Thread(target=_health_loop, name="benchd-health", daemon=True)
+        _HEALTH_THREAD["t"] = t
+        t.start()
 
 
 class BadJSON(Exception):
@@ -275,6 +388,8 @@ class Store:
             self.conn.executescript(SCHEMA)
             self._migrate()
             self.conn.commit()
+        # OBS-P2-004: prime the cheap /health cache and start its refresher.
+        start_health_refresher(self)
 
     def _migrate(self):
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(runners)")}
@@ -962,14 +1077,42 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             msg = str(fmt)
         msg = re.sub(r"(token=)[^&\s\"']+", r"\1REDACTED", msg)
-        print("[benchd] %s %s" % (time.strftime("%H:%M:%S"), msg), flush=True)
+        log_json("info", msg, request_id=self._request_id())
+
+    _REQ_ID_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
+
+    def _request_id(self):
+        """The correlation id for this request: an inbound X-Request-ID if it is
+        a sane token, else a fresh one. Stable for the life of the request and
+        echoed back on every response (OBS-P2-002)."""
+        rid = getattr(self, "_bench_rid", None)
+        if rid:
+            return rid
+        headers = getattr(self, "headers", None)
+        incoming = (headers.get("X-Request-ID") or "").strip() if headers else ""
+        rid = incoming if (incoming and self._REQ_ID_RE.match(incoming)) else uuid.uuid4().hex
+        self._bench_rid = rid
+        return rid
+
+    def _log(self, level, msg, **extras):
+        """Structured log line stamped with this request's id."""
+        log_json(level, msg, request_id=self._request_id(), **extras)
+
+    def _metrics_obj(self):
+        m = getattr(self.server, "_bench_metrics", None)
+        if m is None:
+            m = Metrics()
+            self.server._bench_metrics = m
+        return m
 
     def _send(self, code, obj=None, raw=None, ctype="application/json", headers=None):
+        self._metrics_obj().status(code)
         body = raw if raw is not None else _json_dumps(obj).encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Request-ID", self._request_id())
         # SEC-P2-002: never emit a wildcard. Only echo the request Origin when it
         # is same-origin or an explicitly configured dashboard origin.
         origin = self._origin_allowed()
@@ -981,7 +1124,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.wfile.write(body)
         except Exception:
-            pass
+            # OBS-P2-003: a client that hung up mid-response is worth a log line,
+            # not a silently swallowed exception.
+            self._log("error", "response write failed", traceback=traceback.format_exc())
 
     def _err(self, code, msg, headers=None):
         self._send(code, {"error": msg}, headers=headers)
@@ -1028,18 +1173,22 @@ class Handler(BaseHTTPRequestHandler):
         allowed, retry = self._limited(kind)
         if allowed:
             return None
+        self._metrics_obj().rate_limit()
         return self._err(429, "too many requests", {"Retry-After": str(retry)})
 
     def _deny(self, code, msg):
         """An auth denial. A 401 feeds the per-IP bucket and may become a 429."""
         if code == 401:
+            self._metrics_obj().auth_failure()
             allowed, retry = self._limited("auth")
             try:
                 if self.store is not None:
                     self.store.audit("anonymous", "auth_fail", target=self.path)
             except Exception:
-                pass
+                # OBS-P2-003: an audit write must never be silently lost.
+                self._log("error", "audit write failed", traceback=traceback.format_exc())
             if not allowed:
+                self._metrics_obj().rate_limit()
                 return self._err(429, "too many requests", {"Retry-After": str(retry)})
         return self._err(code, msg)
 
@@ -1063,19 +1212,12 @@ class Handler(BaseHTTPRequestHandler):
               flush=True)
 
     def _capacity(self):
-        """Row counts + on-disk size, so unbounded growth is visible in /health."""
-        S = self.store
-        rows = {}
-        for t in ("runs", "telemetry", "logs", "events", "artifacts"):
-            rows[t] = S.one("SELECT COUNT(*) c FROM %s" % t)["c"]
-        db_bytes = 0
-        for suffix in ("", "-wal", "-shm"):
-            try:
-                db_bytes += os.path.getsize((S.path or "") + suffix)
-            except OSError:
-                pass
-        return {"rows": rows, "db_bytes": db_bytes,
-                "retention_days": RETENTION_DAYS}
+        """Cached row counts + on-disk size (OBS-P2-004).
+
+        The DB read happens off the request path (see refresh_health); this only
+        serves the snapshot, so /health never blocks on SQLite.
+        """
+        return health_snapshot()["capacity"]
 
     def _body(self):
         """Parse the JSON body, raising BodyError instead of guessing.
@@ -1210,12 +1352,14 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- dispatch ----------------------------------------------------------
     def do_OPTIONS(self):
+        self._metrics_obj().status(204)
         self.send_response(204)
         origin = self._origin_allowed()
         if origin:
             self.send_header("Access-Control-Allow-Origin", origin)
         self.send_header("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Authorization,Content-Type")
+        self.send_header("X-Request-ID", self._request_id())
         self.send_header("Content-Length", "0")
         self.end_headers()
 
@@ -1223,12 +1367,20 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         path, q = u.path, parse_qs(u.query)
         if path == "/health":
-            return self._send(200, {"ok": True, "time": now(), "git": server_git(),
-                                    "version": server_version(),
+            # OBS-P2-004: liveness only - every field comes from the cached
+            # snapshot, so this never touches the DB or the network.
+            snap = health_snapshot()
+            return self._send(200, {"ok": True, "time": now(), "git": snap["git"],
+                                    "version": snap["version"],
                                     "protocol": PROTOCOL,
-                                    "latest": latest_git(),
-                                    "capacity": self._capacity(),
-                                    "runners": len(self.store.q("SELECT id FROM runners"))})
+                                    "latest": snap["latest"],
+                                    "capacity": snap["capacity"],
+                                    "runners": snap["runners"]})
+        if path == "/ready":
+            return self._ready()
+        if path == "/metrics":
+            return self._send(200, raw=self._metrics_text().encode(),
+                              ctype="text/plain; version=0.0.4; charset=utf-8")
         if path.startswith("/api/"):
             # ?token= is allowed only where a browser cannot send a header:
             # the SSE stream (EventSource) and file downloads (link navigation).
@@ -1316,6 +1468,74 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._log_error("POST", path, exc)
             return self._err(500, "internal server error")
+
+    # -- readiness + metrics (OBS-P2-004 / OBS-P2-005) --------------------
+    def _ready(self):
+        """Readiness: can this instance serve? A SQLite read+write plus the
+        existing git/version compare. Unlike /health this may do I/O, and it
+        answers 503 when the DB is not usable."""
+        db_ok, db_err = False, ""
+        try:
+            self.store.one("SELECT 1 AS x")
+            with self.store.lock:
+                self.store.conn.execute("CREATE TEMP TABLE IF NOT EXISTS _bench_ready(x INTEGER)")
+                self.store.conn.execute("INSERT INTO _bench_ready(x) VALUES(1)")
+                self.store.conn.execute("DROP TABLE _bench_ready")
+                self.store.conn.commit()
+            db_ok = True
+        except Exception as exc:
+            db_err = "%s: %s" % (type(exc).__name__, exc)
+            self._log("error", "readiness db check failed", error=db_err,
+                      traceback=traceback.format_exc())
+        latest, git = latest_git(), server_git()
+        compare = compare_commits(git, latest) if (git and latest) else ""
+        out = {"ok": db_ok, "db": {"ok": db_ok}, "version": server_version(),
+               "git": git, "latest": latest, "compare": compare,
+               "protocol": PROTOCOL, "time": now()}
+        if db_err:
+            out["db"]["error"] = db_err
+        return self._send(200 if db_ok else 503, out)
+
+    def _metrics_text(self):
+        """Prometheus text exposition (stdlib only). Counters live on the server
+        instance; the DB gauges are read here, off the liveness path."""
+        m = self._metrics_obj()
+        with m.lock:
+            reqs = dict(m.requests)
+            authf, rl = m.auth_failures, m.rate_limited
+        S = self.store
+        try:
+            audit_rows = S.one("SELECT COUNT(*) c FROM audit")["c"]
+        except Exception:
+            audit_rows = 0
+        try:
+            queued = S.one("SELECT COUNT(*) c FROM commands WHERE status='queued'")["c"]
+        except Exception:
+            queued = 0
+        lines = [
+            "# HELP benchd_uptime_seconds Seconds since the control plane started.",
+            "# TYPE benchd_uptime_seconds gauge",
+            "benchd_uptime_seconds %.3f" % m.uptime(),
+            "# HELP benchd_requests_total HTTP requests by status class.",
+            "# TYPE benchd_requests_total counter",
+        ]
+        for cls in ("1xx", "2xx", "3xx", "4xx", "5xx"):
+            lines.append('benchd_requests_total{class="%s"} %d' % (cls, reqs.get(cls, 0)))
+        lines += [
+            "# HELP benchd_auth_failures_total Authentication failures (HTTP 401).",
+            "# TYPE benchd_auth_failures_total counter",
+            "benchd_auth_failures_total %d" % authf,
+            "# HELP benchd_rate_limit_rejections_total Requests rejected by the rate limiter (HTTP 429).",
+            "# TYPE benchd_rate_limit_rejections_total counter",
+            "benchd_rate_limit_rejections_total %d" % rl,
+            "# HELP benchd_audit_rows Rows in the operator audit trail.",
+            "# TYPE benchd_audit_rows gauge",
+            "benchd_audit_rows %d" % audit_rows,
+            "# HELP benchd_command_queue_depth Commands queued and not yet sent to a runner.",
+            "# TYPE benchd_command_queue_depth gauge",
+            "benchd_command_queue_depth %d" % queued,
+        ]
+        return "\n".join(lines) + "\n"
 
     # -- GET api -----------------------------------------------------------
     def _api_get(self, path, q):
@@ -1533,10 +1753,12 @@ class Handler(BaseHTTPRequestHandler):
             # capped: an explicit refusal beats an unbounded set of streams (and
             # EventSource retries on its own)
             return self._err(503, "too many live streams; retry shortly")
+        self._metrics_obj().status(200)
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "close")
+        self.send_header("X-Request-ID", self._request_id())
         origin = self._origin_allowed()
         if origin:
             self.send_header("Access-Control-Allow-Origin", origin)
@@ -1557,7 +1779,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(frame)
                 self.wfile.flush()
         except Exception:
-            pass
+            # OBS-P2-003: a broken SSE client is logged, not swallowed.
+            self._log("error", "sse stream failed", traceback=traceback.format_exc())
         finally:
             self.bus.unsubscribe(q)
 
