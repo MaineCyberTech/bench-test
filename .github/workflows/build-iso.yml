@@ -50,7 +50,10 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ${{ fromJSON(inputs.runner_labels || '["self-hosted","linux","x64","lab-iso"]') }}
+    # The hybrid variant needs ~100G+ of scratch (15.4G image + the full AND+NVIDIA package
+    # set) - the lab iso-builder's host is a 128G-SSD Proxmox node and cannot fit it, so the
+    # hybrid always runs on GitHub-hosted. Everything else defaults to the lab.
+    runs-on: ${{ fromJSON((inputs.gpu || 'nvidia-legacy') == 'hybrid' && '["ubuntu-latest"]' || (inputs.runner_labels || '["self-hosted","linux","x64","lab-iso"]')) }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
