@@ -46,6 +46,73 @@ def _gui(c):
         os.chdir(prev_cwd)
 
 
+def _gui_cleanup(c):
+    """'Clean up environment' must confirm, and must refuse mid-run (USE-P2-003)."""
+    prev_cwd = os.getcwd()
+    try:
+        import tkinter as tk
+        os.chdir(REPO)
+        sys.path.insert(0, BENCH)
+        import gui
+    except Exception as e:
+        print("  SKIP gui cleanup (%s)" % e)
+        os.chdir(prev_cwd)
+        return
+    try:
+        root = tk.Tk(); root.withdraw()
+    except Exception as e:
+        print("  SKIP gui cleanup (no display: %s)" % e)
+        os.chdir(prev_cwd)
+        return
+    orig_boot, orig_ask = gui.bootstrap, gui.messagebox.askyesno
+    calls = []
+
+    class _Boot:
+        @staticmethod
+        def status():
+            return {"env_present": True, "python_present": True}
+
+        @staticmethod
+        def clean(log=None):
+            calls.append("clean")
+
+    try:
+        d = gui.Dashboard(root, os.path.join(REPO, "results"))
+        gui.bootstrap = _Boot
+
+        # a run in progress: refuse, and never even reach the dialog
+        d.running = True
+        gui.messagebox.askyesno = lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("must not prompt while a run is in progress"))
+        d.clean_env()
+        c.check("gui cleanup refuses while a run is in progress",
+                "in progress" in d.status.cget("text") and not calls,
+                (d.status.cget("text"), calls))
+
+        # not running: ask first, and a "no" leaves the environment alone
+        d.running = False
+        asked = []
+        gui.messagebox.askyesno = lambda *a, **k: (asked.append(True), False)[1]
+        d.clean_env()
+        c.check("gui cleanup asks for confirmation", bool(asked), asked)
+        c.check("gui cleanup does nothing when declined",
+                not calls and "cancel" in d.status.cget("text"),
+                (calls, d.status.cget("text")))
+
+        # a "yes" runs the clean
+        gui.messagebox.askyesno = lambda *a, **k: True
+        d.clean_env()
+        c.check("gui cleanup runs after confirmation",
+                calls == ["clean"] and "cleaned" in d.status.cget("text"),
+                (calls, d.status.cget("text")))
+        root.destroy()
+    except Exception as e:
+        c.check("gui cleanup", False, e)
+    finally:
+        gui.bootstrap, gui.messagebox.askyesno = orig_boot, orig_ask
+        os.chdir(prev_cwd)
+
+
 def _tui(c):
     try:
         sys.path.insert(0, BENCH)
@@ -192,6 +259,7 @@ def _web(c):
 def run():
     c = Checker("dashboards")
     _gui(c)
+    _gui_cleanup(c)
     _tui(c)
     _web(c)
     # ---- runner-supplied summary fields must be escaped before innerHTML ----
