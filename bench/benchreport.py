@@ -1252,20 +1252,19 @@ def restart_self(delay=1.5, log=None, console=False):
     the process is left running with a dead worker thread (which is what made a
     remote 'restart' silent the runner).
 
-    `console` is for the dashboards: a successor spawned with CREATE_NO_WINDOW has
-    no console, so the TUI kept running with no UI at all. Dashboards ask for a
-    real console (and drop curses first, or the new process inherits a terminal
-    left in raw mode/alt screen).
+    `console` is for the dashboards: a successor spawned hidden (CREATE_NO_WINDOW)
+    has no console at all, so the TUI ran with no UI. It must *inherit* the
+    console, not get a new one - CREATE_NEW_CONSOLE opens a separate window that is
+    never shown or focused, which looks exactly like 'running in the background'.
     """
     log = log or (lambda _m: None)
     time.sleep(max(0.0, delay))
     log("[update] restarting to run the new toolkit")
     try:
         if os.name == "nt":
-            flags = (subprocess.CREATE_NEW_CONSOLE if console
-                     else getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            flags = 0 if console else getattr(subprocess, "CREATE_NO_WINDOW", 0)
             subprocess.Popen([sys.executable] + list(sys.argv), cwd=os.getcwd(),
-                             close_fds=True, creationflags=flags)
+                             close_fds=False, creationflags=flags)
             os._exit(0)
         os.execv(sys.executable, [sys.executable] + list(sys.argv))
     except Exception as e:
