@@ -143,6 +143,32 @@ def stdlib_imports(paths):
     return out
 
 
+def _ensure_lhm(log=print):
+    """Make tools/lhm available for the bundle, fetching the pinned release if not.
+
+    `tools/` is git-ignored, so a fresh clone (and CI) had no sensor library and
+    the bundle was built *silently* without it (EVOL-P3-002). Run the pinned
+    fetch+verify script; the caller warns loudly when it is still missing.
+    """
+    dll = os.path.join(REPO, "tools", "lhm", "LibreHardwareMonitorLib.dll")
+    if os.path.isfile(dll):
+        return True
+    script = os.path.join(REPO, "tools", "fetch-lhm.py")
+    if not os.path.isfile(script):
+        return False
+    log("== tools/lhm is not vendored; fetching the pinned LibreHardwareMonitor release")
+    try:
+        r = subprocess.run([sys.executable, script], capture_output=True, text=True)
+    except Exception as e:
+        log("   fetch-lhm failed to start: %s" % e)
+        return False
+    for line in (r.stdout or "").splitlines():
+        log("   " + line)
+    if r.returncode != 0:
+        log("   fetch-lhm failed: %s" % (r.stderr or "").strip()[-200:])
+    return os.path.isfile(dll)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(REPO, "dist"))
@@ -161,7 +187,12 @@ def main():
     # download it at run time, and when that is slow or blocked every LHM column
     # (per-core load, fan RPM, VRAM total, CPU temp/power/clock) comes out blank
     lhm_dir = os.path.join(REPO, "tools", "lhm")
-    have_lhm = os.path.isfile(os.path.join(lhm_dir, "LibreHardwareMonitorLib.dll"))
+    have_lhm = _ensure_lhm()
+    if not have_lhm:
+        print("WARNING: tools/lhm is missing - this bundle will NOT include the "
+              "LibreHardwareMonitor sensor library; run tools/fetch-lhm.py. "
+              "AMD/Intel Windows telemetry will otherwise need a runtime download.",
+              flush=True)
     # what the apps import, so the frozen stdlib is complete even though the app
     # code itself is not frozen
     toolkit_src = [os.path.join(BENCH, f) for f in

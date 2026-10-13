@@ -9,3 +9,9 @@
 
 BENCHD_SERVER=http://lab:8722
 BENCHD_TOKEN=change-me
+# Optional: a friendly runner label shown in the control plane
+# (default: the machine hostname). Honoured as $BENCH_AGENT_NAME.
+# BENCH_AGENT_NAME=bench-live-lab1
+#
+# Only these keys are honoured (plus BENCH_AGENT_INSTANCE, set by the dashboard
+# unit): anything else in this file is ignored.

@@ -283,6 +283,35 @@ mkarchiso -v -w "$WORK/work" -o "$OUT" "$PROFILE"
 
 ISO="$(ls -t "$OUT"/*.iso | head -1)"
 echo "[build] ISO ready: $ISO  ($(du -h "$ISO" | cut -f1))"
+
+# --- provenance / inventory (SBOM-P3-001, SC-P3-001) --------------------------
+# The package set is name-only and resolved from the rolling Arch mirrors (and,
+# for nvidia-legacy, the third-party omarchy repo) at build time, so an image is
+# not reproducible from the repo alone. Record what was actually built next to
+# the ISO: the resolved package inventory from the installed rootfs (falling back
+# to the declared names) plus a SHA256SUMS for the image. See docs/DEPENDENCIES.md.
+PROV_PKGS="$OUT/packages.txt"
+ROOTFS="$(find "$WORK/work" -maxdepth 6 -type d -path '*/airootfs/var/lib/pacman' 2>/dev/null | head -1 || true)"
+ROOTFS="${ROOTFS%/var/lib/pacman}"
+{
+    echo "# bench-test live ISO package inventory"
+    echo "# variant: $GPU"
+    echo "# built: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if [ -n "$ROOTFS" ] && pacman -Q --dbpath "$ROOTFS/var/lib/pacman" >/dev/null 2>&1; then
+        echo "# source: installed package db (pacman -Q) from the built rootfs"
+        pacman -Q --dbpath "$ROOTFS/var/lib/pacman" 2>/dev/null || true
+    else
+        echo "# source: declared names (installed db unavailable)"
+        grep -hv '^#' "$LIVE/packages.x86_64" "$LIVE/packages-$GPU.x86_64" 2>/dev/null \
+            | sed '/^[[:space:]]*$/d' || true
+    fi
+} > "$PROV_PKGS"
+if command -v sha256sum >/dev/null 2>&1; then
+    ( cd "$OUT" && sha256sum "$(basename "$ISO")" > SHA256SUMS ) || true
+else
+    echo "[build] WARNING: sha256sum not found - no SHA256SUMS written" >&2
+fi
+echo "[build] provenance: $PROV_PKGS + $OUT/SHA256SUMS"
 fi
 
 if [ -n "$WRITE_DEV" ]; then

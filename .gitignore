@@ -19,8 +19,11 @@ dist/
 build/
 *.spec
 
-# downloaded tools (LibreHardwareMonitor etc.)
-tools/
+# downloaded tools (LibreHardwareMonitor etc.): the binaries stay out of git, but
+# the pinned fetch script and its note are tracked so a clone can reproduce them
+tools/*
+!tools/fetch-lhm.py
+!tools/README.md
 .venv/
 
 # control-plane runtime data (sqlite db, blobs) and private config
