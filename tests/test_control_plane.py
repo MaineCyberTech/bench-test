@@ -753,6 +753,62 @@ def run():
     _res = _pdm.server_pull()
     c.check("a failed git pull is reported as not ok", _res.get("ok") is False, _res)
 
+    # server_pull must never fetch with --depth: a shallow fetch grafts the
+    # checkout down to one history-less commit, breaking git describe (the
+    # version scheme) and the fleet's commit-compare/staleness ancestry walks.
+    c.check("server_pull no longer fetches with --depth", '"--depth"' not in _bd, "")
+    c.check("server_pull fetches tags and can heal a shallow checkout",
+            '"--tags"' in _bd and '"--unshallow"' in _bd, "")
+
+    def _g(*a):
+        return subprocess.run(["git"] + list(a), capture_output=True, text=True)
+
+    # a throwaway origin (two commits + a tag) and a depth-1 clone of it
+    _src = tmpdir()
+    _g("init", "-q", _src)
+    _g("-C", _src, "config", "user.email", "t@t")
+    _g("-C", _src, "config", "user.name", "t")
+    open(os.path.join(_src, "f.txt"), "w").write("one\n")
+    _g("-C", _src, "add", "f.txt")
+    _g("-C", _src, "commit", "-qm", "one")
+    _g("-C", _src, "tag", "v9.9.9")
+    open(os.path.join(_src, "f.txt"), "w").write("two\n")
+    _g("-C", _src, "add", "f.txt")
+    _g("-C", _src, "commit", "-qm", "two")
+    _sh = tmpdir()
+    _url = "file:///" + _src.replace("\\", "/").lstrip("/")
+    _g("clone", "-q", "--depth", "1", _url, _sh)
+    c.check("the throwaway clone is shallow",
+            os.path.exists(os.path.join(_sh, ".git", "shallow")), "")
+    _g("-C", _sh, "config", "core.abbrev", "12")   # keep before==after (no restart spawn)
+    os.makedirs(os.path.join(_sh, "server"))
+    shutil.copy(os.path.join(REPO, "server", "benchd.py"),
+                os.path.join(_sh, "server", "benchd.py"))
+    _spec_sh = importlib.util.spec_from_file_location(
+        "benchd_shallow", os.path.join(_sh, "server", "benchd.py"))
+    _sdm = importlib.util.module_from_spec(_spec_sh)
+    _spec_sh.loader.exec_module(_sdm)
+    _res_sh = _sdm.server_pull()
+    c.check("server_pull heals a shallow checkout",
+            _res_sh.get("ok") is True
+            and not os.path.exists(os.path.join(_sh, ".git", "shallow")), _res_sh)
+    _cnt = _g("-C", _sh, "rev-list", "--count", "HEAD").stdout.strip()
+    c.check("the healed checkout has its ancestry back",
+            _cnt.isdigit() and int(_cnt) >= 2, _cnt)
+    _desc = _g("-C", _sh, "describe", "--tags", "--long", "--match", "v[0-9]*")
+    c.check("git describe works again after the heal",
+            _desc.returncode == 0 and "9.9.9" in _desc.stdout,
+            (_desc.stdout, _desc.stderr))
+    # the race: the shallow marker is seen, then the repo turns out to be complete
+    _real_exists = os.path.exists
+    os.path.exists = lambda p: True if str(p).endswith("shallow") else _real_exists(p)
+    try:
+        _res_race = _sdm.server_pull()
+    finally:
+        os.path.exists = _real_exists
+    c.check("an already-complete repo is success, not a failed update",
+            _res_race.get("ok") is True, _res_race)
+
     # ---- fail-closed auth: no token must refuse to start ----
     c.check("no token without --allow-anonymous is refused",
             _bdm.auth_refusal(None, False) is not None, "")

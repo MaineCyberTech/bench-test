@@ -1618,7 +1618,9 @@ def server_pull():
 
     Only meaningful for a git deploy; a copy deploy has no history to pull, so it says
     so rather than pretending. The restart is delayed so a response flushes before the
-    process it is answering from goes away.
+    process it is answering from goes away. The fetch is full (tags + ancestry, never
+    --depth) so `git describe` and the fleet's commit-compare keep working; a checkout
+    left shallow by an earlier deploy is healed first.
     """
     import subprocess
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1639,7 +1641,19 @@ def server_pull():
         return r
 
     try:
-        git("fetch", "--depth", "1", "origin")
+        # Never fetch with --depth: it grafts the checkout down to one history-less
+        # commit, which breaks `git describe` (the release version) and the fleet's
+        # commit-compare/staleness ancestry walks. Earlier deploys did a depth-1
+        # fetch, so heal a checkout that is already shallow before pulling.
+        if os.path.exists(os.path.join(root, ".git", "shallow")):
+            try:
+                git("fetch", "--unshallow", "--tags", "origin")
+            except RuntimeError as e:
+                # a concurrent fetch can complete the repo between the check and
+                # this command; "already complete" is success, not an error
+                if "unshallow" not in str(e) and "complete" not in str(e):
+                    raise
+        git("fetch", "--tags", "origin")
         r = git("pull", "--ff-only")
     except Exception as e:
         return {"ok": False, "message": "git failed: %s" % e}
