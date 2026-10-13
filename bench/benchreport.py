@@ -2652,6 +2652,38 @@ def build_summary_dir(results_dir, window_h=8, since=None):
     return out
 
 
+def prune_results(results_dir, keep=100, log=None):
+    """Keep the newest `keep` run directories under a results dir.
+
+    A results dir accumulates one directory per run (`host-mode-YYYYMMDD-HHMMSS`,
+    with a subdirectory per phase) and nothing ever removed them. 100 runs is
+    generous - a run is ~1-2 MB now that the Valley frames are pruned - and
+    BENCH_KEEP_RUNS=0 keeps everything. Only directories whose name matches the
+    run pattern are candidates; anything else is left alone.
+    """
+    log = log or (lambda _m: None)
+    if keep is None or keep <= 0:
+        return 0
+    try:
+        dirs = [d for d in glob.glob(os.path.join(results_dir, "*"))
+                if os.path.isdir(d) and
+                re.match(r"^.+-[0-9]{8}-[0-9]{6}$", os.path.basename(d))]
+    except OSError:
+        return 0
+    if len(dirs) <= keep:
+        return 0
+    removed = 0
+    for d in sorted(dirs, key=os.path.getmtime)[:-keep]:
+        try:
+            shutil.rmtree(d)
+            removed += 1
+        except OSError:
+            pass
+    if removed:
+        log("[report] pruned %d old run dir(s), kept %d" % (removed, keep))
+    return removed
+
+
 def prune_screenshots(results_dir, keep=1, log=None):
     """Keep only the newest `keep` Valley frames in a run's results dir.
 
@@ -2687,6 +2719,11 @@ def upload_run_files(rep, results_dir, log=None, limit=60, max_bytes=512 * 1024)
     artifacts next to the telemetry CSV.
     """
     log = log or (lambda _m: None)
+    try:
+        _keep = int(os.environ.get("BENCH_KEEP_RUNS") or 100)
+    except ValueError:
+        _keep = 100
+    prune_results(results_dir, keep=_keep, log=log)
     prune_screenshots(results_dir, log=log)
     if rep is None or not getattr(rep, "run_id", None):
         return 0

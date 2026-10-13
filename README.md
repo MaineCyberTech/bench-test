@@ -335,6 +335,11 @@ examples/  real Windows + Linux result sets
 results/   output (mostly git-ignored; a few runs tracked as history)
 ```
 
+`results/` keeps the newest 100 run directories and one Valley frame per run
+(`BENCH_KEEP_RUNS=0` keeps everything); the control plane sweeps the per-sample
+telemetry of finished runs after 30 days — see
+[`docs/DATA.md`](docs/DATA.md#5-retention).
+
 ## Scripts
 
 | Script | Purpose |

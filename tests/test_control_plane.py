@@ -1,5 +1,6 @@
 """Control-plane (benchd) API tests: auth, runners, runs, telemetry, logs,
 artifacts, stats, commands, schedules, delete, reaper, SSE."""
+import importlib.util
 import json
 import os
 import sys
@@ -379,6 +380,95 @@ def run():
             B.compare_detail("", "abc1234") == ("", []), "")
     c.check("compare_commits still returns just the status",
             B.compare_commits("abc1234", "abc1234") == "identical", "")
+
+    # ---- retention: bound the per-sample tables, keep the runs and their stats ----
+    _spec3 = importlib.util.spec_from_file_location(
+        "benchd_retention", os.path.join(REPO, "server", "benchd.py"))
+    _bdm = importlib.util.module_from_spec(_spec3)
+    _spec3.loader.exec_module(_bdm)
+    _seen = []
+
+    class _Cur:
+        rowcount = 5
+
+    class _FakeStore:
+        def q(self, sql, args=()):
+            _seen.append((sql, args))
+            return [{"id": "run-old-1"}, {"id": "run-old-2"}]
+
+        def ex(self, sql, args=()):
+            _seen.append((sql, args))
+            return _Cur()
+
+    _bdm.RETENTION_DAYS = 30.0
+    _bdm._RETENTION_LAST[0] = 0.0
+    n = _bdm.retain_old_data(_FakeStore())
+    c.check("retention selects finished runs older than the cutoff",
+            "status != 'running'" in _seen[0][0] and _seen[0][1][0] < time.time(),
+            _seen[0])
+    c.check("retention sweeps all three per-sample tables per run",
+            n == 30 and len([s for s, _a in _seen if s.startswith("UPDATE")]) == 2 and
+            len([s for s, _a in _seen if s.startswith("DELETE")]) == 6,
+            (n, len(_seen)))
+    c.check("retention stores a run's stats before deleting its samples",
+            [s.split()[0] for s, _a in _seen if s.startswith(("UPDATE", "DELETE"))] ==
+            ["UPDATE", "DELETE", "DELETE", "DELETE",
+             "UPDATE", "DELETE", "DELETE", "DELETE"],
+            [s[:24] for s, _a in _seen if s.startswith(("UPDATE", "DELETE"))])
+    c.check("retention computes the stats from the run's own samples",
+            len([s for s, _a in _seen if s.startswith("SELECT * FROM telemetry")]) == 2, "")
+    c.check("retention deletes per run, not one sweep of everything",
+            all("WHERE run_id=?" in s and "IN (SELECT" not in s
+                for s, _a in _seen if s.startswith("DELETE")), "")
+    c.check("retention covers every old run it selected",
+            {a[0] for s, a in _seen if s.startswith("DELETE")} ==
+            {"run-old-1", "run-old-2"} and
+            {a[1] for s, a in _seen if s.startswith("UPDATE")} ==
+            {"run-old-1", "run-old-2"}, "")
+    before = len(_seen)
+    c.check("retention is throttled between sweeps",
+            _bdm.retain_old_data(_FakeStore()) == 0 and len(_seen) == before, "")
+    c.check("a forced sweep runs regardless of the throttle",
+            _bdm.retain_old_data(_FakeStore(), force=True) == 30, "")
+    _bdm.RETENTION_DAYS = 0.0
+    _bdm._RETENTION_LAST[0] = 0.0
+    settled = len(_seen)
+    c.check("retention disabled keeps everything",
+            _bdm.retain_old_data(_FakeStore()) == 0 and len(_seen) == settled, "")
+
+    # the run detail must still have stats once the samples are gone
+    _stored = {"samples": 400, "stats": {"temp_c": {"max": 62}}, "derived": {"energy_j": 1}}
+
+    class _StatsStore:
+        def __init__(self, rows, stored=True):
+            self.rows = rows
+            self.stored = stored
+            self.one_calls = 0
+
+        def q(self, sql, args=()):
+            return self.rows
+
+        def one(self, sql, args=()):
+            self.one_calls += 1
+            return {"stats": json.dumps(_stored)} if self.stored else None
+
+    class _Self:
+        def __init__(self, rows, stored=True):
+            self.store = _StatsStore(rows, stored)
+
+    live = _Self([{"ts": 1.0, "elapsed": 1.0, "temp_c": 50.0},
+                  {"ts": 2.0, "elapsed": 2.0, "temp_c": 60.0}])
+    st = _bdm.Handler._compute_stats(live, "run-live")
+    c.check("stats come from the samples while they exist",
+            st["samples"] == 2 and st["stats"]["temp_c"]["max"] == 60 and
+            live.store.one_calls == 0, st.get("stats", {}).get("temp_c"))
+    swept = _Self([])
+    st = _bdm.Handler._compute_stats(swept, "run-swept")
+    c.check("a swept run still reports the stats stored at retention time",
+            st == _stored and swept.store.one_calls == 1, st)
+    c.check("a run with no samples and no stored stats is still empty, not an error",
+            _bdm.Handler._compute_stats(_Self([], stored=False), "run-nothing")["samples"] == 0,
+            "")
 
     srv.stop()
     return c.fails

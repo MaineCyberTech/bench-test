@@ -7,3 +7,8 @@ BENCHD_TOKEN=change-me
 
 # Optional: where the SQLite database lives (default server/data/benchd.sqlite)
 # BENCHD_DB=/var/lib/benchd/benchd.sqlite
+
+# Optional: how long the per-sample telemetry/logs/events of a FINISHED run are
+# kept, in days (default 30; 0 keeps everything). Run rows and their summaries are
+# never deleted - only the tables that grow with run length and sample rate.
+# BENCHD_RETENTION_DAYS=30

@@ -541,6 +541,22 @@ def run():
     c.check("pruning keeps the newest one",
             os.path.basename(left[0]).endswith("f03.png") if left else False, left)
     c.check("pruning an empty dir is a no-op", br.prune_screenshots(tmpdir()) == 0, "")
+
+    # ---- results dirs: keep the newest N, never touch anything that is not a run ----
+    rd = tmpdir()
+    for i in range(5):
+        d = os.path.join(rd, "host-a-run-2026010%d-120000" % (i + 1))
+        os.makedirs(d)
+        os.utime(d, (time.time() + i, time.time() + i))       # distinct mtimes
+    os.makedirs(os.path.join(rd, "notes"))                    # not a run dir
+    n = br.prune_results(rd, keep=3)
+    left = sorted(os.path.basename(d) for d in glob.glob(os.path.join(rd, "*")))
+    c.check("results pruning keeps the newest N run dirs", n == 2 and len(left) == 4, (n, left))
+    c.check("results pruning leaves non-run directories alone", "notes" in left, left)
+    c.check("results pruning drops the oldest and keeps the newest",
+            "host-a-run-20260105-120000" in left and
+            "host-a-run-20260101-120000" not in left, left)
+    c.check("results pruning disabled keeps everything", br.prune_results(rd, keep=0) == 0, "")
     _spec2 = _ilu.spec_from_file_location("pkg_build",
                                           os.path.join(REPO, "packaging", "build_app.py"))
     _bm = _ilu.module_from_spec(_spec2)

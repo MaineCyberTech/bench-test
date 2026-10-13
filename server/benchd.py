@@ -102,7 +102,7 @@ CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY, runner_id TEXT, host TEXT, label TEXT, profile TEXT,
   started REAL, ended REAL, status TEXT, exit_code INTEGER,
   platform TEXT, gpu TEXT, driver TEXT, torch TEXT, summary TEXT, system TEXT,
-  preset TEXT
+  preset TEXT, stats TEXT
 );
 CREATE TABLE IF NOT EXISTS phases (
   id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, seq INTEGER, grp TEXT,
@@ -174,6 +174,8 @@ class Store:
             self.conn.execute("ALTER TABLE runs ADD COLUMN system TEXT")
         if "preset" not in rcols:
             self.conn.execute("ALTER TABLE runs ADD COLUMN preset TEXT")
+        if "stats" not in rcols:
+            self.conn.execute("ALTER TABLE runs ADD COLUMN stats TEXT")
 
     def ex(self, sql, args=()):
         with self.lock:
@@ -478,6 +480,87 @@ def tele_public(r):
         except Exception:
             pass
     return d
+
+
+def pct(sorted_vals, p):
+    """Nearest-rank percentile of an ascending list."""
+    if not sorted_vals:
+        return None
+    k = max(0, min(len(sorted_vals) - 1, int(round((p / 100.0) * (len(sorted_vals) - 1)))))
+    return sorted_vals[k]
+
+
+def derive_stats(rows, series, stats):
+    """Metrics computed from the series: energy, clock residency, throttling."""
+    d = {}
+    # energy (J) via trapezoid over power
+    pts = []
+    for r in rows:
+        t = r.get("elapsed")
+        w = None
+        try:
+            w = tele_public(r).get("power_w")
+        except Exception:
+            w = None
+        if t is not None and isinstance(w, (int, float)):
+            pts.append((float(t), float(w)))
+    if len(pts) >= 2:
+        j = 0.0
+        for (t0, w0), (t1, w1) in zip(pts, pts[1:]):
+            dt = t1 - t0
+            if dt > 0:
+                j += (w0 + w1) / 2.0 * dt
+        d["energy_j"] = round(j, 1)
+        if pts[-1][0] > 0:
+            d["energy_kj_per_hour"] = round(j / 1000.0 / (pts[-1][0] / 3600.0), 2)
+    # clock residency: share of samples at >=95% of the peak SM clock
+    sm = series.get("sm_mhz")
+    if sm:
+        mx = max(sm)
+        if mx > 0:
+            d["clock_residency_pct"] = round(100.0 * sum(1 for x in sm if x >= 0.95 * mx) / len(sm), 1)
+    # time spent throttled (non-idle slowdown reason observed)
+    th = series.get("throttle")
+    if th:
+        d["throttled_pct"] = round(100.0 * sum(1 for x in th if x >= 1) / len(th), 1)
+    # thermal headroom
+    peak = (stats.get("temp_c") or {}).get("max")
+    lim = (stats.get("temp_limit_c") or {}).get("max")
+    if peak is not None and lim:
+        d["thermal_headroom_c"] = round(lim - peak, 1)
+    # power headroom vs the card's max
+    pmax = (stats.get("power_max_w") or {}).get("max")
+    pgpu = (stats.get("power_w") or {}).get("max")
+    if pmax and pgpu:
+        d["power_headroom_w"] = round(pmax - pgpu, 1)
+    return d
+
+
+def compute_stats(store, run_id):
+    """Per-field min/avg/max/p95/p99 plus derived metrics for a run's telemetry.
+
+    Module level, not a handler method, so the retention sweep can materialise a
+    run's stats before its samples are deleted.
+    """
+    rows = store.q("SELECT * FROM telemetry WHERE run_id=? ORDER BY ts", (run_id,))
+    series = {}
+    for r in rows:
+        for k, v in tele_public(r).items():
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                series.setdefault(k, []).append(float(v))
+    stats = {}
+    for k, vals in series.items():
+        vals = sorted(vals)
+        n = len(vals)
+        if not n:
+            continue
+        mean = sum(vals) / n
+        var = sum((x - mean) ** 2 for x in vals) / n
+        stats[k] = {"n": n, "min": vals[0], "max": vals[-1], "avg": round(mean, 2),
+                    "std": round(var ** 0.5, 3), "p50": pct(vals, 50),
+                    "p95": pct(vals, 95), "p99": pct(vals, 99)}
+    return {"samples": len(rows), "stats": stats, "derived": derive_stats(rows, series, stats)}
+
 
 
 def schedule_public(s):
@@ -808,76 +891,26 @@ class Handler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _pct(sorted_vals, p):
-        """Nearest-rank percentile of an ascending list."""
-        if not sorted_vals:
-            return None
-        k = max(0, min(len(sorted_vals) - 1, int(round((p / 100.0) * (len(sorted_vals) - 1)))))
-        return sorted_vals[k]
+        return pct(sorted_vals, p)
 
     def _derive(self, rows, series, stats):
-        """Metrics computed from the series: energy, clock residency, throttling."""
-        d = {}
-        # energy (J) via trapezoid over power
-        pts = []
-        for r in rows:
-            t = r.get("elapsed")
-            w = None
-            try:
-                w = tele_public(r).get("power_w")
-            except Exception:
-                w = None
-            if t is not None and isinstance(w, (int, float)):
-                pts.append((float(t), float(w)))
-        if len(pts) >= 2:
-            j = 0.0
-            for (t0, w0), (t1, w1) in zip(pts, pts[1:]):
-                dt = t1 - t0
-                if dt > 0:
-                    j += (w0 + w1) / 2.0 * dt
-            d["energy_j"] = round(j, 1)
-            if pts[-1][0] > 0:
-                d["energy_kj_per_hour"] = round(j / 1000.0 / (pts[-1][0] / 3600.0), 2)
-        # clock residency: share of samples at >=95% of the peak SM clock
-        sm = series.get("sm_mhz")
-        if sm:
-            mx = max(sm)
-            if mx > 0:
-                d["clock_residency_pct"] = round(100.0 * sum(1 for x in sm if x >= 0.95 * mx) / len(sm), 1)
-        # time spent throttled (non-idle slowdown reason observed)
-        th = series.get("throttle")
-        if th:
-            d["throttled_pct"] = round(100.0 * sum(1 for x in th if x >= 1) / len(th), 1)
-        # thermal headroom
-        peak = (stats.get("temp_c") or {}).get("max")
-        lim = (stats.get("temp_limit_c") or {}).get("max")
-        if peak is not None and lim:
-            d["thermal_headroom_c"] = round(lim - peak, 1)
-        # power headroom vs the card's max
-        pmax = (stats.get("power_max_w") or {}).get("max")
-        pgpu = (stats.get("power_w") or {}).get("max")
-        if pmax and pgpu:
-            d["power_headroom_w"] = round(pmax - pgpu, 1)
-        return d
+        return derive_stats(rows, series, stats)
 
     def _compute_stats(self, run_id):
-        rows = self.store.q("SELECT * FROM telemetry WHERE run_id=? ORDER BY ts", (run_id,))
-        series = {}
-        for r in rows:
-            for k, v in tele_public(r).items():
-                if isinstance(v, (int, float)) and not isinstance(v, bool):
-                    series.setdefault(k, []).append(float(v))
-        stats = {}
-        for k, vals in series.items():
-            vals = sorted(vals)
-            n = len(vals)
-            if not n:
-                continue
-            mean = sum(vals) / n
-            var = sum((x - mean) ** 2 for x in vals) / n
-            stats[k] = {"n": n, "min": vals[0], "max": vals[-1], "avg": round(mean, 2),
-                        "std": round(var ** 0.5, 3), "p50": self._pct(vals, 50),
-                        "p95": self._pct(vals, 95), "p99": self._pct(vals, 99)}
-        return {"samples": len(rows), "stats": stats, "derived": self._derive(rows, series, stats)}
+        st = compute_stats(self.store, run_id)
+        if st.get("samples"):
+            return st
+        # Retention may have swept the samples. The copy materialised at that point
+        # is what the run detail, Trends, Compare and the Fleet view read, so an old
+        # run keeps its min/avg/max/p95/p99 and its derived metrics.
+        row = self.store.one("SELECT stats FROM runs WHERE id=?", (run_id,))
+        if row and row.get("stats"):
+            try:
+                return json.loads(row["stats"])
+            except ValueError:
+                pass
+        return st
+
 
     def _run_stats(self, run_id):
         return self._send(200, dict({"run_id": run_id}, **self._compute_stats(run_id)))
@@ -1312,6 +1345,52 @@ def scheduler_tick(store, bus):
     return fired
 
 
+# How long the bulky per-sample data of a FINISHED run is kept. The run row and its
+# summary survive - that is what trends and history read - so pruning the per-sample
+# tables bounds the database without losing the record of a run. A 15-minute run
+# writes ~4.5 MB of telemetry at 4 Hz and nothing ever pruned it.
+# BENCHD_RETENTION_DAYS=0 keeps everything.
+RETENTION_DAYS = float(os.environ.get("BENCHD_RETENTION_DAYS") or 30)
+RETENTION_EVERY_S = 3600.0        # a full sweep does not need to run every tick
+_RETENTION_LAST = [0.0]
+
+
+def retain_old_data(store, force=False):
+    """Delete telemetry/logs/events of finished runs older than RETENTION_DAYS.
+
+    Running runs are never touched, and neither are the run rows themselves: each
+    one keeps its stats (min/avg/max/p95/p99 and the derived metrics), materialised
+    here just before its samples go, so only the rows that grow with run length and
+    sample rate are dropped.
+    """
+    days = RETENTION_DAYS
+    if days <= 0:
+        return 0
+    t = now()
+    if not force and t - _RETENTION_LAST[0] < RETENTION_EVERY_S:
+        return 0
+    _RETENTION_LAST[0] = t
+    cutoff = t - days * 86400
+    old = store.q("SELECT id FROM runs WHERE status != 'running' AND "
+                  "COALESCE(ended, started) < ?", (cutoff,))
+    gone = 0
+    for r in old:
+        # Materialise the run's stats before its samples go: the detail page, Trends,
+        # Compare and Fleet read them, and they are tiny next to the rows they sum up.
+        st = compute_stats(store, r["id"])
+        if st.get("samples"):
+            store.ex("UPDATE runs SET stats=? WHERE id=?", (json.dumps(st), r["id"]))
+        for table in ("telemetry", "logs", "events"):
+            # the table names are literals here, never caller input
+            cur = store.ex("DELETE FROM %s WHERE run_id=?" % table, (r["id"],))
+            if cur.rowcount and cur.rowcount > 0:
+                gone += cur.rowcount
+    if gone:
+        print("[benchd] retention: removed %d row(s) older than %.0f days"
+              % (gone, days), flush=True)
+    return gone
+
+
 def reap_stale_runs(store, bus):
     """Fail runs whose runner stopped heartbeating (e.g. a dashboard was killed).
 
@@ -1393,6 +1472,7 @@ def scheduler_loop(store, bus, stop):
             reap_stale_runs(store, bus)
             reap_ephemeral_runners(store, bus)
             reap_stale_commands(store, bus)
+            retain_old_data(store)
         except Exception as e:
             print("[benchd] scheduler error: %s" % e, flush=True)
         stop.wait(10.0)

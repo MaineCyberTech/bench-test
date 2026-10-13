@@ -251,7 +251,12 @@ pct exec 108 -- systemctl mask tmp.mount run-lock.mount dev-mqueue.mount
   `iso_fetch` a 3 h budget, `iso_write`/`iso_write_slot` an hour,
   `update_toolkit` 15 min and `exec` its own payload timeout, against 120 s for
   start/stop and friends.
-- SQLite uses WAL; the DB grows ~1 row/second per active run (fine for a lab).
+- SQLite uses WAL; a run at 4 Hz writes ~4.5 MB per 15 minutes. The scheduler sweeps
+  the per-sample tables (telemetry/logs/events) of **finished** runs older than
+  `BENCHD_RETENTION_DAYS` (default 30 days, `0` keeps everything) once an hour; the
+  run rows, phases, artifacts and summaries are never deleted, because that is what
+  History, Trends, Compare and Fleet read. See
+  [`DATA.md`](DATA.md#5-retention) for the runner-side knobs too.
 
 ## Tests
 
