@@ -510,7 +510,7 @@ function focusShell(r, live) {
     </div>
     <div class="focusbody">
       <div class="fgrid">
-        <div class="fcard"><h4>Box status &amp; specs</h4><table class="fk" data-f="specs"></table></div>
+        <div class="fcard"><h4>Box status &amp; specs</h4><div class="fk" data-f="specs"></div></div>
         <div class="fcard"><h4>Live</h4><div data-f="bars"></div>
           <h4>Gauges</h4>
           <div class="gauges" data-f="gauges">${GAUGES.map(([k, label]) =>
@@ -519,7 +519,7 @@ function focusShell(r, live) {
           <h4>Temps</h4><div class="fhealth" data-f="temps"></div>
         </div>
         <div class="fcard"><h4>Telemetry</h4>
-          <div class="chartrow"><canvas class="runchart" height="300"></canvas>
+          <div class="chartrow"><canvas class="runchart" height="200"></canvas>
             <select class="csel" data-chart="${esc(r.id)}">${sel(r.id)}</select></div>
           <div class="chartlegend"></div>
           <div class="minigrid" data-f="minis">${FOCUS_MINI.map(([k, lbl]) =>
@@ -604,7 +604,7 @@ function paintFocusSpecs(el, r) {
   ].filter((x) => x[1] != null && x[1] !== "");
   const tb = el.querySelector("[data-f=specs]");
   if (tb) tb.innerHTML = rows.map(([k, val]) =>
-    `<tr><th>${esc(k)}</th><td>${esc(String(val))}</td></tr>`).join("");
+    `<div class="fkr"><span class="fkk">${esc(k)}</span><span class="fkv">${esc(String(val))}</span></div>`).join("");
 }
 
 function paintFocusBars(el, v) {

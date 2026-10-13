@@ -211,10 +211,13 @@ table td.num{font-family:var(--mono);text-align:right}
 .fcard h4{margin:0 0 8px;font-size:11px;color:var(--muted);
   text-transform:uppercase;letter-spacing:1px}
 .fcard h4+ h4{margin-top:10px}
-.fk{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:2px 12px;
+/* label/value rows as real grid rows (a <table> with display:grid keeps each <tr>
+   a nested table, which sized to content and spilled outside the card) */
+.fk{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:3px 12px;
   font-size:12px;width:100%}
-.fk th{color:var(--muted);font-weight:400;text-align:left;white-space:nowrap;vertical-align:top}
-.fk td{font-family:var(--mono);min-width:0;overflow-wrap:anywhere;word-break:break-word}
+.fk .fkr{display:contents}
+.fk .fkk{color:var(--muted);white-space:nowrap}
+.fk .fkv{font-family:var(--mono);min-width:0;overflow-wrap:anywhere;word-break:break-word}
 /* 27 metrics in one narrow column is unreadable - lay them out in two */
 .statcols{display:grid;grid-template-columns:1fr 1fr;gap:0 26px}
 .statcols table{width:100%}
