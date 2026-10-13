@@ -12,6 +12,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -36,6 +37,62 @@ def tmpdir(prefix="bench-test-"):
     d = tempfile.mkdtemp(prefix=prefix)
     _TMPDIRS.append(d)
     return d
+
+
+# Whole groups that could not run (a missing toolkit, no display, no powershell).
+# They used to be printed and forgotten, so a headless or half-provisioned runner
+# still reported RESULT: PASS while GUI/TUI/soak coverage had silently vanished.
+# run_all() turns these into a non-zero exit unless skips are explicitly allowed.
+SKIPS = []
+
+
+def skip(label, reason=""):
+    """Record a group that could not run, so lost coverage cannot hide."""
+    SKIPS.append({"label": label, "reason": str(reason)})
+    print("  SKIP %s (%s)" % (label, reason))
+
+
+def take_skips():
+    """Return the skips recorded since the last call and clear the register."""
+    global SKIPS
+    out = SKIPS
+    SKIPS = []
+    return out
+
+
+def wait_for(pred, timeout=5.0, interval=0.02):
+    """Poll `pred` until it is truthy or `timeout` elapses; return its last value.
+
+    Deterministic replacement for a fixed sleep: it returns the instant the
+    observed condition holds, so a fast host is not slowed and a slow host is not
+    flaked by a too-short sleep.
+    """
+    deadline = time.time() + timeout
+    while True:
+        try:
+            v = pred()
+        except Exception:
+            v = None
+        if v:
+            return v
+        if time.time() >= deadline:
+            return v
+        time.sleep(interval)
+
+
+def wait_for_rows(path, n=2, timeout=5.0):
+    """Wait until a CSV has at least `n` non-empty rows; return them (or [])."""
+    import csv
+
+    def _rows():
+        try:
+            with open(path, newline="") as fh:
+                rows = [r for r in csv.reader(fh) if r]
+        except OSError:
+            return None
+        return rows if len(rows) >= n else None
+
+    return wait_for(_rows, timeout=timeout) or []
 
 
 def cleanup_tmpdirs():

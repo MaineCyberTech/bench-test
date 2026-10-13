@@ -10,7 +10,7 @@ import os
 import time
 import types
 
-from harness import Checker, BENCH, REPO
+from harness import Checker, BENCH, REPO, skip
 
 
 def _load(name, path):
@@ -78,7 +78,7 @@ def run():
     try:
         gb = _load("gpu_bench", os.path.join(BENCH, "gpu_bench.py"))
     except Exception as e:
-        print("  SKIP plateau logic (%s)" % e)
+        skip("plateau logic", e)
         return c.fails
 
     flat = [[70.0, 40, 250, 2600] for _ in range(8)]

@@ -7,7 +7,7 @@ import os
 import re
 import sys
 
-from harness import Checker, BENCH, REPO, WEB
+from harness import Checker, BENCH, REPO, WEB, skip
 
 LINES = ["[sys] inventory", "[gpu] info", "[gpu] soak", "[cpu] matmul", "[net] bench",
          "[fullsoak] gpu + cpu + ram + disk concurrently"]
@@ -22,13 +22,13 @@ def _gui(c):
         sys.path.insert(0, BENCH)
         import gui
     except Exception as e:
-        print("  SKIP gui rows (%s)" % e)
+        skip("gui rows", e)
         os.chdir(prev_cwd)
         return
     try:
         root = tk.Tk(); root.withdraw()
     except Exception as e:
-        print("  SKIP gui rows (no display: %s)" % e)
+        skip("gui rows", "no display: %s" % e)
         os.chdir(prev_cwd)
         return
     try:
@@ -119,7 +119,7 @@ def _tui(c):
         sys.path.insert(0, BENCH)
         import tui
     except Exception as e:
-        print("  SKIP tui rows (%s)" % e)
+        skip("tui rows", e)
         return
     t = tui.BenchTUI.__new__(tui.BenchTUI)
     t.log = collections.deque(maxlen=2000)

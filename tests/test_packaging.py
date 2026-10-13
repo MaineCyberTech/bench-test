@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import tempfile
 
-from harness import Checker, BENCH, REPO
+from harness import Checker, BENCH, REPO, skip
 
 
 def _load(name, path):
@@ -121,7 +121,7 @@ def run():
                 r.stdout.strip() == ",62,45,1234,0,",
                 (r.stdout.strip(), r.stderr.strip()[:140]))
     else:
-        print("  SKIP the shipped-parse behaviour check (no powershell/pwsh on this host)")
+        skip("the shipped-parse behaviour check", "no powershell/pwsh on this host")
 
     # a slowdown reason nvidia-smi marks "Not Active" is not throttling
     for f in ("Invoke-GpuBench.ps1", "Invoke-CombinedStress.ps1", "Invoke-LongSoak.ps1",
@@ -258,7 +258,7 @@ def run():
         c.check("the guard exits 0 when at least one phase ran",
                 r.returncode == 0, (r.returncode, r.stderr[:120]))
     else:
-        print("  SKIP the Run-LinuxBench guard behaviour check (no bash here)")
+        skip("the Run-LinuxBench guard behaviour check", "no bash here")
 
     # ---- the serial dashboard: matches the baud form, needs the device ----
     # ConditionKernelCommandLine has no prefix form (verified against systemd 257:
@@ -313,7 +313,7 @@ def run():
                 "TIMED-OUT" in r.stdout and "NO-TIMEOUT" not in r.stdout,
                 r.stdout.strip()[-160:])
     else:
-        print("  SKIP the bounded-CLI behaviour check (no powershell/pwsh on this host)")
+        skip("the bounded-CLI behaviour check", "no powershell/pwsh on this host")
 
     # ---- a bad remote start must not kill the runner ----
     # Both dashboards dispatched a remote start straight into _apply_profile/start with
