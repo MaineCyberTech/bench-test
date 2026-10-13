@@ -349,9 +349,12 @@ function runnerInfo(r) {
   if (last) {
     const s = last.summary || {};
     const bits = [];
-    if (s.gpu_soak_tflops != null) bits.push(fmt(s.gpu_soak_tflops, 1) + " TFLOPS soak");
-    if (s.cpu_soak_gflops != null) bits.push(fmt(s.cpu_soak_gflops, 0) + " GFLOPS cpu");
-    if (s.gfx && s.gfx.score != null) bits.push("gfx " + fmt(s.gfx.score, 0));
+    if (s.gpu_soak_tflops != null) bits.push(fmt(s.gpu_soak_tflops, 1) + " TFLOPS soak"
+      + (s.gpu_soak_size ? ` @ N=${s.gpu_soak_size}` : ""));
+    if (s.cpu_soak_gflops != null) bits.push(fmt(s.cpu_soak_gflops, 0) + " GFLOPS cpu"
+      + (s.cpu_soak_size ? ` @ n=${s.cpu_soak_size}` : ""));
+    if (s.gfx && s.gfx.score != null) bits.push("gfx " + fmt(s.gfx.score, 0)
+      + (s.gfx.engine ? ` (${s.gfx.engine})` : ""));
     if (s.ram_soak_gbps != null) bits.push(fmt(s.ram_soak_gbps, 1) + " GB/s ram");
     rows.push(["last run", `${esc(last.label || "run")} · ${esc(last.status || "")} · `
       + `${ago(last.ended || last.started)} · ${runDur(last)}${bits.length ? `<div class="muted mono">${bits.join(" · ")}</div>` : ""}`]);
