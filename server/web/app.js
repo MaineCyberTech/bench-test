@@ -1032,7 +1032,7 @@ async function runCompare() {
  */
 function drawChart(cv, series, opt = {}) {
   const dpr = window.devicePixelRatio || 1;
-  const h = +cv.getAttribute("height") || 180;   // fixed CSS height (never compound)
+  const h = +(cv.dataset.baseH || (cv.dataset.baseH = cv.getAttribute("height") || 180));
   const w = Math.max(140, cv.clientWidth || 300);
   cv.style.height = h + "px";
   cv.width = Math.max(1, Math.round(w * dpr));
