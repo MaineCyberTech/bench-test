@@ -632,9 +632,16 @@ class Dashboard:
             if self.running:
                 self.rep.ack(cmd.get("id"), "failed", {"error": "already running"})
                 return
-            self._apply_profile(payload)
+            # A malformed payload must not take the dashboard down with it: a remote start
+            # of the wrong shape (groups as a list, say) raised here and killed the process,
+            # leaving a runner that had silently exited mid-command and never came back.
+            try:
+                self._apply_profile(payload)
+                self.start(profile=payload)
+            except Exception as e:
+                self.rep.ack(cmd.get("id"), "failed", {"error": "bad start payload: %s" % e})
+                return
             self.rep.ack(cmd.get("id"), "done", {"started": True})
-            self.start(profile=payload)
         elif kind == "stop":
             self.rep.ack(cmd.get("id"), "done", {"stopping": True})
             self.stop()

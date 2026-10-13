@@ -282,7 +282,13 @@ class BenchTUI:
             if self.running:
                 self.rep.ack(cmd.get("id"), "failed", {"error": "already running"})
                 return
-            self.start(profile=payload)
+            # see gui.py: a bad payload used to kill the process instead of failing the
+            # command
+            try:
+                self.start(profile=payload)
+            except Exception as e:
+                self.rep.ack(cmd.get("id"), "failed", {"error": "bad start payload: %s" % e})
+                return
             self.rep.ack(cmd.get("id"), "done", {"started": True})
         elif kind == "stop":
             self.stop()

@@ -202,6 +202,20 @@ def run():
     else:
         print("  SKIP the bounded-CLI behaviour check (no powershell/pwsh on this host)")
 
+    # ---- a bad remote start must not kill the runner ----
+    # Both dashboards dispatched a remote start straight into _apply_profile/start with
+    # no error handling, so a payload of the wrong shape (groups as a list while the
+    # presets use {group: 1}) raised inside the command loop and the process exited -
+    # both desktops went silent mid-command, no run row ever created.
+    for f in ("gui.py", "tui.py"):
+        with open(os.path.join(BENCH, f), encoding="utf-8") as fh:
+            src = fh.read()
+        i = src.index('if kind == "start":')
+        branch = src[i:i + 700]
+        c.check("%s fails a bad start payload instead of dying (source)" % f,
+                "bad start payload" in branch and "except Exception as e" in branch
+                and "return" in branch, "")
+
     return c.fails
 
 
