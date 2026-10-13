@@ -10,6 +10,12 @@ Walks a results directory and creates one run per completed session:
 
     python3 server/import_results.py --server http://lab:8722 --token XXX --dir results
     python3 server/import_results.py ... --dry-run
+    python3 server/import_results.py ... --reset
+
+Re-running the importer is a no-op: each unit gets a deterministic run id derived
+from its host + start time + source, so a run already on the server is skipped
+instead of inserted again. `--reset` deletes the existing runs first, which
+forces a fresh re-import from scratch.
 
 The token is visible in `ps` when passed as `--token`; prefer $BENCHD_TOKEN or
 `--token-file PATH` (first line). Each unit gets a deterministic run id, so
@@ -411,7 +417,8 @@ def main():
                     help="read the token from a file (first line); $BENCHD_TOKEN_FILE works too")
     ap.add_argument("--dir", default="results")
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--reset", action="store_true", help="delete existing runs first")
+    ap.add_argument("--reset", action="store_true",
+                    help="delete existing runs first, then re-import from scratch")
     a = ap.parse_args()
     if a.token_file and not a.token:
         try:
@@ -447,6 +454,20 @@ def main():
                 post(a.server, a.token, "/api/v1/runs/%s" % rid, method="DELETE")
             deleted += len(ids)
         print("reset: deleted %d existing runs" % deleted)
+
+    # ids already on the server: a re-import skips these instead of duplicating
+    existing = set()
+    if not a.dry_run:
+        off, total = 0, None
+        while total is None or off < total:
+            _, r = post(a.server, a.token,
+                        "/api/v1/runs?limit=1000&offset=%d" % off, method="GET")
+            rows = r.get("runs") or []
+            existing |= {x.get("id") for x in rows}
+            total = r.get("total", 0) or 0
+            if not rows:
+                break
+            off += len(rows)
 
     wins = list(windows_units(root))
     win_starts = [w[3] for w in wins] + [float("inf")]

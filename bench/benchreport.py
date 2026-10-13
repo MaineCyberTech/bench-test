@@ -610,14 +610,34 @@ class Reporter:
                           "content": base64.b64encode(raw).decode()})[0]
 
     def finish(self, status="done", exit_code=0, summary=None, platform=None, gpu=None,
-               driver=None, torch=None, ended=None, system=None):
+               driver=None, torch=None, ended=None, system=None,
+               retries=4, backoff=1.0):
+        """Close the run, retrying a failed post so a network blip cannot lose it.
+
+        The server's finish is an idempotent UPDATE, so re-sending the same
+        payload is safe. The run is only treated as closed (run_id cleared) once
+        the server has acknowledged it; otherwise the id is kept so a later call
+        can retry, and the caller's real status (done/stopped/failed) is
+        preserved rather than the run being recorded as failed for a transport
+        error. Returns True when the server acknowledged the finish.
+        """
         if not self.run_id:
-            return
-        self._req("POST", "/api/v1/runs/%s/finish" % self.run_id, {
-            "status": status, "exit_code": exit_code, "summary": summary or {},
-            "platform": platform, "gpu": gpu, "driver": driver, "torch": torch,
-            "ended": ended, "system": system or {}})
-        self.run_id = None
+            return False
+        run_id = self.run_id
+        body = {"status": status, "exit_code": exit_code, "summary": summary or {},
+                "platform": platform, "gpu": gpu, "driver": driver, "torch": torch,
+                "ended": ended, "system": system or {}}
+        tries = max(1, int(retries))
+        for attempt in range(tries):
+            s, _r = self._req("POST", "/api/v1/runs/%s/finish" % run_id, body)
+            if s in (200, 201):
+                self.run_id = None
+                return True
+            if attempt < tries - 1:
+                time.sleep(max(0.0, float(backoff)) * (2 ** attempt))
+        self.logfn("[report] finish for %s not acknowledged after %d attempt(s)" %
+                   (run_id[:8], tries))
+        return False
 
     # -- control -----------------------------------------------------------
     def poll_commands(self):
