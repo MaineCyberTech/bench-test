@@ -113,6 +113,15 @@ raising `disk_seconds` does not change that. The presets now carry `disk_size_mb
 512 (256 for Quick check), which does the same job in ~57 s. This was the single
 biggest safe saving on the slow desktop.
 
+**Where this does and does not show up.** The live USB runs **no disk phases** (no
+real volume mounted at `/mnt/internal`), so the trim changes nothing there: its
+stabilized run measured **843 s before the trim and 853 s after** — noise, with the
+disk group absent from the phase list entirely. The ~170 s saving applies to
+machines that actually run the disk group; the 226 s figure above is measured, the
+~57 s is the arithmetic on the same phase set at 512 MB, and a desktop re-measure
+is still outstanding (that machine was offline). Do not quote the desktop's post-trim
+total as measured until it is.
+
 ## Telemetry cadence (per stat, measured)
 
 A row used to call every stat, including three subprocesses, so an iteration cost
