@@ -24,6 +24,9 @@ telemetry, and can be started / stopped / updated from a web dashboard.
 Nothing outside the Python standard library is required — no pip, no Node, no
 build step — so the same code runs on the Proxmox lab box and on the live USB.
 
+Operator runbook — start/stop, logs, `/health` vs `/ready`, failure triage, update
+rollback and backup/restore: [`OPERATIONS.md`](OPERATIONS.md).
+
 ## Components
 
 | Piece | Path | Role |
@@ -46,6 +49,7 @@ BENCHD_TOKEN=<paste token>
 EOF
 
 python3 /opt/bench-test/server/benchd.py --host 0.0.0.0 --port 8722
+# 0.0.0.0 is deliberate for the single-interface LXC - see Deployment / Security
 # or install the service:
 sudo cp server/benchd.service /etc/systemd/system/
 sudo systemctl enable --now benchd
@@ -163,8 +167,11 @@ update family (`update`/`update_toolkit`/`iso_*`), `restart` and the remote
 terminal (`exec`/`shell`); `power_limit` is agent-only (the dashboards ack it as
 unsupported rather than pretending).
 
-Telemetry sample order (10 floats): `elapsed, temp_c, fan_pct, power_w, gpu_util,
-gpu_fan_rpm, cpu_util, ram_used, sm_mhz` (plus `vram_used_mib` / `vram_total_mib`).
+Telemetry sample order (9 floats): `elapsed, temp_c, fan_pct, power_w, gpu_util,
+gpu_fan_rpm, cpu_util, ram_used, sm_mhz`. A sample may instead be a **named dict**
+(preferred), which is how the richer fields — `vram_used_mib`, `vram_total_mib`,
+`mem_util`, clocks, throttle, disk/net, … — are carried; unknown numeric keys are
+stored in the `extra` column and merged back on read.
 
 ### Command payloads
 
@@ -180,7 +187,7 @@ gpu_fan_rpm, cpu_util, ram_used, sm_mhz` (plus `vram_used_mib` / `vram_total_mib
     "gpu_size": 4096, "cpu_size": 2048, "ram_size_mb": 512, "passes": 1,
     "steady_gb": 2, "stable": 0, "stable_hold": 60, "gfx_engine": "furmark" } }
 { "kind": "stop" }
-{ "kind": "update" }                      // git pull --ff-only on the runner
+{ "kind": "update" }                      // git pull --ff-only on a checkout; toolkit/app self-update otherwise
 { "kind": "fan_curve", "payload": { "on": true } }
 { "kind": "power_limit", "payload": { "watts": 250 } }
 { "kind": "restart" }                       // re-exec the agent (fresh checkout)
@@ -251,6 +258,13 @@ Numeric env values (`BENCHD_RETENTION_DAYS`, `BENCHD_AUTO_UPDATE_HOURS`) are
 parsed defensively: a typo logs a warning and falls back to the default instead
 of crash-looping the unit.
 
+`--host 0.0.0.0` in the unit is deliberate: the unprivileged container has a single
+interface (the lab bridge `vmbr0`), so `0.0.0.0` is the same as binding its lab
+address (`192.168.222.188`) and the runners on the LAN/overlay must be able to
+connect. The token gate (operator token or per-runner key) is the real control; a
+firewall rule on the node or `--host <lab-ip>` narrows it further — see
+[Security](#security).
+
 ## Data captured per run
 
 - **Summary** (runs-index-style): GPU matmul (fp16/bf16/tf32/fp32), soak TFLOPS + telemetry,
@@ -270,9 +284,15 @@ of crash-looping the unit.
   (stored in `~/.config/bench-agent.json`); **operators/UI** use the shared join
   token (`BENCHD_TOKEN`) as a bearer, or `?token=` for the SSE stream and file
   downloads (EventSource / link navigation can't set headers).
-- Bind to the LAN/lab address only. On the lab overlay it is reachable over the
-  `wgaudit0` WireGuard network — keep `wg0` untouched.
-- Put a TLS reverse proxy in front if it is ever exposed beyond the lab.
+- **Network exposure.** The shipped unit and the deployment snippet bind
+  `0.0.0.0`, because the unprivileged LXC has a single lab-bridge interface — so
+  that is the same as binding its lab address, and the runners on the LAN/overlay
+  have to reach it. The container lives on the isolated lab network
+  (`172.23.128.0/20`, reached over the `wgaudit0` WireGuard overlay — keep `wg0`
+  untouched) and every request still has to pass the token gate (operator token
+  or per-runner key). To narrow it, pass `--host <lab-ip>` or add a firewall rule
+  on the Proxmox node. Put a TLS reverse proxy in front if it is ever exposed
+  beyond the lab.
 - `server/benchd.conf`, `server/data/` and `~/.config/bench-agent.json` are
   git-ignored — never commit the token, keys or the database.
 
@@ -307,7 +327,8 @@ of crash-looping the unit.
   device present (`console=ttyS0,115200` counts). One-shot
   `--self-test` runners are flagged *ephemeral* and dropped once they stop
   heartbeating.
-- `update` runs `git pull --ff-only` on the runner and reports the new commit;
+- `update` runs `git pull --ff-only` on a checkout and reports the new commit; on
+  a live stick or app bundle it refreshes the toolkit copy in place instead.
   `restart` re-execs the agent so a fresh checkout takes effect. The GUI, TUI and
   agent repeat that check **at startup** and restart into the new code when they
   pulled something (a dirty tree or `BENCH_NO_UPDATE=1` skips it). A control-plane
@@ -372,4 +393,5 @@ reference workstation (used to estimate how long each preset takes).
 - Operator logins (per-user accounts) instead of the shared join token.
 - Server-side run queues with priorities and nightly soak jobs.
 - Phase-log artifacts and richer artifact browsing from the UI.
-- Prometheus/`/metrics` export and alerting (throttle, TDR, over-temp).
+- Alerting on the control plane's `/metrics` series (throttle, TDR, over-temp);
+  the Prometheus exposition itself ships — see [`OBSERVABILITY.md`](OBSERVABILITY.md).

@@ -216,6 +216,8 @@ closes dialogs, `/` jumps to search.
   (`--token-file PATH` / `$BENCHD_TOKEN_FILE` also work — a token on `argv` is visible
   in `ps`). Each unit gets a deterministic id, so re-running is a no-op; `--reset`
   deletes every existing run first (all pages, not just the first 1000).
+- **Operations:** start/stop, logs, `/health` vs `/ready`, failure triage, update
+  rollback and backup/restore — [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 - Full API + deployment (Proxmox LXC): [`docs/CONTROL_PLANE.md`](docs/CONTROL_PLANE.md).
 
 ## Presets
@@ -357,8 +359,8 @@ bench/     PowerShell runners + Python phases + telemetry + dashboards + agent
 server/    benchd control plane (stdlib) + web dashboard + importer + systemd units
 live/      live-USB build + airootfs (launchers, units, conf)
 tests/     stdlib test suite (run_all.py)
-docs/      METHODOLOGY · CONTROL_PLANE · PHASE_TIMINGS · FUTURE_WORK · DATA ·
-           PRIVACY · KNOWN_ISSUES
+docs/      METHODOLOGY · CONTROL_PLANE · OPERATIONS · PHASE_TIMINGS · FUTURE_WORK ·
+           DATA · PRIVACY · KNOWN_ISSUES
 examples/  real Windows + Linux result sets
 results/   output (mostly git-ignored; a few runs tracked as history)
 ```
@@ -394,7 +396,9 @@ telemetry, logs and events of finished runs after 30 days
 ## Security
 
 The control plane uses a shared join token (operators) and per-runner keys
-(runners). Bind it to the LAN/lab; put TLS in front if exposed further. Tokens and
+(runners). The shipped unit binds `0.0.0.0` inside a single-interface lab
+container (LAN/overlay-only in practice); pass `--host <lab-ip>` or add a
+firewall rule to narrow it, and put TLS in front if exposed further. Tokens and
 the SQLite db are git-ignored — never commit them. The repo and both release
 streams are public — app bundles (`.github/workflows/build-app.yml`) and live ISOs
 (`.github/workflows/build-iso.yml`) — so the control-plane config baked into either
