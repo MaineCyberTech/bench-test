@@ -263,11 +263,11 @@ def run():
             all(set(v) == {"level", "text"} for v in vs2), vs2)
 
     # ---- a stale Valley screenshot must not be attributed to this run ----
+    # (the report must have no gfx record, or that would win over the screenshot)
     gd3 = tmpdir()
     with open(os.path.join(gd3, "host-20260101-000000.json"), "w") as fh:
-        json.dump({"host": "h", "phases": [{"group": "gfx", "phase": "furmark",
-                                            "result": {"skipped": True,
-                                                       "reason": "no monitor"}}]}, fh)
+        json.dump({"host": "h", "phases": [{"group": "gpu", "phase": "matmul",
+                                            "result": {"tflops": 1.0}}]}, fh)
     stale = os.path.join(gd3, "valley-host-old.png")
     with open(stale, "wb") as fh:
         fh.write(b"png")
