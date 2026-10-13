@@ -1261,42 +1261,8 @@ class Handler(BaseHTTPRequestHandler):
                                 "telemetry_interval": 1.0, "server_time": now()})
 
     def _server_update(self):
-        """Pull the control plane's own checkout and restart it.
-
-        Only meaningful for a git deploy; a copy deploy has no history to pull, so it
-        says so rather than pretending. The restart is handed to systemd with a delay,
-        so this response flushes before the process it is answering from goes away.
-        """
-        import subprocess
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        if not os.path.isdir(os.path.join(root, ".git")):
-            return self._send(200, {"ok": False, "mode": "copy",
-                                    "message": "copy deploy - refresh the files and restart benchd"})
-        before = server_git()
-
-        def git(*args):
-            return subprocess.run(["git", "-C", root] + list(args), capture_output=True,
-                                  text=True, timeout=180)
-
-        try:
-            git("fetch", "--depth", "1", "origin")
-            r = git("pull", "--ff-only")
-        except Exception as e:
-            return self._send(200, {"ok": False, "message": "git failed: %s" % e})
-        _SERVER_GIT["v"] = None                    # re-read the commit we are now on
-        after = server_git()
-        restart = bool(after) and after != before
-        if restart:
-            try:
-                subprocess.Popen(["bash", "-c", "sleep 1; systemctl restart benchd"],
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                 start_new_session=True)
-            except Exception:
-                pass
-        out = [l for l in (r.stdout or "").strip().splitlines() if l.strip()]
-        return self._send(200, {"ok": True, "before": before, "after": after,
-                                "restarting": restart,
-                                "message": (out[-1] if out else "pulled")[:200]})
+        """Pull the control plane's own checkout and restart it (see server_pull)."""
+        return self._send(200, server_pull())
 
     def _issue_command(self, rid, b):
         S = self.store
@@ -1401,6 +1367,74 @@ def scheduler_tick(store, bus):
 RETENTION_DAYS = float(os.environ.get("BENCHD_RETENTION_DAYS") or 30)
 RETENTION_EVERY_S = 3600.0        # a full sweep does not need to run every tick
 _RETENTION_LAST = [0.0]
+
+
+def server_pull():
+    """Pull the control plane's own checkout and hand the restart to systemd.
+
+    Only meaningful for a git deploy; a copy deploy has no history to pull, so it says
+    so rather than pretending. The restart is delayed so a response flushes before the
+    process it is answering from goes away.
+    """
+    import subprocess
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if not os.path.isdir(os.path.join(root, ".git")):
+        return {"ok": False, "mode": "copy",
+                "message": "copy deploy - refresh the files and restart benchd"}
+    before = server_git()
+
+    def git(*args):
+        return subprocess.run(["git", "-C", root] + list(args), capture_output=True,
+                              text=True, timeout=180)
+
+    try:
+        git("fetch", "--depth", "1", "origin")
+        r = git("pull", "--ff-only")
+    except Exception as e:
+        return {"ok": False, "message": "git failed: %s" % e}
+    _SERVER_GIT["v"] = None                        # re-read the commit we are now on
+    after = server_git()
+    restart = bool(after) and after != before
+    if restart:
+        try:
+            subprocess.Popen(["bash", "-c", "sleep 1; systemctl restart benchd"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+        except Exception:
+            pass
+    out = [l for l in (r.stdout or "").strip().splitlines() if l.strip()]
+    return {"ok": True, "before": before, "after": after, "restarting": restart,
+            "message": (out[-1] if out else "pulled")[:200]}
+
+
+# Auto-update: pull our own checkout when it is behind, at most once an hour, and
+# never while a run is active (the restart costs that run's live view). A copy deploy
+# does nothing. BENCHD_AUTO_UPDATE=0 disables it.
+AUTO_UPDATE_OFF = (os.environ.get("BENCHD_AUTO_UPDATE") or "").lower() in (
+    "0", "off", "no", "false")
+AUTO_UPDATE_S = float(os.environ.get("BENCHD_AUTO_UPDATE_HOURS") or 1) * 3600.0
+_AUTO_UPDATE_LAST = [0.0]
+
+
+def auto_update(store, force=False):
+    """Pull the control plane's own checkout when it is behind. Returns a dict or None."""
+    if AUTO_UPDATE_OFF or AUTO_UPDATE_S <= 0:
+        return None
+    t = now()
+    if not force and t - _AUTO_UPDATE_LAST[0] < AUTO_UPDATE_S:
+        return None
+    if not (latest_git() and server_git() and latest_git() != server_git()):
+        _AUTO_UPDATE_LAST[0] = t        # up to date: do not re-check on every tick
+        return None
+    busy = store.one("SELECT COUNT(*) n FROM runs WHERE status='running'")["n"]
+    if busy:
+        return None                     # a run is in progress: try again next tick
+    _AUTO_UPDATE_LAST[0] = t
+    res = server_pull()
+    if res.get("ok") and res.get("restarting"):
+        print("[benchd] auto-update: %s -> %s, restarting" % (res.get("before"), res.get("after")),
+              flush=True)
+    return res
 
 
 def retain_old_data(store, force=False):
@@ -1521,6 +1555,7 @@ def scheduler_loop(store, bus, stop):
             reap_ephemeral_runners(store, bus)
             reap_stale_commands(store, bus)
             retain_old_data(store)
+            auto_update(store)
         except Exception as e:
             print("[benchd] scheduler error: %s" % e, flush=True)
         stop.wait(10.0)

@@ -384,6 +384,40 @@ def run():
     c.check("compare_commits still returns just the status",
             B.compare_commits("abc1234", "abc1234") == "identical", "")
 
+    # ---- the control plane auto-updates itself when it can ----
+    _spec_au = importlib.util.spec_from_file_location(
+        "benchd_autoupdate", os.path.join(REPO, "server", "benchd.py"))
+    _bdm = importlib.util.module_from_spec(_spec_au)
+    _spec_au.loader.exec_module(_bdm)
+
+    class _BusyStore:
+        def __init__(self, busy):
+            self.busy = busy
+
+        def one(self, sql, args=()):
+            return {"n": 1 if self.busy else 0}
+
+    _pulled = []
+    _real_pull, _real_sg, _real_lg = _bdm.server_pull, _bdm.server_git, _bdm.latest_git
+    _bdm.server_pull = lambda: (_pulled.append(1) or {"ok": True, "before": "a", "after": "b"})
+    _bdm.AUTO_UPDATE_S = 0.0
+    _bdm._AUTO_UPDATE_LAST[0] = 0.0
+    _bdm.AUTO_UPDATE_OFF = False
+    _bdm.server_git = lambda: "aaa"
+    _bdm.latest_git = lambda: "aaa"
+    c.check("auto-update does nothing when it is already current",
+            _bdm.auto_update(_BusyStore(False)) is None and not _pulled, _pulled)
+    _bdm.latest_git = lambda: "bbb"
+    c.check("auto-update defers while a run is active",
+            _bdm.auto_update(_BusyStore(True)) is None and not _pulled, _pulled)
+    c.check("auto-update pulls when behind and idle",
+            _bdm.auto_update(_BusyStore(False)) and _pulled, _pulled)
+    _bdm.AUTO_UPDATE_OFF = True
+    _pulled.clear()
+    c.check("auto-update can be switched off",
+            _bdm.auto_update(_BusyStore(False)) is None and not _pulled, _pulled)
+    _bdm.server_pull, _bdm.server_git, _bdm.latest_git = _real_pull, _real_sg, _real_lg
+
     # ---- retention: bound the per-sample tables, keep the runs and their stats ----
     _spec3 = importlib.util.spec_from_file_location(
         "benchd_retention", os.path.join(REPO, "server", "benchd.py"))
