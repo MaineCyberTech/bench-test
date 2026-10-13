@@ -40,7 +40,7 @@ $info.RAM = [ordered]@{
 # GPU (WMI + nvidia-smi)
 $vcs = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue
 $info.GPUs = @($vcs | ForEach-Object {
-    [ordered]@{ name = $_.Name; driver = $_.DriverVersion; date = $_.DriverDate; status = $_.Status
+    [ordered]@{ name = $_.Name; vendor = $_.AdapterCompatibility; driver = $_.DriverVersion; date = $_.DriverDate; status = $_.Status
         vram_mib = if ($_.AdapterRAM -gt 0) { [math]::Round($_.AdapterRAM / 1MB, 0) } else { $null }
         resolution = "$($_.CurrentHorizontalResolution)x$($_.CurrentVerticalResolution)"
         refresh = $_.CurrentRefreshRate; pnp = $_.PNPDeviceID }
