@@ -95,6 +95,29 @@ def _tui(c):
         c.check("tui samples CPU/RAM via the Windows API without psutil",
                 t.sys_ram[1] > 0, t.sys_ram)
 
+    # ---- swap must be real page-file usage, not the commit charge ----
+    # GlobalMemoryStatusEx's TotalPageFile - AvailPageFile reported ~13 GiB on a
+    # box whose page file actually held 62 MiB; the label said "swap 13 GiB".
+    tsrc = open(os.path.join(BENCH, "tui.py"), encoding="utf-8").read()
+    c.check("tui does not report the commit charge as swap",
+            "ullTotalPageFile - st.ullAvailPageFile" not in tsrc, "")
+    c.check("tui prefers psutil's swap for the swap reading",
+            "swap_memory()" in tsrc, "")
+    c.check("tui falls back to the page-file query run_win.py uses",
+            "_win_pagefile_used_gib" in tsrc, "")
+    try:
+        import psutil
+        want = psutil.swap_memory().used / 1024 ** 3
+    except Exception:
+        want = None
+    got = tui._win_swap_gib(0)
+    if want is not None:
+        c.check("tui's swap helper agrees with psutil",
+                abs(got[0] - want) < 0.2, (got, want))
+    else:
+        c.check("tui's swap helper degrades gracefully without psutil",
+                got == (0.0, 0.0) or os.name == "nt", (got, os.name))
+
 
 def _web(c):
     """The web live view: runner tabs, and panels that show both runs.

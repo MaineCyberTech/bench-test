@@ -183,6 +183,31 @@ _TUI_SHOWN = {"temp_c", "gpu_util", "mem_util", "vram_used_mib", "sm_mhz", "powe
               "cpu_pkg_w"}
 
 
+def _win_swap_gib(commit_limit):
+    """(used, total) GiB of real page-file usage, never the commit charge.
+
+    GlobalMemoryStatusEx's TotalPageFile - AvailPageFile is the system commit
+    charge (13 GiB on a box whose page file held 62 MiB), so it must not be
+    reported as swap. Prefer psutil's swap_memory(); fall back to the same
+    NtQuerySystemInformation query run_win.py uses; (0.0, 0.0) when neither is
+    available, so the header hides the reading instead of guessing.
+    """
+    try:
+        import psutil
+        sm = psutil.swap_memory()
+        return (sm.used / 1024 ** 3, sm.total / 1024 ** 3)
+    except Exception:
+        pass
+    try:
+        from run_win import _win_pagefile_used_gib
+        used = _win_pagefile_used_gib()
+        if used is not None:
+            return (used, commit_limit / 1024 ** 3)
+    except Exception:
+        pass
+    return (0.0, 0.0)
+
+
 class BenchTUI:
     def __init__(self, scr, opts):
         self.scr = scr
@@ -866,7 +891,7 @@ class BenchTUI:
             return False
 
     def _sample_system_win(self):
-        """CPU/RAM via the Windows API, for a stdlib-only run without psutil."""
+        """CPU/RAM/swap via the Windows API, for a stdlib-only run without psutil."""
         if os.name != "nt":
             return
         try:
@@ -903,8 +928,9 @@ class BenchTUI:
             if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
                 self.sys_ram = ((st.ullTotalPhys - st.ullAvailPhys) / 1024 ** 3,
                                 st.ullTotalPhys / 1024 ** 3)
-                self.sys_swap = ((st.ullTotalPageFile - st.ullAvailPageFile) / 1024 ** 3,
-                                 st.ullTotalPageFile / 1024 ** 3)
+                # TotalPageFile - AvailPageFile is the commit charge, not swap;
+                # _win_swap_gib reads the real page-file usage instead
+                self.sys_swap = _win_swap_gib(st.ullTotalPageFile)
         except Exception:
             pass
 

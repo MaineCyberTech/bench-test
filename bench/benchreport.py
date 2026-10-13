@@ -1372,21 +1372,58 @@ def _code_runs_from_disk(root):
         return False
 
 
+def _remove_path(path):
+    """Best-effort removal of a file, symlink or directory (never raises)."""
+    try:
+        if os.path.islink(path) or os.path.isfile(path):
+            os.remove(path)
+        elif os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
+    except OSError:
+        pass
+
+
 def _install_into_bundle(bundle, src, ref, commit, sha256, nbytes, log=None):
     """Refresh the toolkit copy that ships next to a bundled dashboard's exe.
 
     Only the toolkit can be replaced in place - the frozen dashboard keeps running
     its own bundled code - so the result says exactly that instead of implying the
-    whole app was updated.
+    whole app was updated. The copy is staged next to `bench` and swapped in with
+    renames, so a failed refresh leaves the working toolkit intact.
     """
     log = log or (lambda _m: None)
     dst = os.path.join(bundle, "bench")
+    stage = os.path.join(bundle, "bench.new")
+    backup = os.path.join(bundle, "bench.old")
     try:
-        if os.path.isdir(dst):
-            shutil.rmtree(dst)
-        shutil.copytree(os.path.join(src, "bench"), dst)
+        # stage a complete copy first: deleting the working copy and copying over
+        # it left the bundle with no bench/ at all when the copy failed
+        _remove_path(stage)
+        shutil.copytree(os.path.join(src, "bench"), stage)
     except OSError as e:
+        _remove_path(stage)
         return {"error": "could not refresh the bundled toolkit: %s" % e, "root": bundle}
+    try:
+        # swap by rename (atomic on one filesystem); put the previous copy back
+        # if the swap fails, so the bundle keeps starting either way
+        _remove_path(backup)
+        if os.path.lexists(dst):
+            os.replace(dst, backup)
+        try:
+            os.replace(stage, dst)
+        except OSError as e:
+            try:
+                if os.path.lexists(backup) and not os.path.lexists(dst):
+                    os.replace(backup, dst)
+            except OSError:
+                _remove_path(stage)
+                return {"error": "could not refresh the bundled toolkit: %s; the previous "
+                                 "copy is still in %s" % (e, backup), "root": bundle}
+            raise
+    except OSError as e:
+        _remove_path(stage)
+        return {"error": "could not refresh the bundled toolkit: %s" % e, "root": bundle}
+    _remove_path(backup)
     ver = ""
     try:
         with open(os.path.join(src, SEMVER_FILE), encoding="utf-8") as fh:
@@ -1850,9 +1887,12 @@ def iso_fetch(tag, gpu="nvidia-legacy", dest=None, log=None):
     except Exception as e:
         return {"error": "download failed: %s" % e, "iso": iso, "bytes": total}
     got = sha256_file(iso)
-    ok = None
+    verified = None               # True = matches SHA256SUMS, False = mismatch, None = no hash
+    why = ""
     sums = [a for a in rel["assets"] if (a["name"] or "") == "SHA256SUMS"]
-    if sums:
+    if not sums:
+        why = "the release has no SHA256SUMS"
+    else:
         try:
             f = os.path.join(out_dir, "SHA256SUMS")
             _download(sums[0]["url"], f, log=None, timeout=60)
@@ -1861,11 +1901,28 @@ def iso_fetch(tag, gpu="nvidia-legacy", dest=None, log=None):
                 p = ln.split()
                 if len(p) >= 2 and p[-1].lstrip("*").endswith(".iso"):
                     want = p[0].lower()
-            ok = (want is None) or (want == got)
-        except Exception:
-            ok = None
-    return {"ok": True, "iso": iso, "bytes": total, "sha256": got, "verified": ok,
-            "parts": len(parts), "tag": rel["tag"]}
+            if want is None:
+                why = "SHA256SUMS lists no .iso entry"
+            elif want == got:
+                verified = True
+            else:
+                verified = False
+                why = "sha256 mismatch: SHA256SUMS says %s, got %s" % (want, got)
+        except Exception as e:
+            why = "could not read SHA256SUMS (%s)" % e
+    out = {"iso": iso, "bytes": total, "sha256": got, "verified": verified,
+           "parts": len(parts), "tag": rel["tag"]}
+    if verified:
+        out["ok"] = True
+    elif verified is False:
+        out["ok"] = False
+        out["error"] = why
+    else:
+        # no SHA256SUMS / no usable hash: unverified, never a verified success
+        out["ok"] = False
+        out["unverified"] = why
+        out["error"] = "downloaded the iso but could not verify it: %s" % why
+    return out
 
 
 def _device_of_path(path):

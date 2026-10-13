@@ -44,6 +44,7 @@ class _Stub(http.server.BaseHTTPRequestHandler):
     toolkit = b""
     parts = []
     sums = ""
+    with_sums = True
 
     def log_message(self, *_a):
         pass
@@ -55,9 +56,10 @@ class _Stub(http.server.BaseHTTPRequestHandler):
             assets = [{"name": "bench-live-%s.iso.part.%s" % ("nvidia-legacy", chr(97 + i)),
                        "browser_download_url": "http://%s/blob/part.%s" % (self.headers["Host"], chr(97 + i)),
                        "size": len(p)} for i, p in enumerate(self.parts)]
-            assets.append({"name": "SHA256SUMS",
-                           "browser_download_url": "http://%s/blob/SHA256SUMS" % self.headers["Host"],
-                           "size": len(self.sums)})
+            if self.with_sums:
+                assets.append({"name": "SHA256SUMS",
+                               "browser_download_url": "http://%s/blob/SHA256SUMS" % self.headers["Host"],
+                               "size": len(self.sums)})
             body = json.dumps({"tag_name": "iso-stub-1", "assets": assets}).encode()
             ctype = "application/json"
         elif self.path == "/blob/SHA256SUMS":
@@ -201,6 +203,28 @@ def run():
     _Stub.sums = "%s  bench-live-nvidia-legacy.iso\n" % ("0" * 64)
     r3 = br.iso_fetch("iso-stub-1", "nvidia-legacy", dest=os.path.join(sand, "iso2"))
     c.check("iso mismatched sum flagged", r3.get("verified") is False, r3)
+    c.check("iso mismatched sum refused (ok False)", r3.get("ok") is False, r3)
+    c.check("iso mismatch error names both hashes",
+            ("0" * 64) in str(r3.get("error")) and r3.get("sha256") in str(r3.get("error")), r3)
+
+    # a release with no SHA256SUMS is unverifiable, never a verified success
+    _Stub.with_sums = False
+    try:
+        r3b = br.iso_fetch("iso-stub-1", "nvidia-legacy", dest=os.path.join(sand, "iso3"))
+    finally:
+        _Stub.with_sums = True
+    c.check("an iso without SHA256SUMS is not ok", r3b.get("ok") is False, r3b)
+    c.check("an iso without SHA256SUMS is unverified, not a mismatch",
+            r3b.get("verified") is None and "no SHA256SUMS" in str(r3b.get("unverified")), r3b)
+    c.check("an unverifiable fetch says it could not verify",
+            "could not verify" in str(r3b.get("error")), r3b)
+
+    # a SHA256SUMS with no .iso entry cannot verify anything either
+    _Stub.sums = "%s  some-other-file.txt\n" % ("0" * 64)
+    r3c = br.iso_fetch("iso-stub-1", "nvidia-legacy", dest=os.path.join(sand, "iso4"))
+    c.check("a SHA256SUMS with no .iso entry is unverifiable",
+            r3c.get("ok") is False and r3c.get("verified") is None
+            and "no .iso entry" in str(r3c.get("unverified")), r3c)
 
     # ---- restart semantics ----
     c.check("git update always restarts (so the commit re-registers)",
@@ -454,6 +478,65 @@ def run():
             br._app_bundle_root(bdir) is True, "")
     c.check("the version really resolves after the update",
             br.bench_version(bdir) == "9.9.9", br.bench_version(bdir))
+
+    # ---- a failed refresh must leave the working toolkit intact ----
+    # The old code deleted bench/ and copied over it, so a mid-copy failure (disk
+    # full, unreadable source) left the bundle with no bench/ and no way to start.
+    bdir_fail = tmpdir()
+    os.makedirs(os.path.join(bdir_fail, "bench"))
+    with open(os.path.join(bdir_fail, "bench", "benchreport.py"), "w") as fh:
+        fh.write("# old, working\n")
+    with open(os.path.join(bdir_fail, ".bench-version"), "w") as fh:
+        json.dump({"mode": "app"}, fh)
+    src_fail = tmpdir()
+    os.makedirs(os.path.join(src_fail, "bench"))
+    for name in ("benchreport.py", "tui.py"):
+        with open(os.path.join(src_fail, "bench", name), "w") as fh:
+            fh.write("# new\n")
+
+    real_copytree = br.shutil.copytree
+
+    def _copytree_then_fail(s, d, *a, **kw):
+        real_copytree(s, d, *a, **kw)     # stage a full copy, then fail
+        raise OSError("simulated failure after the copy")
+
+    br.shutil.copytree = _copytree_then_fail
+    try:
+        rf = br._install_into_bundle(bdir_fail, src_fail, "main", "abc", "sha", 1)
+    finally:
+        br.shutil.copytree = real_copytree
+    c.check("a failed bundle refresh reports the error",
+            not rf.get("ok") and "could not refresh" in str(rf.get("error")), rf)
+    c.check("a failed bundle refresh leaves the working bench/ intact",
+            open(os.path.join(bdir_fail, "bench", "benchreport.py")).read() == "# old, working\n",
+            "")
+    c.check("a failed bundle refresh leaves no staging dir behind",
+            not os.path.exists(os.path.join(bdir_fail, "bench.new"))
+            and not os.path.exists(os.path.join(bdir_fail, "bench.old")), "")
+
+    # a failed swap must roll the previous toolkit back, not lose it
+    real_replace = br.os.replace
+
+    def _replace_new_fails(src, dst):
+        if src.endswith("bench.new"):
+            raise OSError("simulated locked directory")
+        return real_replace(src, dst)
+
+    br.os.replace = _replace_new_fails
+    try:
+        rf2 = br._install_into_bundle(bdir_fail, src_fail, "main", "abc", "sha", 1)
+    finally:
+        br.os.replace = real_replace
+    c.check("a failed swap reports the error",
+            not rf2.get("ok") and "could not refresh" in str(rf2.get("error")), rf2)
+    c.check("a failed swap rolls the previous bench/ back",
+            os.path.isfile(os.path.join(bdir_fail, "bench", "benchreport.py"))
+            and open(os.path.join(bdir_fail, "bench", "benchreport.py")).read() == "# old, working\n",
+            "")
+    c.check("a failed swap leaves no bench.new/bench.old behind",
+            not os.path.exists(os.path.join(bdir_fail, "bench.new"))
+            and not os.path.exists(os.path.join(bdir_fail, "bench.old")), "")
+
     # a plain copy (no git, not live, not a bundle) must still be refused - the
     # suite sets BENCH_ALLOW_TOOLKIT_SWITCH for its own scenarios, so clear it here
     plain = tmpdir()
