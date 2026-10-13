@@ -28,8 +28,8 @@ on:
         options: [zstd, xz]
         default: zstd
       runner_labels:
-        description: "JSON array of runner labels (ubuntu-latest = free for public repos, 74G scratch)"
-        default: '["ubuntu-latest"]'
+        description: "JSON array of runner labels (default = the lab iso-builder; ubuntu-latest = free for public repos, 74G scratch; the hybrid variant needs ubuntu-latest)"
+        default: '["self-hosted","linux","x64","lab-iso"]'
       upload_release:
         description: "Attach the ISO to a GitHub release"
         type: boolean
@@ -50,7 +50,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ${{ fromJSON(inputs.runner_labels || '["ubuntu-latest"]') }}
+    runs-on: ${{ fromJSON(inputs.runner_labels || '["self-hosted","linux","x64","lab-iso"]') }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
