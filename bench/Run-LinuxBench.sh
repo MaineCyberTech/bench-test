@@ -795,7 +795,16 @@ if sysrec and sysrec.get("result"):
     rows.append("| errors since boot | %s |" % r.get("errors_since_boot"))
     table("System", rows)
 
-gfx = by("gfx", "furmark") or by("gfx", "glmark2") or by("gfx", "glmark2-es2")
+def _with_score(rec):
+    """A gfx record only counts if it produced a score (a 'skipped' furmark record
+    is truthy and used to short-circuit past the glmark2 fallback's real result)."""
+    r = (rec or {}).get("result") or {}
+    return rec if (r.get("score") is not None and not r.get("skipped")) else None
+
+
+gfx = (_with_score(by("gfx", "furmark")) or _with_score(by("gfx", "glmark2"))
+       or _with_score(by("gfx", "glmark2-es2"))
+       or by("gfx", "furmark") or by("gfx", "glmark2") or by("gfx", "glmark2-es2"))
 if gfx and gfx.get("result"):
     r = gfx["result"]
     if r.get("skipped"):
