@@ -658,7 +658,8 @@ class Handler(BaseHTTPRequestHandler):
         b = self._bearer()
         if b and secrets.compare_digest(b, self.token):
             return True
-        if q and q.get("token", [None])[0] == self.token:
+        qtok = q.get("token", [None])[0] if q else None
+        if qtok and secrets.compare_digest(str(qtok), str(self.token)):
             return True
         return False
 
@@ -666,7 +667,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.token is None:
             return True
         b = self._bearer()
-        if b and b == self.token:
+        if b and secrets.compare_digest(b, self.token):
             return True
         r = self._runner_from_bearer()
         if r and (rid is None or r["id"] == rid):
@@ -678,7 +679,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.token is None:
             return True, None
         b = self._bearer()
-        if b and b == self.token:
+        if b and secrets.compare_digest(b, self.token):
             return True, None
         return False, self._runner_from_bearer()
 
@@ -1226,8 +1227,25 @@ class Handler(BaseHTTPRequestHandler):
             # live-USB boot whose config did not persist) does not mint a
             # duplicate — while the live USB's tty1 / ttyS0 dashboards stay
             # distinct (they must, or a command would run on both).
-            existing = S.one("SELECT * FROM runners WHERE machine_id=? AND kind=? "
-                             "AND COALESCE(instance,'')=?", (mid, kind, inst))
+            #
+            # SEC-P1-002 / CHAIN-P1-001: adoption must never hand a runner's
+            # api_key to a caller that cannot prove it owns the row. Ownership is
+            # proved by the body's api_key or the request bearer matching the row
+            # (the same proof the explicit-runner_id path requires above); an
+            # operator is trusted. Without proof we only adopt a row that is
+            # *offline* (stale last_seen) and we rotate its key, so a live runner
+            # can never be taken over and an offline one recovers with a new key.
+            cand = S.one("SELECT * FROM runners WHERE machine_id=? AND kind=? "
+                         "AND COALESCE(instance,'')=?", (mid, kind, inst))
+            if cand:
+                proof = key or self._bearer()
+                if proof and secrets.compare_digest(str(proof), str(cand["api_key"])):
+                    existing = cand
+                elif self._is_operator():
+                    existing = cand
+                elif not online(cand["last_seen"]):
+                    existing = dict(cand)
+                    existing["api_key"] = secrets.token_urlsafe(32)
         if existing:
             rid = existing["id"]
             key = existing["api_key"]
@@ -1503,9 +1521,18 @@ def main():
     ap.add_argument("--token", default=None, help="join/registration + operator API bearer")
     ap.add_argument("--web", default=WEB_DIR)
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--allow-anonymous", action="store_true",
+                    help="run with no BENCHD_TOKEN (lab/dev only: anyone on the "
+                         "network can register and control runners)")
     a = ap.parse_args()
 
     token = find_token(a.token)
+    if token is None and not (a.allow_anonymous
+                              or os.environ.get("BENCHD_ALLOW_ANONYMOUS") == "1"):
+        print("[benchd] refusing to start: no BENCHD_TOKEN set. Set one (--token, "
+              "$BENCHD_TOKEN, server/benchd.conf) or pass --allow-anonymous for a "
+              "local/dev instance.", flush=True)
+        return 2
     store = Store(a.db)
     Handler.store, Handler.bus, Handler.token, Handler.web_dir = store, Bus(), token, a.web
     httpd = ThreadingHTTPServer((a.host, a.port), Handler)
@@ -1529,4 +1556,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
