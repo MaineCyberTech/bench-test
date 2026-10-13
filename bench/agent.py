@@ -49,7 +49,7 @@ from benchreport import (Reporter, PhaseTracker, TelemetryTail,  # noqa: E402
                          self_update, restart_self,
                          toolkit_version, is_live, update_needs_restart,
                          auto_update, venv_python, upload_telemetry_csv, upload_run_files,
-                         extra_runner_args)
+                         extra_runner_args, version_string)
 
 DEFAULT_GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc",
                   "llm", "fan", "sys", "gfx"]
@@ -112,7 +112,7 @@ class Agent:
         self.out_dir = os.path.abspath(a.out)
         ident = load_identity(a.server)
         self.rep = Reporter(a.server, a.token, name=a.name, kind="agent",
-                            version=git_commit(), git=git_commit(), log=self.log,
+                            version=version_string(), git=git_commit(), log=self.log,
                             runner_id=ident.get("runner_id"), api_key=ident.get("api_key"),
                             persist=True)
         self.caps = probe_capabilities()

@@ -163,6 +163,14 @@ you add behaviour. Never commit with a failing suite.
 
 - **Presets** live in `gui.PRESETS` (dict), `tui.PRESETS` (list), and
   `ALL_GROUPS`/`gset`/`PRESETS` in `app.js`. Change all three together.
+- **Versions.** `VERSION` (repo root, `MAJOR.MINOR.PATCH`) is the single source of
+  truth. `benchreport.bench_version()` / `version_string()` read it, the GUI/TUI
+  headers show it, runners register `version_string()` (so the fleet view shows
+  what each box runs), the web shows it, and `benchd` reports it in `/health` and
+  `/state` (it is deployed as a copy, so the file ships with it — see
+  `update_ct.py`). Release names carry it (`ISO <gpu> v1.0.0 #<run>`). Bump
+  `VERSION` for a release and keep `tests/test_version.py` green; a copy with no
+  `VERSION` reports `0.0.0+unknown` rather than nothing.
 - **Tuning knobs beyond the four durations** (`cpu_soak`, `ram_soak`,
   `disk_seconds`, `gpu_size`, `cpu_size`, `ram_size_mb`, `passes`, `steady_gb`,
   `stable`) travel in a preset's `tune` field and in the start payload; both

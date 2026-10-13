@@ -913,7 +913,36 @@ def is_live():
     return os.path.isdir("/run/archiso") or os.path.exists("/etc/arch-release")
 
 
-VERSION_FILE = ".bench-version"
+VERSION_FILE = ".bench-version"   # generated stamp of a fetched copy (JSON)
+SEMVER_FILE = "VERSION"           # the release version, e.g. 1.0.0
+
+
+def bench_version(root=None):
+    """The toolkit's release version, from the VERSION file.
+
+    Returns a bare version like ``1.0.0``; ``0.0.0+unknown`` when the file is
+    missing (a copy that predates versioning) so callers never print nothing.
+    """
+    root = root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        with open(os.path.join(root, SEMVER_FILE), encoding="utf-8") as fh:
+            v = fh.read().strip().splitlines()[0].strip()
+        if v:
+            return v
+    except (OSError, IndexError):
+        pass
+    return "0.0.0+unknown"
+
+
+def version_string(root=None):
+    """``1.0.0 (abc1234)`` - the release version plus the commit when there is one.
+
+    This is what a runner registers and the dashboards display, so a fleet view
+    can tell exactly what is running on a box.
+    """
+    v = bench_version(root)
+    c = git_commit(root)
+    return ("%s (%s)" % (v, c)) if c else v
 
 
 def git_commit(repo=None):
@@ -930,18 +959,21 @@ def git_commit(repo=None):
 def toolkit_version(root=None):
     """Identify the running toolkit so the fleet view can spot stale runners."""
     root = root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    ver = bench_version(root)
     if os.path.isdir(os.path.join(root, ".git")):
         return {"mode": "git", "commit": git_commit(root), "ref": None,
-                "sha256": None, "fetched_at": None}
+                "sha256": None, "fetched_at": None, "version": ver}
     try:
         with open(os.path.join(root, VERSION_FILE), encoding="utf-8") as fh:
             v = json.load(fh)
         if isinstance(v, dict):
             v.setdefault("mode", "copy")
+            v["version"] = ver
             return v
     except Exception:
         pass
-    return {"mode": "copy", "commit": None, "ref": None, "sha256": None, "fetched_at": None}
+    return {"mode": "copy", "commit": None, "ref": None, "sha256": None,
+            "fetched_at": None, "version": ver}
 
 
 def _resolve_commit(ref):

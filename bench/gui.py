@@ -47,7 +47,8 @@ try:
                              toolkit_version, is_live, update_needs_restart, hardware_line,
                              DASH_FIELDS, auto_update, should_restart_after_update,
                              venv_python, upload_telemetry_csv, persist_root,
-                             upload_run_files, extra_runner_args, tune_summary)
+                             upload_run_files, extra_runner_args, tune_summary,
+                             bench_version, version_string)
 except Exception:  # reporting is optional
     Reporter = None
 
@@ -280,6 +281,8 @@ class Dashboard:
                   style="Dim.TLabel").pack(side="left")
         self.hw = ttk.Label(head, text="detecting hardware...", style="Dim.TLabel")
         self.hw.pack(side="right")
+        self.ver = ttk.Label(head, text="v%s" % bench_version(REPO), style="Dim.TLabel")
+        self.ver.pack(side="right", padx=(0, 10))
 
         body = ttk.Frame(r, padding=(12, 4, 12, 8))
         body.pack(fill="both", expand=True)
@@ -551,6 +554,7 @@ class Dashboard:
             ident = load_identity(self.server)
             self.rep = Reporter(self.server, self.token, name=self.name or _p.node(),
                                 kind="gui", os_name=_p.system(), log=self._log,
+                                version=version_string(REPO),
                                 runner_id=ident.get("runner_id"), api_key=ident.get("api_key"),
                                 persist=True, instance=self.instance)
             self.sysinfo = system_info()

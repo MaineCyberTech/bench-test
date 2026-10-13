@@ -55,6 +55,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Read version
+        id: ver
+        run: echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
+
       - name: Install upload credentials (optional secret)
         run: |
           if [ -n "${{ secrets.BENCH_UPLOAD_CONF }}" ]; then
@@ -96,6 +100,7 @@ jobs:
           mkdir -p dist
           cp "$ISO_PATH" "dist/bench-live-${{ inputs.gpu || 'nvidia-legacy' }}.iso"
           sha256sum dist/*.iso | tee dist/SHA256SUMS
+          cp VERSION dist/bench-version.txt
           du -h dist/*.iso
           # GitHub release assets are capped at 2 GiB; ship <2GiB parts
           split -b 1900M "dist/bench-live-${{ inputs.gpu || 'nvidia-legacy' }}.iso" "dist/bench-live-${{ inputs.gpu || 'nvidia-legacy' }}.iso.part."
@@ -111,14 +116,15 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: iso-${{ inputs.gpu || 'nvidia-legacy' }}-${{ github.run_number }}
-          name: "ISO ${{ inputs.gpu || 'nvidia-legacy' }} #${{ github.run_number }}"
+          name: "ISO ${{ inputs.gpu || 'nvidia-legacy' }} v${{ steps.ver.outputs.version }} #${{ github.run_number }}"
           files: |
             dist/bench-live-${{ inputs.gpu || 'nvidia-legacy' }}.iso.part.*
             dist/SHA256SUMS
             dist/README-ASSEMBLE.txt
+            dist/bench-version.txt
           make_latest: false
           body: |
-            Self-hosted build of the `${{ inputs.gpu || 'nvidia-legacy' }}` live ISO (run ${{ github.run_number }}, ${{ inputs.compression || 'zstd' }} squashfs).
+            bench-test **v${{ steps.ver.outputs.version }}** live ISO — self-hosted build of the `${{ inputs.gpu || 'nvidia-legacy' }}` variant (run ${{ github.run_number }}, ${{ inputs.compression || 'zstd' }} squashfs).
             Built from commit `${{ github.sha }}` on `${{ github.ref_name }}` — the tag's run number does **not** map to a commit, so check this before flashing.
             Assets are <2 GiB parts (GitHub's release asset cap):
             `cat bench-live-${{ inputs.gpu }}.iso.part.* > bench-live-${{ inputs.gpu }}.iso && sha256sum -c SHA256SUMS`

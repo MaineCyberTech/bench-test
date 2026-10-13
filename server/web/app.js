@@ -285,6 +285,8 @@ function renderTop() {
   ].concat(stale ? [["stale", stale]] : [])
     .map(([k, v]) => `<div class="tstat"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
   document.title = STATE.active.length ? `(${STATE.active.length}) bench-test` : "bench-test control plane";
+  const sub = document.querySelector(".brand .sub");
+  if (sub) sub.textContent = "control plane · v" + (STATE.version || "?") + " · single pane of glass";
   const off = STATE.runners.length - online;
   $("#runnerCount").innerHTML = `${online} online · ${machines} machine${machines === 1 ? "" : "s"}` +
     (off ? ` · <button class="badge toggle" data-toggle-off>${SHOW_OFFLINE ? "hide" : "show"} ${off} offline</button>` : "");
@@ -305,6 +307,8 @@ function runnerCard(r) {
     (caps.groups && caps.groups.length && caps.groups.length < ALL_GROUPS.length)
       ? `<span class="badge" title="groups this runner implements">${caps.groups.length}/${ALL_GROUPS.length} groups</span>`
       : "",
+    (caps.toolkit && caps.toolkit.version)
+      ? `<span class="badge" title="toolkit release version">v${esc(caps.toolkit.version)}</span>` : "",
     r.update_available
       ? `<span class="badge stale" title="${esc(r.toolkit_status || "behind")}: toolkit ${esc(r.toolkit_commit || "?")} vs latest ${esc(r.latest_commit || STATE.latest_git || "?")}">update available</span>`
       : (r.toolkit_commit
@@ -531,7 +535,9 @@ function paintFocus(el, r, live) {
   const run = el.querySelector("[data-f=runner]");
   if (run) {
     const rr = STATE.runners.find((x) => x.id === r.runner_id) || {};
-    run.textContent = [rr.addr, rr.kind, rr.toolkit_commit ? "toolkit " + rr.toolkit_commit : null]
+    run.textContent = [rr.addr, rr.kind, rr.toolkit_commit ? "toolkit " + rr.toolkit_commit : null,
+                       (rr.capabilities && rr.capabilities.toolkit && rr.capabilities.toolkit.version)
+                         ? "v" + rr.capabilities.toolkit.version : null]
       .filter(Boolean).join(" · ");
   }
   const v = r.latest || {};
@@ -556,7 +562,9 @@ function paintFocusSpecs(el, r) {
     ["torch", r.torch], ["git", r.git],
     ["preset", r.preset], ["label", r.label],
     ["runner", rr.label || rr.name], ["addr", rr.addr], ["kind", rr.kind],
+    ["version", rr.version],
     ["toolkit", rr.toolkit_commit ? rr.toolkit_commit + " (" + (rr.toolkit_mode || "?") + ")" : null],
+    ["toolkit version", (rr.capabilities && rr.capabilities.toolkit && rr.capabilities.toolkit.version) || null],
     ["started", r.started ? ts(r.started) : null],
     ["peak temp", (r.latest && r.latest.temp_c != null) ? fmt(r.latest.temp_c, 0) + " °C" : null],
   ].filter((x) => x[1] != null && x[1] !== "");

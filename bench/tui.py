@@ -54,7 +54,7 @@ try:
                              toolkit_version, is_live, update_needs_restart, hardware_line,
                              DASH_FIELDS, auto_update, should_restart_after_update, venv_python,
                          upload_telemetry_csv, persist_root, upload_run_files,
-                         extra_runner_args, tune_summary)
+                         extra_runner_args, tune_summary, bench_version, version_string)
 except Exception:  # reporting is optional
     Reporter = None
 
@@ -191,7 +191,7 @@ class BenchTUI:
             import platform as _p
             ident = load_identity(self.server)
             self.rep = Reporter(self.server, self.token, name=self.name or _p.node(),
-                                kind="tui", os_name=_p.system(),
+                                kind="tui", os_name=_p.system(), version=version_string(REPO),
                                 runner_id=ident.get("runner_id"), api_key=ident.get("api_key"),
                                 persist=True, instance=self.instance,
                                 log=lambda m: self.log.append(m))
@@ -819,7 +819,7 @@ class BenchTUI:
             self.scr.refresh()
             return
 
-        hdr = " bench-test "
+        hdr = " bench-test v%s " % bench_version(REPO)
         self._put(0, 0, hdr, curses.color_pair(1) | curses.A_BOLD)
         self._put(0, len(hdr) + 1, self.hw[:W - 32], curses.color_pair(8))
         self._put(0, max(len(hdr) + 2, W - 10), time.strftime("%H:%M:%S"), curses.color_pair(2))

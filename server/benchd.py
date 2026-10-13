@@ -201,6 +201,7 @@ def online(last_seen):
 
 
 _SERVER_GIT = {"v": None}
+_SERVER_VER = {"v": None}
 
 
 def server_git():
@@ -235,6 +236,24 @@ def server_git():
                     break
         _SERVER_GIT["v"] = val
     return _SERVER_GIT["v"]
+
+
+def server_version():
+    """The control plane's release version, from the VERSION file next to it.
+
+    The server is deployed as a copy (no .git), so the version is what identifies
+    a deployment; ``0.0.0+unknown`` when the file was not shipped.
+    """
+    if _SERVER_VER["v"] is None:
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        val = ""
+        try:
+            with open(os.path.join(repo, "VERSION"), encoding="utf-8") as fh:
+                val = fh.read().strip().splitlines()[0].strip()
+        except (OSError, IndexError):
+            val = ""
+        _SERVER_VER["v"] = val or "0.0.0+unknown"
+    return _SERVER_VER["v"]
 
 
 REPO_SLUG = os.environ.get("BENCH_REPO_SLUG") or "MaineCyberTech/bench-test"
@@ -572,6 +591,7 @@ class Handler(BaseHTTPRequestHandler):
         path, q = u.path, parse_qs(u.query)
         if path == "/health":
             return self._send(200, {"ok": True, "time": now(), "git": server_git(),
+                                    "version": server_version(),
                                     "latest": latest_git(),
                                     "runners": len(self.store.q("SELECT id FROM runners"))})
         if path.startswith("/api/"):
@@ -655,6 +675,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"runners": runners, "active": active, "recent": recent,
                                     "metrics": METRICS, "hosts": hosts,
                                     "server_git": server_git(), "latest_git": latest_git(),
+                            "version": server_version(),
                                     "server_time": now()})
         if path == "/api/v1/metrics":
             return self._send(200, {"metrics": METRICS})
