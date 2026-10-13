@@ -55,6 +55,50 @@ jobs:
             fi
           done
 
+      - name: Parse-check PowerShell battery scripts
+        # TEST-P2-003: the PowerShell battery was only ever validated by substring
+        # assertions in tests/test_packaging.py, so a genuine parse error (an
+        # unbalanced brace, a typo'd keyword) shipped unnoticed. Parse every
+        # tracked *.ps1 with the real PowerShell language parser and fail on any
+        # parse error. GitHub-hosted ubuntu runners ship pwsh, and parsing is
+        # Python-agnostic, so run it once rather than on every matrix leg.
+        if: matrix.python-version == '3.12'
+        shell: pwsh
+        run: |
+          $bad = 0
+          $scripts = Get-ChildItem -Recurse -Filter *.ps1 -File
+          Write-Host "parse-checking $($scripts.Count) PowerShell script(s)"
+          foreach ($script in $scripts) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              $bad = 1
+              Write-Host "::error file=$($script.FullName)::$($errors[0].Message)"
+            }
+          }
+          if ($bad -eq 0) { Write-Host "all PowerShell scripts parse cleanly" }
+          exit $bad
+
+      - name: Syntax-check web dashboard JavaScript
+        # TEST-P2-003: server/web/app.js is the whole dashboard and was never
+        # parsed - a syntax error would only surface in a browser. `node --check`
+        # parses without executing, so it is safe to run on untrusted front-end
+        # code. Runs once; node is Python-agnostic.
+        if: matrix.python-version == '3.12'
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(server/web/*.js)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::no server/web/*.js files found to syntax-check"
+            exit 1
+          fi
+          for f in "${files[@]}"; do
+            node --check "$f"
+            echo "ok: $f"
+          done
+
       - name: No generated results tracked
         run: |
           set -euo pipefail
