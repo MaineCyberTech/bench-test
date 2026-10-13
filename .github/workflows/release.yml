@@ -110,7 +110,13 @@ jobs:
           if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
             echo "$tag already exists"
           else
-            git tag -a "$tag" -m "bench-test $tag"
+            # REL-P2-002 / REL-P2-005: stamp the annotated tag (the release's
+            # title/body) with the version, commit SHA, branch and build date so a
+            # release can be tied back to an exact build.
+            msg=$(printf 'version=%s\ncommit=%s\nbranch=%s\nbuilt=%s\n' \
+              "${{ steps.ver.outputs.next }}" "${{ github.sha }}" \
+              "${{ github.ref_name }}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+            git tag -a "$tag" -m "bench-test $tag" -m "$msg"
             git push origin "$tag"
             echo "tagged $tag"
           fi
@@ -118,4 +124,5 @@ jobs:
       - name: Summary
         run: |
           echo "### bench-test ${{ steps.ver.outputs.next }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Version: \`${{ steps.ver.outputs.next }}\` · Commit: \`${{ github.sha }}\` · Branch: \`${{ github.ref_name }}\` · Built: $(date -u +%Y-%m-%dT%H:%M:%SZ) (UTC)" >> "$GITHUB_STEP_SUMMARY"
           echo "Builds between releases report \`<release>+<n>.<commit>\`; this tag is the release." >> "$GITHUB_STEP_SUMMARY"

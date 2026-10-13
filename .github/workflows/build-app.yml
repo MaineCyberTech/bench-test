@@ -43,6 +43,14 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
+          # PERF-P2-003: reuse the pip download cache between runs instead of
+          # re-fetching pyinstaller / windows-curses every build. There is no
+          # lockfile yet (SBOM-P2-001), so key the cache on the build script and
+          # this workflow (the inputs that decide what gets installed).
+          cache: pip
+          cache-dependency-path: |
+            packaging/build_app.py
+            .github/workflows/build-app.yml
 
       - name: Install build deps
         shell: bash
@@ -86,6 +94,27 @@ jobs:
           PY
           ls -lh bench-app-${{ matrix.label }}.zip
 
+      - name: Smoke-verify bundles (TEST-P2-001)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # TEST-P2-001: a published bundle must actually run. Launch each packaged
+          # binary's argument parser (--help exits before curses/tkinter start) and
+          # assert the bundle carries its toolkit + version stamp, so a broken
+          # freeze fails the job before anything is attached to a release.
+          exe=""
+          if [ "${{ matrix.label }}" = "windows" ]; then exe=".exe"; fi
+          for app in bench-tui bench-gui bench-agent; do
+            bin="dist/$app/$app$exe"
+            [ -f "$bin" ] || { echo "::error::missing bundle binary: $bin"; exit 1; }
+            [ -d "dist/$app/bench" ] || { echo "::error::$app is missing its bundled toolkit"; exit 1; }
+            [ -f "dist/$app/VERSION" ] || { echo "::error::$app is missing its VERSION stamp"; exit 1; }
+            if ! "$bin" --help >/dev/null 2>&1; then
+              echo "::error::$app --help failed - the bundle does not run"; exit 1
+            fi
+            echo "smoke ok: $app"
+          done
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bench-app-${{ matrix.label }}
@@ -101,9 +130,16 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - name: Read version
+      - name: Read release metadata
         id: ver
-        run: echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          # REL-P2-002 / REL-P2-005: bind the release to a build - the version,
+          # full commit SHA, branch and build date all go into the title/body.
+          echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
+          echo "sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "sha7=$(printf '%s' '${{ github.sha }}' | cut -c1-7)" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
@@ -111,13 +147,16 @@ jobs:
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: app-${{ github.run_number }}
-          name: "App bundles v${{ steps.ver.outputs.version }} #${{ github.run_number }}"
+          name: "App bundles v${{ steps.ver.outputs.version }} #${{ github.run_number }} (${{ steps.ver.outputs.sha7 }})"
           files: dist/*.zip
           make_latest: false
           body: |
             bench-test v${{ steps.ver.outputs.version }} standalone app bundles (PyInstaller) — run the GUI/TUI/agent
             without installing Python.
-            Built from commit `${{ github.sha }}` on `${{ github.ref_name }}`.
+            - **Version:** `${{ steps.ver.outputs.version }}` (VERSION)
+            - **Commit:** `${{ steps.ver.outputs.sha }}`
+            - **Branch:** `${{ github.ref_name }}`
+            - **Built:** ${{ steps.ver.outputs.date }} (UTC)
             - `bench-app-windows.zip` · `bench-app-linux.zip`
             Unzip, then run `bench-gui`, `bench-tui` or `bench-agent`.
             Connecting to a control plane needs no other install; running a local

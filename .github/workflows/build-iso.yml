@@ -67,7 +67,39 @@ jobs:
 
       - name: Read version
         id: ver
-        run: echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          # REL-P2-002 / REL-P2-005: also record the commit + build date so the
+          # published ISO can be tied back to an exact build.
+          echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
+          echo "sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "sha7=$(printf '%s' '${{ github.sha }}' | cut -c1-7)" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache ISO build downloads + toolkit venv (PERF-P2-003)
+        # PERF-P2-003: the ISO build re-downloads pacman packages + the multi-GB
+        # CUDA torch wheels and rebuilds the venv every run. Cache only the build
+        # *inputs* (pip download cache + the provisioned venv) - never the build
+        # outputs (live/out-* / *.iso) - so a cache hit cannot change the produced
+        # image. live/ci-build.sh routes state to the roomiest of
+        # /var/tmp /mnt $HOME /tmp, so cover every candidate. The key is pinned to
+        # the GPU variant and the Arch package sets (the closest thing to a
+        # lockfile; see SBOM-P2-001).
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/pip
+            /var/tmp/bench-ci/pip
+            /mnt/bench-ci/pip
+            /tmp/bench-ci/pip
+            ~/bench-ci/pip
+            /var/tmp/bench-ci/venv
+            /mnt/bench-ci/venv
+            /tmp/bench-ci/venv
+            ~/bench-ci/venv
+          key: iso-${{ runner.os }}-${{ inputs.gpu || 'nvidia-legacy' }}-${{ hashFiles('live/packages.x86_64', 'live/packages-*.x86_64', '.github/workflows/build-iso.yml') }}
+          restore-keys: |
+            iso-${{ runner.os }}-${{ inputs.gpu || 'nvidia-legacy' }}-
 
       - name: Install upload credentials (optional secret)
         run: |
@@ -99,7 +131,37 @@ jobs:
           df -BG --output=avail /var/tmp | tail -1
           python3 --version
 
+      - name: Pin the build container image by digest (CTR-P2-002)
+        # CTR-P2-002: the ISO build runs inside `archlinux:latest` (in
+        # live/ci-build.sh, which is outside this wave's file scope). Pre-pull that
+        # image by digest and retag it locally as `archlinux:latest`, so the build
+        # runs exactly the pinned image instead of whatever the mutable tag points
+        # at. Native Arch runners build without a container and are unaffected.
+        run: |
+          set -euo pipefail
+          if [ -f /etc/arch-release ] && command -v pacman >/dev/null 2>&1; then
+            echo "native Arch runner - the build does not use a container"
+            exit 0
+          fi
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "no docker on this runner - nothing to pin"
+            exit 0
+          fi
+          img="archlinux@sha256:3c64b538588416593f69a1aebd2f2ec0f2541b29159f32556fa7def2167147a0"
+          docker pull "$img"
+          docker tag "$img" archlinux:latest
+          docker image inspect --format 'pinned {{index .RepoDigests 0}}' archlinux:latest
+
       - name: Build ISO (${{ inputs.gpu }})
+        # CTR-P2-001: on a non-Arch runner this delegates to live/ci-build.sh, which
+        # runs the build inside `docker run --privileged` with the checkout
+        # bind-mounted read-write. That script is outside this wave's file scope, so
+        # the posture cannot be changed from here and is documented instead. The
+        # privileges are required because mkarchiso mounts loop devices / overlayfs
+        # and pacstraps as root, and the container writes the .venv + live/out-<gpu>
+        # symlinks back into the checkout; the image is now digest-pinned (above).
+        # Treat this job as privileged: run it only on a dedicated/disposable runner
+        # and keep its secret surface limited to BENCH_UPLOAD_CONF / BENCH_AGENT_CONF.
         run: |
           set -euo pipefail
           bash live/ci-build.sh ${{ inputs.gpu || 'nvidia-legacy' }} ${{ inputs.compression || 'zstd' }}
@@ -112,7 +174,11 @@ jobs:
           # record the bare filename (no dist/ prefix): the documented reassembly
           # happens in a download dir and `sha256sum -c SHA256SUMS` must find it
           (cd dist && sha256sum *.iso > SHA256SUMS)
-          cp VERSION dist/bench-version.txt
+          # REL-P2-002 / REL-P2-005: bench-version.txt ties the release to a build
+          printf 'version=%s\ncommit=%s\nref=%s\nbuilt=%s\n' \
+            "$(tr -d '[:space:]' < VERSION)" \
+            "${{ github.sha }}" "${{ github.ref_name }}" \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > dist/bench-version.txt
           du -h dist/*.iso
           # GitHub release assets are capped at 2 GiB; ship <2GiB parts
           split -b 1900M "dist/bench-live-${{ inputs.gpu || 'nvidia-legacy' }}.iso" "dist/bench-live-${{ inputs.gpu || 'nvidia-legacy' }}.iso.part."
@@ -123,12 +189,26 @@ jobs:
             sha256sum -c SHA256SUMS
           EOF
 
+      - name: Smoke-verify ISO (TEST-P2-001)
+        run: |
+          set -euo pipefail
+          # TEST-P2-001: verify the built image before publishing it. The ISO was
+          # split into <2 GiB parts for the release, so reassemble it, assert it is
+          # non-trivially sized, and confirm SHA256SUMS still matches.
+          iso="dist/bench-live-${{ inputs.gpu || 'nvidia-legacy' }}.iso"
+          cat "$iso".part.* > "$iso"
+          size=$(stat -c %s "$iso")
+          [ "$size" -gt 104857600 ] || { echo "::error::ISO is suspiciously small ($size bytes)"; exit 1; }
+          sha256sum -c dist/SHA256SUMS
+          echo "smoke ok: $iso ($size bytes) matches SHA256SUMS"
+          rm -f "$iso"
+
       - name: Attach to release
         if: ${{ inputs.upload_release == '' || inputs.upload_release }}
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: iso-${{ inputs.gpu || 'nvidia-legacy' }}-${{ github.run_number }}
-          name: "ISO ${{ inputs.gpu || 'nvidia-legacy' }} v${{ steps.ver.outputs.version }} #${{ github.run_number }}"
+          name: "ISO ${{ inputs.gpu || 'nvidia-legacy' }} v${{ steps.ver.outputs.version }} #${{ github.run_number }} (${{ steps.ver.outputs.sha7 }})"
           files: |
             dist/bench-live-${{ inputs.gpu || 'nvidia-legacy' }}.iso.part.*
             dist/SHA256SUMS
@@ -137,7 +217,11 @@ jobs:
           make_latest: false
           body: |
             bench-test **v${{ steps.ver.outputs.version }}** live ISO — self-hosted build of the `${{ inputs.gpu || 'nvidia-legacy' }}` variant (run ${{ github.run_number }}, ${{ inputs.compression || 'zstd' }} squashfs).
-            Built from commit `${{ github.sha }}` on `${{ github.ref_name }}` — the tag's run number does **not** map to a commit, so check this before flashing.
+            - **Version:** `${{ steps.ver.outputs.version }}` (VERSION)
+            - **Commit:** `${{ steps.ver.outputs.sha }}`
+            - **Branch:** `${{ github.ref_name }}`
+            - **Built:** ${{ steps.ver.outputs.date }} (UTC)
+            The tag's run number alone does **not** map to a commit - use the commit above (also in `bench-version.txt`) to tie this build to a source revision.
             Assets are <2 GiB parts (GitHub's release asset cap):
             `cat bench-live-${{ inputs.gpu }}.iso.part.* > bench-live-${{ inputs.gpu }}.iso && sha256sum -c SHA256SUMS`
             then flash with `sudo dd if=bench-live-${{ inputs.gpu }}.iso of=/dev/sdX bs=4M conv=fsync status=progress`.
