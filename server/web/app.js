@@ -114,9 +114,9 @@ const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmt = (v, d = 1) => (v == null || isNaN(v)) ? "—" : (+v).toFixed(d);
-const dur = (s) => s == null ? "—" : (s < 60 ? s.toFixed(0) + "s"
-  : s < 3600 ? Math.floor(s / 60) + "m" + Math.round(s % 60) + "s"
-  : Math.floor(s / 3600) + "h" + Math.round((s % 3600) / 60) + "m");
+const dur = (s) => s == null ? "-" : (s < 60 ? s.toFixed(0) + "s"
+  : s < 3600 ? Math.floor(s / 60) + "m" + String(Math.round(s % 60)).padStart(2, "0") + "s"
+  : Math.floor(s / 3600) + "h" + String(Math.round((s % 3600) / 60)).padStart(2, "0") + "m");
 const ago = (t) => { if (!t) return "—"; const d = Date.now() / 1000 - t;
   return d < 60 ? Math.round(d) + "s ago" : d < 3600 ? Math.round(d / 60) + "m ago" : Math.round(d / 3600) + "h ago"; };
 const ts = (t) => t ? new Date(t * 1000).toLocaleString() : "—";
@@ -694,7 +694,14 @@ function paintFocusSpecs(el, r) {
     ["toolkit", rr.toolkit_commit ? rr.toolkit_commit + " (" + (rr.toolkit_mode || "?") + ")" : null],
     ["tk ver", (rr.capabilities && rr.capabilities.toolkit && rr.capabilities.toolkit.version) || null],
     ["started", r.started ? ts(r.started) : null],
-    ["peak", (r.latest && r.latest.temp_c != null) ? fmt(r.latest.temp_c, 0) + " °C" : null],
+    ["peak", (() => {
+      // the true peak of this run's samples, not the newest one: r.latest is a
+      // single row, so calling it "peak" disagreed with the details panel
+      const rows = TEL[r.id] || [];
+      let mx = null;
+      for (const x of rows) if (x.temp_c != null && (mx == null || x.temp_c > mx)) mx = x.temp_c;
+      return mx != null ? fmt(mx, 0) + " °C" : null;
+    })()],
   ].filter((x) => x[1] != null && x[1] !== "");
   const tb = el.querySelector("[data-f=specs]");
   if (tb) tb.innerHTML = rows.map(([k, val]) =>
@@ -1813,7 +1820,12 @@ window.addEventListener("resize", () => { renderActive(); renderFocus(); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && FOCUS) closeFocus(); });
 
 /* ---------------------------------------------------------------- boot -- */
-if (!TOKEN) askToken(); else { connect(); refresh(); }
+/* Connect first and only prompt on a real 401: benchd can run with no token at
+   all (open mode), and the old code refused to load until one was saved - leaving
+   a blank page. The modal is also guarded so a wrong token cannot rebuild it while
+   the operator is typing. */
+connect();
+refresh();
 setInterval(() => {
   if (STATE.active.length) { const st = _scrollState(); renderActive(); _restoreScroll(st); }
   if (FOCUS) renderFocus();

@@ -30,8 +30,24 @@ elif [ -f /mnt/benchdata/bench-agent.conf ]; then
 fi
 
 if [ -n "$conf" ]; then
-    # shellcheck disable=SC1090
-    set -a; . "$conf"; set +a
+    # Parse the known keys instead of sourcing the file. BENCHDATA is a FAT
+    # partition that anyone holding the stick can write, and this runs as root at
+    # boot: `.` on it would execute whatever it contains, and would also let it
+    # rewrite PATH/LD_PRELOAD. Only these keys are honoured; everything else is
+    # ignored.
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in \#*|"") continue ;; esac
+        key=${line%%=*}
+        case "$key" in
+            BENCHD_SERVER|BENCHD_TOKEN|BENCHD_INSECURE|BENCH_AGENT_NAME|BENCH_AGENT_INSTANCE)
+                # FAT files carry CRLF; values may be quoted
+                val=$(printf '%s' "${line#*=}" | tr -d '\r' \
+                      | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")
+                export "$key=$val"
+                ;;
+            *) : ;;
+        esac
+    done < "$conf"
     echo "[bench] control-plane config: $conf -> ${BENCHD_SERVER:-?}"
 else
     echo "[bench] no control-plane config (drop bench-agent.conf on BENCHDATA or bake /etc/bench-agent.conf)"

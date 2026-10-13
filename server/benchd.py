@@ -49,6 +49,11 @@ PROTOCOL = 1
 WEB_DIR = os.path.join(HERE, "web")
 DEFAULT_DB = os.path.join(HERE, "data", "benchd.sqlite")
 
+# A request body larger than this is refused before it is read, so a declared-but-
+# never-sent Content-Length cannot pin a handler thread and its memory. Artifacts
+# (telemetry CSV, sensors dump, a screenshot) post separately and fit comfortably.
+MAX_BODY = 24 * 1024 * 1024
+
 SAMPLE_FIELDS = ["elapsed", "temp_c", "fan_pct", "power_w", "gpu_util",
                  "gpu_fan_rpm", "cpu_util", "ram_used", "sm_mhz", "mem_used"]
 
@@ -80,7 +85,7 @@ METRICS = [
     ("disk_seqwrite_mbps", "Disk seq write (MB/s)"),
     ("net.download_mbps", "Network download (Mbps)"),
     ("net.upload_mbps", "Network upload (Mbps)"),
-    ("gpu_soak_telemetry.temp_c.1", "GPU soak peak temp (C)"),
+    ("gpu_soak_telemetry.temp_c.2", "GPU soak peak temp (C)"),
     ("fullsoak.result.verdict.clean", "Full-system soak clean (0/1)"),
 ]
 
@@ -510,7 +515,14 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         if getattr(self.server, "quiet", False):
             return
-        print("[benchd] %s %s" % (time.strftime("%H:%M:%S"), fmt % args), flush=True)
+        # never log the query string: the web app passes the operator token as
+        # ?token= for SSE, and that would land in journald and any proxy log
+        try:
+            msg = fmt % args
+        except Exception:
+            msg = str(fmt)
+        msg = re.sub(r"(token=)[^&\s\"']+", r"\1REDACTED", msg)
+        print("[benchd] %s %s" % (time.strftime("%H:%M:%S"), msg), flush=True)
 
     def _send(self, code, obj=None, raw=None, ctype="application/json", headers=None):
         body = raw if raw is not None else json.dumps(obj).encode()
@@ -537,6 +549,10 @@ class Handler(BaseHTTPRequestHandler):
             n = 0
         if n <= 0:
             return {}
+        # a declared-but-huge body used to be read in full, so an authenticated
+        # client could pin a thread and its memory with one request
+        if n > MAX_BODY:
+            raise ValueError("body too large (%d > %d)" % (n, MAX_BODY))
         try:
             return json.loads(self.rfile.read(n).decode() or "{}")
         except Exception:
@@ -557,7 +573,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.token is None:
             return True
         b = self._bearer()
-        if b and b == self.token:
+        if b and secrets.compare_digest(b, self.token):
             return True
         if q and q.get("token", [None])[0] == self.token:
             return True
@@ -1156,7 +1172,20 @@ class Handler(BaseHTTPRequestHandler):
         existing = None
         if rid:
             existing = S.one("SELECT * FROM runners WHERE id=?", (rid,))
-            if existing and key and existing["api_key"] != key:
+            # ownership may be proved by the body's api_key or by the bearer that
+            # authenticated this request; either must match THIS row's key
+            proof = key or self._bearer()
+            if existing and not (proof and secrets.compare_digest(str(proof), str(existing["api_key"]))) \
+                    and not self._is_operator():
+                # An explicit runner_id is only honoured by its own key or an
+                # operator. Any valid runner bearer passes the POST gate, so
+                # accepting it blind let one runner take over another's row - and
+                # the response then handed it that runner's api_key. Adoption by
+                # machine_id below is unaffected (that is how a live stick with no
+                # persisted config reclaims its own row).
+                existing = None
+                rid = None
+            elif existing and key and existing["api_key"] != key:
                 existing = None  # stale/wrong key -> treat as new
         if not existing and mid:
             # Stable identity: adopt the row this machine already owns for this
@@ -1226,8 +1255,15 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/", ""):
             path = "/index.html"
         rel = path.lstrip("/")
-        full = os.path.normpath(os.path.join(self.web_dir, rel))
-        if not full.startswith(os.path.normpath(self.web_dir)) or not os.path.isfile(full):
+        root = os.path.normpath(self.web_dir)
+        full = os.path.normpath(os.path.join(root, rel))
+        # a raw prefix test let a sibling directory whose name merely starts with
+        # "web" through ("/../webX/secret" normalised inside it); compare real paths
+        try:
+            inside = os.path.commonpath([full, root]) == root
+        except ValueError:
+            inside = False
+        if not inside or not os.path.isfile(full):
             return self._err(404, "not found")
         ctype = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
                  ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml",

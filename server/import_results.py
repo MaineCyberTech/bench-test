@@ -296,8 +296,10 @@ def build_windows(root, man, host, started, m, window_end):
     summary["driver"] = system.get("driver")
     if tele:
         def col(name):
-            i = SAMPLE_FIELDS.index(name)
-            vals = [r[i] for r in tele if i < len(r) and r[i] is not None]
+            # read_telemetry returns a list of DICTS, not positional rows: indexing
+            # one by number raised KeyError and aborted the whole import on any
+            # Windows session that had telemetry in the window
+            vals = [r.get(name) for r in tele if r.get(name) is not None]
             return [min(vals), round(sum(vals) / len(vals), 1), max(vals)] if vals else None
         summary["telemetry"] = {"samples": len(tele), "duration_s": round(ended - started, 1),
                                 "temp_c": col("temp_c"), "fan_pct": col("fan_pct"),

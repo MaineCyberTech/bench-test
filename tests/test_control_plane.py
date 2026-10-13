@@ -1,11 +1,12 @@
 """Control-plane (benchd) API tests: auth, runners, runs, telemetry, logs,
 artifacts, stats, commands, schedules, delete, reaper, SSE."""
 import json
+import os
 import sys
 import time
 import urllib.request
 
-from harness import Checker, Server, TOKEN
+from harness import Checker, Server, TOKEN, REPO, BENCH
 
 
 def run():
@@ -41,6 +42,30 @@ def run():
     c.check("machine_id dedupes a re-registering runner",
             m1.get("runner_id") == m2.get("runner_id") and m1.get("api_key") == m2.get("api_key"),
             (m1, m2))
+
+    # a runner must not be able to take over another runner's row by naming its id:
+    # any valid runner key passes the POST gate, and the response used to hand back
+    # that runner's api_key
+    st, victim = cl.call("POST", "/api/v1/register",
+                         {"name": "victim", "os": "Linux", "kind": "agent",
+                          "machine_id": "dmi-victim"})
+    st, attacker = cl.call("POST", "/api/v1/register",
+                           {"name": "attacker", "os": "Linux", "kind": "agent",
+                            "machine_id": "dmi-attacker"})
+    st, steal = cl.call("POST", "/api/v1/register",
+                        {"name": "attacker", "os": "Linux", "kind": "agent",
+                         "runner_id": victim.get("runner_id")}, token=attacker.get("api_key"))
+    c.check("a runner cannot claim another runner's id and get its key",
+            steal.get("api_key") != victim.get("api_key"), steal)
+    c.check("the takeover attempt does not reuse the victim's row",
+            steal.get("runner_id") != victim.get("runner_id"), steal)
+    # ...while the owner still can, and keeps its key
+    st, again = cl.call("POST", "/api/v1/register",
+                        {"name": "victim", "os": "Linux", "kind": "agent",
+                         "runner_id": victim.get("runner_id")}, token=victim.get("api_key"))
+    c.check("the owner can re-register and keeps its key",
+            again.get("runner_id") == victim.get("runner_id")
+            and again.get("api_key") == victim.get("api_key"), again)
     st, m3 = cl.call("POST", "/api/v1/register",
                      {"name": "box", "os": "Linux", "kind": "gui", "machine_id": "dmi-abc123"})
     c.check("machine_id is scoped per kind", m3.get("runner_id") != m1.get("runner_id"), m3)
@@ -114,6 +139,17 @@ def run():
             by_el.get(5.0))
     c.check("mem_util is deliberately unbounded (drivers exceed 100)",
             by_el.get(4.0, {}).get("mem_util") == 180, by_el.get(4.0))
+
+    # the importer must read telemetry rows as dicts: indexing them positionally
+    # raised KeyError and aborted every Windows import with telemetry in the window
+    _imp = open(os.path.join(REPO, "server", "import_results.py"), encoding="utf-8").read()
+    c.check("the importer does not index telemetry rows positionally",
+            "vals = [r[i] for r in tele" not in _imp and "r.get(name) for r in tele" in _imp, "")
+    # static files must be contained by real path, not a raw string prefix
+    _bd = open(os.path.join(REPO, "server", "benchd.py"), encoding="utf-8").read()
+    c.check("static file serving uses a real containment check",
+            "os.path.commonpath([full, root]) == root" in _bd, "")
+    c.check("a body size cap exists", "MAX_BODY" in _bd, "")
 
     # ---- logs ----
     st, r = cl.call("POST", "/api/v1/runs/%s/log" % run_id,
