@@ -817,41 +817,131 @@ async function runCompare() {
 }
 
 /* ------------------------------------------------------------ charts ---- */
+/* Plot a set of series.
+ *
+ * opt.normalize -> each series is scaled to its own band. Telemetry charts mix
+ *   units (degC, W, %), and a single shared axis made everything but the largest
+ *   series look like a flat line at the bottom - the legend carries the numbers.
+ * opt.xTime    -> x is unix seconds (clock labels)
+ * opt.xElapsed -> x is seconds into the run (m:ss labels)
+ */
 function drawChart(cv, series, opt = {}) {
   const dpr = window.devicePixelRatio || 1;
   const h = +cv.getAttribute("height") || 180;   // fixed CSS height (never compound)
-  const w = cv.clientWidth;
+  const w = Math.max(140, cv.clientWidth || 300);
   cv.style.height = h + "px";
-  cv.width = Math.max(1, w * dpr); cv.height = h * dpr;
-  const g = cv.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
-  const pl = 52, pr = 18, pt = 18, pb = 28;
-  const x0 = pl, y0 = h - pb, x1 = w - pr, y1 = pt;
-  g.strokeStyle = "#232b37"; g.fillStyle = "#8592a6"; g.font = "11px monospace";
-  let maxY = 1, minY = 0, n = 0;
-  series.forEach((s) => s.points.forEach((p) => { maxY = Math.max(maxY, p.y); minY = Math.min(minY, p.y); n = Math.max(n, s.points.length); }));
-  maxY = niceMax(maxY);
-  for (let i = 0; i <= 4; i++) {
-    const y = y0 - (y0 - y1) * i / 4;
-    g.beginPath(); g.moveTo(x0, y); g.lineTo(x1, y); g.stroke();
-    g.fillText(String(Math.round(minY + (maxY - minY) * i / 4)), 8, y + 4);
-  }
-  if (!n) { g.fillText("no data", x0 + 8, pt + 12); return; }
-  const allX = [].concat(...series.map((s) => s.points.map((p) => p.x)));
-  const xmin = Math.min(...allX), xmax = Math.max(...allX);
-  const sx = (x) => x0 + (x1 - x0) * (xmax === xmin ? 0.5 : (x - xmin) / (xmax - xmin));
-  const sy = (y) => y0 - (y0 - y1) * ((y - minY) / (maxY - minY));
-  series.forEach((s) => {
-    if (s.points.length < 2) return;
-    g.strokeStyle = s.color; g.lineWidth = 2; g.beginPath();
-    s.points.forEach((p, i) => { const X = sx(p.x), Y = sy(p.y); i ? g.lineTo(X, Y) : g.moveTo(X, Y); });
-    g.stroke();
+  cv.width = Math.max(1, Math.round(w * dpr));
+  cv.height = Math.max(1, Math.round(h * dpr));
+  const g = cv.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+
+  const norm = !!opt.normalize;
+  const use = (series || []).filter((s) => s && s.points && s.points.length >= 2);
+  use.forEach((s) => {
+    const ys = s.points.map((p) => p.y);
+    s.min = Math.min.apply(null, ys);
+    s.max = Math.max.apply(null, ys);
+    s.last = ys[ys.length - 1];
+    let lo = s.min, hi = s.max;
+    if (hi - lo < 1e-9) { hi = lo + 1; }
+    const pad = (hi - lo) * 0.1;
+    s.lo = lo - pad; s.hi = hi + pad;
   });
-  if (opt.xTime && xmax > xmin) {
-    g.fillStyle = "#8592a6";
-    [xmin, (xmin + xmax) / 2, xmax].forEach((t) => g.fillText(new Date(t * 1000).toLocaleDateString(), sx(t) - 26, h - 8));
+
+  const pl = norm ? 32 : 46, pr = 12, pt = 10, pb = 24;
+  const x0 = pl, y0 = h - pb, x1 = w - pr, y1 = pt;
+
+  let lo = 0, hi = 1, ticks;
+  if (norm) {
+    ticks = [0, 1, 2, 3, 4];
+  } else {
+    hi = 0;
+    use.forEach((s) => { lo = Math.min(lo, s.min); hi = Math.max(hi, s.max); });
+    if (hi - lo < 1e-9) { hi = lo + 1; }
+    hi = niceMax(hi);
+    ticks = [0, 1, 2, 3, 4];
   }
-  cv._chart = { series, sx, xmin, xmax, opt };
+
+  g.font = "10px monospace";
+  ticks.forEach((i) => {
+    const y = Math.round(y0 - (y0 - y1) * i / 4) + 0.5;
+    g.strokeStyle = "#1c222c"; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(x0, y); g.lineTo(x1, y); g.stroke();
+    g.fillStyle = "#67717f";
+    g.fillText(norm ? (i * 25) + "%" : shortNum(lo + (hi - lo) * i / 4), 3, y + 3);
+  });
+  g.strokeStyle = "#2b3442";
+  g.beginPath(); g.moveTo(x0 + 0.5, y1); g.lineTo(x0 + 0.5, y0); g.stroke();
+
+  if (!use.length) {
+    g.fillStyle = "#67717f";
+    g.fillText("no data yet", x0 + 8, (y0 + y1) / 2 + 4);
+    cv._chart = { series: [], sx: () => x0, xmin: 0, xmax: 1, opt };
+    return;
+  }
+
+  const xs = [].concat.apply([], use.map((s) => s.points.map((p) => p.x)));
+  const xmin = Math.min.apply(null, xs), xmax = Math.max.apply(null, xs);
+  const sx = (x) => x0 + (x1 - x0) * (xmax === xmin ? 0.5 : (x - xmin) / (xmax - xmin));
+  const sy = (s, y) => {
+    const frac = norm ? (y - s.lo) / (s.hi - s.lo) : (y - lo) / (hi - lo);
+    return y0 - (y0 - y1) * Math.max(0, Math.min(1, frac));
+  };
+
+  use.forEach((s) => {
+    g.strokeStyle = s.color; g.lineWidth = 1.7; g.lineJoin = "round";
+    g.beginPath();
+    s.points.forEach((p, i) => {
+      const X = sx(p.x), Y = sy(s, p.y);
+      i ? g.lineTo(X, Y) : g.moveTo(X, Y);
+    });
+    g.stroke();
+    // mark the newest point so "now" is obvious
+    const last = s.points[s.points.length - 1];
+    g.fillStyle = s.color;
+    g.beginPath(); g.arc(sx(last.x), sy(s, last.y), 2.3, 0, 6.2832); g.fill();
+  });
+
+  g.fillStyle = "#67717f";
+  const lab = (x) => opt.xTime
+    ? new Date(x * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : fmtElapsed(x);
+  [[xmin, 0], [(xmin + xmax) / 2, 0.5], [xmax, 1]].forEach(([x, f]) => {
+    const t = lab(x), tw = g.measureText(t).width;
+    const tx = Math.max(x0, Math.min(x0 + (x1 - x0) * f - tw * f, x1 - tw));
+    g.fillText(t, tx, h - 7);
+  });
+
+  cv._chart = { series: use, sx, xmin, xmax, opt };
   attachHover(cv);
+}
+
+/* Legend for a telemetry chart: swatch, name, latest value, and the observed
+   range - the real numbers behind the normalised plot. */
+function chartLegendHTML(series) {
+  const use = (series || []).filter((s) => s && s.points && s.points.length >= 2);
+  if (!use.length) return "";
+  return use.map((s) => {
+    const ys = s.points.map((p) => p.y);
+    const mn = Math.min.apply(null, ys), mx = Math.max.apply(null, ys);
+    return `<span class="cl"><i style="background:${s.color}"></i>${esc(s.name)}
+      <b>${fmt(ys[ys.length - 1], 1)}</b><span class="muted">${fmt(mn, 0)}–${fmt(mx, 0)}</span></span>`;
+  }).join("");
+}
+
+function fmtElapsed(s) {
+  s = Math.max(0, Math.round(s || 0));
+  return s < 60 ? s + "s" : Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}
+
+function shortNum(v) {
+  const n = Math.abs(v || 0);
+  if (n >= 1e6) return (v / 1e6).toFixed(1) + "M";
+  if (n >= 1e4) return Math.round(v / 1e3) + "k";
+  if (n >= 100) return String(Math.round(v));
+  if (n >= 10) return String(Math.round(v * 10) / 10);
+  return String(Math.round(v * 100) / 100);
 }
 function tipEl() {
   let t = $("#charttip");

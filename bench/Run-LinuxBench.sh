@@ -244,8 +244,17 @@ if [ "$DO_GFX" = 1 ]; then
         # missing-RESOURCE_MANAGER display, and this is how we find out why
         MON="$(xrandr -display "$DISPLAY" --listmonitors 2>/dev/null | head -1)"
         RM="$(xprop -display "$DISPLAY" -root RESOURCE_MANAGER 2>/dev/null | head -1)"
-        [ -n "$MON" ] && case "$MON" in *"Monitors: 0"*) echo "    WARNING: $MON (FurMark's probe may crash; glmark2 fallback will run)" ;; esac
         [ -z "$RM" ] && echo "    WARNING: no RESOURCE_MANAGER on $DISPLAY"
+        # FurMark's X11 probe walks the monitor list and dies (SIGSEGV) on a
+        # display that reports none - a live box with no monitor attached. Detect
+        # that instead of burning the timeout on a core dump: glmark2 does not
+        # need a monitor (it just needs a GLX surface, which :9 has).
+        FM_RUN=1
+        case "$MON" in
+            *"Monitors: 0"*)
+                echo "    no monitor on $DISPLAY - skipping FurMark (its probe needs one), using glmark2"
+                FM_RUN=0 ;;
+        esac
         # diagnostic snapshot: uploaded with the run logs for gfx post-mortems
         {
             echo "display: $DISPLAY"
@@ -255,22 +264,31 @@ if [ "$DO_GFX" = 1 ]; then
             if command -v glxinfo >/dev/null 2>&1; then glxinfo -B 2>&1 | head -12; fi
         } > "$LOGDIR/gfx-diag.txt" 2>&1
         mkdir -p "$LOGDIR/furmark"
-        GFX_OUT="$(cd "$(dirname "$FM")" && timeout $((GFX_SECONDS * 2 + 120)) ./furmark --demo furmark-gl \
-            --width 1920 --height 1080 --benchmark --duration-ms "$((GFX_SECONDS * 1000))" \
-            --no-score-box --vsync 0 --log-gpu-data --gpu-monitor-print \
-            --export-dir "$LOGDIR/furmark" --hw-polling-interval 1000 2>&1)"; GFRC=$?
-        printf '%s\n' "$GFX_OUT" > "$LOGDIR/gfx-furmark.log"
-        printf '%s\n' "$GFX_OUT" | grep -a -v '^$' | sed 's/^/    /'
+        if [ "$FM_RUN" = 1 ]; then
+            GFX_OUT="$(cd "$(dirname "$FM")" && timeout $((GFX_SECONDS * 2 + 120)) ./furmark --demo furmark-gl \
+                --width 1920 --height 1080 --benchmark --duration-ms "$((GFX_SECONDS * 1000))" \
+                --no-score-box --vsync 0 --log-gpu-data --gpu-monitor-print \
+                --export-dir "$LOGDIR/furmark" --hw-polling-interval 1000 2>&1)"; GFRC=$?
+            printf '%s\n' "$GFX_OUT" > "$LOGDIR/gfx-furmark.log"
+            printf '%s\n' "$GFX_OUT" | grep -a -v '^$' | sed 's/^/    /'
+        else
+            GFRC=1
+            printf '{"group":"gfx","phase":"furmark","result":{"skipped":true,"reason":"no monitor on the X display"}}\n' >> "$JSONL"
+        fi
+        # glmark2's default is ~10s per scene (25 scenes ~= 4 min, which can run
+        # past the timeout and lose the final Score line). Scale the per-scene
+        # duration to the requested gfx seconds and keep the whole suite bounded.
+        GLD=$(( GFX_SECONDS / 10 )); [ "$GLD" -lt 1 ] && GLD=1; [ "$GLD" -gt 10 ] && GLD=10
         # if FurMark still dies, fall back to glmark2 so the gfx phase always
         # produces a score (glmark2 ships in the live image). Note: glmark2's -b
         # takes a benchmark NAME, so a bare "-b" is an error - run the default suite.
         if [ "$GFRC" -ne 0 ] && command -v glmark2 >/dev/null 2>&1; then
-            echo "    furmark failed (rc=$GFRC) - falling back to glmark2"
-            GM_OUT="$(timeout $((GFX_SECONDS * 2 + 180)) glmark2 2>&1)"; GMRC=$?
+            echo "    running glmark2 (per-scene ${GLD}s)"
+            GM_OUT="$(timeout $((GFX_SECONDS * 2 + 300)) glmark2 -d "$GLD" 2>&1)"; GMRC=$?
             printf '%s\n' "$GM_OUT" > "$LOGDIR/gfx-glmark2.log"
             printf '%s\n' "$GM_OUT" | grep -E "glmark2 Score|FPS:" | tail -3 | sed 's/^/    /'
             GSCORE="$(printf '%s\n' "$GM_OUT" | grep -oE "glmark2 Score: [0-9]+" | tail -1 | grep -oE "[0-9]+")"
-            printf '{"group":"gfx","phase":"glmark2","result":{"score":%s,"furmark_rc":%s}}\n' "${GSCORE:-0}" "$GFRC" >> "$JSONL"
+            printf '{"group":"gfx","phase":"glmark2","result":{"score":%s,"furmark_rc":%s,"per_scene_s":%s,"exit":%s}}\n' "${GSCORE:-0}" "$GFRC" "$GLD" "$GMRC" >> "$JSONL"
         fi
         # last resort: EGL/GLES off-screen, which needs no X output/CRTC (the
         # headless NVIDIA server has none, which is what kills the GL apps above)
