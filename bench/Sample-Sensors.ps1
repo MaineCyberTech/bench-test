@@ -161,8 +161,10 @@ while ($true) {
         $g_vtot = Pick $gpus 'SmallData' @('GPU Memory Total', 'D3D Dedicated Memory Total')
         $g_fan = Pick $gpus 'Fan' @('.')
         $g_fanp = Pick $gpus 'Control' @('GPU Fan', 'Fan')
-        # VRAM load: the library exposes it directly, else derive used/total
-        $g_memload = Pick $mems 'Load' @('Memory')
+        # VRAM load, derived from the GPU's own memory figures: the Memory hardware's
+        $g_memload = $null    # see the VRAM note below
+        # 'Memory' load is SYSTEM RAM, not VRAM, so using it here made AMD/Intel
+        # runs incomparable with NVIDIA (which gets true VRAM from nvidia-smi)
         if ($null -eq $g_memload -and $null -ne $g_vram -and $null -ne $g_vtot -and $g_vtot -gt 0) {
             $g_memload = 100.0 * $g_vram / $g_vtot
         }

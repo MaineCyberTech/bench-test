@@ -44,7 +44,7 @@ function Invoke-Phase($name, $extraArgs, $monitorSeconds) {
     $out | Where-Object { $_ -notmatch '^RESULT_JSON:' } | ForEach-Object { Write-Host "    $_" }
     $jl = $out | Where-Object { $_ -match '^RESULT_JSON:' } | Select-Object -Last 1
     $res = if ($jl) { ($jl -replace '^RESULT_JSON:', '') | ConvertFrom-Json } else { $null }
-    if ($mon) { $samples = Receive-Job $mon -Wait -ErrorAction SilentlyContinue; Remove-Job $mon -Force -ErrorAction SilentlyContinue }
+    if ($mon) { $samples = Stop-Job $mon -ErrorAction SilentlyContinue; Receive-Job $mon -Wait -ErrorAction SilentlyContinue; Remove-Job $mon -Force -ErrorAction SilentlyContinue }
     $tel = $null
     if ($samples.Count) {
         $m = $samples | Measure-Object freeMiB, cpu -Minimum -Maximum -Average

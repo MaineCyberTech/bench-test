@@ -51,6 +51,10 @@ def rapl_uj():
     for pat in ("/sys/class/powercap/intel-rapl*/energy_uj",
                 "/sys/class/powercap/amd-rapl*/energy_uj"):
         for p in glob.glob(pat):
+            # intel-rapl:0 is the package; intel-rapl:0:0/:1/:2 are its core /
+            # uncore / dram subzones and are already inside it
+            if os.path.basename(os.path.dirname(p)).count(":") > 1:
+                continue
             try:
                 tot += int(_read(p))
                 found = True
@@ -137,7 +141,11 @@ def disk_net_counters():
                 if len(p) < 14:
                     continue
                 name = p[2]
-                if name.startswith(("loop", "ram", "dm-", "sr")):
+                if name.startswith(("loop", "ram", "dm-", "sr", "zram")):
+                    continue
+                # a partition is already counted in its whole disk's figures,
+                # so adding both doubled the throughput on any partitioned disk
+                if os.path.exists("/sys/class/block/%s/partition" % name):
                     continue
                 rd += int(p[5]) * 512
                 wr += int(p[9]) * 512
@@ -342,8 +350,8 @@ def main():
             dt_io = max(0.001, now - prev_t)
             drd = round((io[0] - prev_io[0]) / 1e6 / dt_io, 1)
             dwr = round((io[1] - prev_io[1]) / 1e6 / dt_io, 1)
-            nrx = round((io[2] - prev_io[2]) * 8 / 1e6 / dt_io, 1)
-            ntx = round((io[3] - prev_io[3]) * 8 / 1e6 / dt_io, 1)
+            nrx = round((io[2] - prev_io[2]) / 1e6 / dt_io, 1)
+            ntx = round((io[3] - prev_io[3]) / 1e6 / dt_io, 1)
             prev_io, prev_t = io, now
             if now - slow_t >= a.slow_interval:
                 pkg, maxcore, maxfan = sensors_temps()

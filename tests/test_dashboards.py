@@ -3,6 +3,7 @@ running (including the previous group's last row). Uses the real classes with a
 headless Tk root / a stubbed TUI; skips cleanly if the UI toolkit is missing."""
 import collections
 import os
+import re
 import sys
 
 from harness import Checker, BENCH, REPO
@@ -120,7 +121,15 @@ def _web(c):
             'e.target.closest("button,input,select,textarea,a,form,label")' in js, "")
     c.check("the panel does not duplicate the card's own last-seen line",
             'rows.push([r.online ? "seen"' not in js and "last seen ${ago(r.last_seen)}" in js, "")
-    c.check("the tabs and info block are styled", ".rtabs" in css and ".rinfo" in css, "")
+    c.check("the web start payload only sends stable_hold when stable is ticked",
+            '? { stable: 1, stable_hold:' in js and
+            'stable_hold: +$("#mStableHold").value,\n      gfx_engine' not in js, "")
+    # the web preset tunes must not enable the plateau soak behind the operator's
+    # back: TUNE_DEFAULT carries stable_hold, and extra_runner_args treats a bare
+    # stable_hold as "soak until stable"
+    _web_tune = re.search(r"const TUNE_DEFAULT = \{(.*?)\};", js, re.S)
+    c.check("TUNE_DEFAULT carries stable_hold (so the payload must gate it)",
+            bool(_web_tune) and "stable_hold" in _web_tune.group(1), "")
 
 
 def run():

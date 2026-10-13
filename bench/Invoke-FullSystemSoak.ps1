@@ -60,7 +60,7 @@ foreach ($k in $jobs.Keys) {
     $results[$k] = if ($jl) { ($jl -replace '^RESULT_JSON:', '') | ConvertFrom-Json } else { @{ error = 'no result' } }
     Remove-Job $jobs[$k] -Force -ErrorAction SilentlyContinue
 }
-$s = Receive-Job $mon -Wait -ErrorAction SilentlyContinue; Remove-Job $mon -Force -ErrorAction SilentlyContinue
+$s = Stop-Job $mon -ErrorAction SilentlyContinue; Receive-Job $mon -Wait -ErrorAction SilentlyContinue; Remove-Job $mon -Force -ErrorAction SilentlyContinue
 $m = $s | Measure-Object gpu, temp, power, sm, fan, cpu, freeMiB -Average -Maximum
 $stat = @{}
 foreach ($p in 'gpu', 'temp', 'power', 'sm', 'fan', 'cpu', 'freeMiB') {

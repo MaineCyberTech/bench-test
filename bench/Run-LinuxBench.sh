@@ -443,7 +443,7 @@ if [ "$DO_FULLSOAK" = 1 ]; then
     "$PY" "$BENCH/ram_bench.py" soak --size-mb "$RAM_SIZE_MB" --fill-pct "$FILL_PCT" --passes "$PASSES" --force --seconds "$FULLSOAK_SECONDS" >"$D/ram.out" 2>&1 &
     RPID=$!
     if [ "$DO_DISK" = 1 ]; then
-        "$PY" "$BENCH/disk_bench.py" seqwrite --path "$DISK_PATH" --size-mb "$DISK_SIZE_MB" --seconds "$FULLSOAK_SECONDS" --force >"$D/disk.out" 2>&1 &
+        "$PY" "$BENCH/disk_bench.py" soak --path "$DISK_PATH" --size-mb "$DISK_SIZE_MB" --seconds "$FULLSOAK_SECONDS" --force >"$D/disk.out" 2>&1 &
         DPID=$!
     else
         echo "    [info] fullsoak: disk skipped (no internal disk)"

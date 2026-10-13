@@ -56,7 +56,7 @@ $out | ForEach-Object { $_ | Add-Content $log }
 $resultLine = ($out | Where-Object { $_ -match '^RESULT_JSON:' } | Select-Object -Last 1)
 $soak = if ($resultLine) { ($resultLine -replace '^RESULT_JSON:', '') | ConvertFrom-Json } else { $null }
 
-$s = Receive-Job $mon -Wait -ErrorAction SilentlyContinue; Remove-Job $mon -Force -ErrorAction SilentlyContinue
+$s = Stop-Job $mon -ErrorAction SilentlyContinue; Receive-Job $mon -Wait -ErrorAction SilentlyContinue; Remove-Job $mon -Force -ErrorAction SilentlyContinue
 $m = $s | Measure-Object util, temp, power, sm, mem, fan -Minimum -Maximum -Average
 $stat = @{}
 foreach ($p in 'util', 'temp', 'power', 'sm', 'mem', 'fan') {

@@ -64,7 +64,7 @@ function Invoke-Phase($name, $extraArgs, $telemetrySeconds) {
     $out | Where-Object { $_ -notmatch '^RESULT_JSON:' -and $_ -notmatch '^\[backend\]' } | ForEach-Object { Write-Host "    $_" }
     $jsonLine = $out | Where-Object { $_ -match '^RESULT_JSON:' } | Select-Object -Last 1
     $result = if ($jsonLine) { ($jsonLine -replace '^RESULT_JSON:', '') | ConvertFrom-Json } else { $null }
-    if ($mon) { $samples = Receive-Job $mon -Wait -ErrorAction SilentlyContinue; Remove-Job $mon -Force -ErrorAction SilentlyContinue }
+    if ($mon) { $samples = Stop-Job $mon -ErrorAction SilentlyContinue; Receive-Job $mon -Wait -ErrorAction SilentlyContinue; Remove-Job $mon -Force -ErrorAction SilentlyContinue }
     return [pscustomobject]@{ phase = $name; result = $result; telemetry = (Get-TelemetryStats $samples) }
 }
 

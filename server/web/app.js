@@ -1330,7 +1330,12 @@ async function startRun(runnerId) {
       disk_size_mb: +$("#mDiskSize").value,
       cpu_size: +$("#mCpuSize").value, ram_size_mb: +$("#mRamSize").value,
       passes: +$("#mPasses").value, steady_gb: +$("#mSteady").value,
-      stable: $("#mStable").checked ? 1 : 0, stable_hold: +$("#mStableHold").value,
+      // stable_hold alone means "soak until stable" to extra_runner_args, and
+      // TUNE_DEFAULT carries one - so sending it unconditionally made every
+      // web-started run plateau-soak, unlike the same preset in the GUI/TUI
+      ...($("#mStable").checked
+        ? { stable: 1, stable_hold: +$("#mStableHold").value }
+        : { stable: 0 }),
       gfx_engine: $("#mGfxEngine").value,
     };
     closeModal();

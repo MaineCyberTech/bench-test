@@ -57,7 +57,7 @@ $cpuJob = Start-Job { param($b, $n, $t) & python $b soak --size $n --seconds $t 
 
 $gpuOut = Receive-Job $gpuJob -Wait -ErrorAction SilentlyContinue; Remove-Job $gpuJob -Force -ErrorAction SilentlyContinue
 $cpuOut = Receive-Job $cpuJob -Wait -ErrorAction SilentlyContinue; Remove-Job $cpuJob -Force -ErrorAction SilentlyContinue
-$samples = Receive-Job $mon -Wait -ErrorAction SilentlyContinue; Remove-Job $mon -Force -ErrorAction SilentlyContinue
+$samples = Stop-Job $mon -ErrorAction SilentlyContinue; Receive-Job $mon -Wait -ErrorAction SilentlyContinue; Remove-Job $mon -Force -ErrorAction SilentlyContinue
 
 $gpuOut | Where-Object { $_ -notmatch '^RESULT_JSON:' } | ForEach-Object { Write-Host "  [gpu] $_" }
 $cpuOut | Where-Object { $_ -notmatch '^RESULT_JSON:' } | ForEach-Object { Write-Host "  [cpu] $_" }

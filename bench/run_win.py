@@ -413,8 +413,8 @@ def sampler(csv_path, stop_evt, interval=0.25, gpu_interval=0.5):
                         row += [None, None]
                     if nio and prev.get("nio"):
                         dt = max(0.001, now - prev["t"])
-                        row += [round((nio.bytes_recv - prev["nio"].bytes_recv) * 8 / 1e6 / dt, 1),
-                                round((nio.bytes_sent - prev["nio"].bytes_sent) * 8 / 1e6 / dt, 1)]
+                        row += [round((nio.bytes_recv - prev["nio"].bytes_recv) / 1e6 / dt, 1),
+                                round((nio.bytes_sent - prev["nio"].bytes_sent) / 1e6 / dt, 1)]
                     else:
                         row += [None, None]
                     prev = {"dio": dio, "nio": nio, "t": now}

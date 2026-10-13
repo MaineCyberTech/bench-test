@@ -10,7 +10,7 @@ ram 512 MiB · 1 pass · 2 GB steady write · soak-until-stable).
 
 | Machine | OS | Total | Notes |
 |---|---|---|---|
-| `bench-live` (live USB) — i7-3770, 16 GiB, GTX 1080 | Arch live | **~11.5 min** (691 s) | `disk` skipped (no internal volume mounted) |
+| `bench-live` (live USB) — i7-3770, 16 GiB, GTX 1080 | Arch live | **~14.1 min** (845 s) | `disk` skipped (no internal volume mounted) |
 | `DESKTOP-PL8A1V6` — i7-6800K, 32 GiB, RTX 4070 Ti SUPER | Windows 11 | **~26 min** (1561 s) | slow system disk dominates |
 
 The same preset is comfortably inside the 15-minute target on the live stick and
