@@ -234,7 +234,15 @@ pct exec 108 -- systemctl mask tmp.mount run-lock.mount dev-mqueue.mount
   `anonymous`; the shared operator token is one identity, so per-user attribution
   still needs per-user accounts (see Roadmap).
 - A write request whose body is not a JSON object is rejected with
-  `400 {"error":"invalid json"}` instead of being treated as `{}`.
+  `400 {"error":"invalid json"}` instead of being treated as `{}`. Any other
+  malformed client input (a non-list `samples`, a non-string `kind`, an object
+  where a string is expected, ...) is likewise a generic `400 {"error":"invalid
+  request"}` — never a `500`, and never the internal exception type or message.
+  A request that declares a body it never sends is cut off by a per-connection
+  socket timeout rather than pinning a handler thread.
+- An attached artifact's `sha256` is **recomputed from the bytes received** and
+  verified on upload; a mismatch is a `400` and the digest the server stores (and
+  serves) is its own recomputation, not the client's claim.
 - Put a TLS reverse proxy in front if it is ever exposed beyond the lab.
 - `server/benchd.conf`, `server/data/` and `~/.config/bench-agent.json` are
   git-ignored — never commit the token, keys or the database.
@@ -279,7 +287,15 @@ pct exec 108 -- systemctl mask tmp.mount run-lock.mount dev-mqueue.mount
 - A long job is never mistaken for a dropped one: the stale-command reaper gives
   `iso_fetch` a 3 h budget, `iso_write`/`iso_write_slot` an hour,
   `update_toolkit` 15 min and `exec` its own payload timeout, against 120 s for
-  start/stop and friends.
+  start/stop and friends. The queue is at-most-once (a fetched command is marked
+  `sent`), so a fetched-but-unacked command is **re-queued once** (its `attempts`
+  is bumped and it is delivered again); a second timeout marks it `expired`.
+  `/metrics` exposes the queued depth (`benchd_command_queue_depth`) and the
+  expired count (`benchd_commands_expired_total`).
+- A late `/finish` (after the reaper already failed the run, or a duplicate
+  finish) is refused with `409` instead of overwriting the closed run. Static
+  dashboard assets are served with `ETag`/`Last-Modified` and a short
+  `max-age`; the API stays `Cache-Control: no-store`.
 - SQLite uses WAL; a run at 4 Hz writes ~4.5 MB per 15 minutes. The scheduler sweeps
   the per-sample tables (telemetry/logs/events) of **finished** runs older than
   `BENCHD_RETENTION_DAYS` (default 30 days, `0` keeps everything) once an hour; the
@@ -295,9 +311,11 @@ python tests/run_all.py          # RESULT: PASS expected
 
 Stdlib only; each module starts an in-process `benchd` on an ephemeral port. It
 covers the API (auth, per-runner keys, runs/phases/telemetry/logs/artifacts/stats,
-commands, schedules, delete, reaper, SSE), the reporting client (Reporter,
-PhaseTracker, ReporterPump, exec, inventory/summary builders), preset parity
-across GUI/TUI/web, and the dashboard phase-table logic.
+commands, schedules, delete, reaper, SSE), control-plane P3 hardening (malformed
+input → generic 4xx, the late-finish guard, command re-queue/expiry, artifact
+sha256 verification, hot-path indexes, static-asset caching), the reporting client
+(Reporter, PhaseTracker, ReporterPump, exec, inventory/summary builders), preset
+parity across GUI/TUI/web, and the dashboard phase-table logic.
 
 ## Measured phase durations
 

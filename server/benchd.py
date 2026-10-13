@@ -43,6 +43,7 @@ import os
 import queue
 import re
 import secrets
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -70,6 +71,12 @@ DEFAULT_DB = os.path.join(HERE, "data", "benchd.sqlite")
 # never-sent Content-Length cannot pin a handler thread and its memory. Artifacts
 # (telemetry CSV, sensors dump, a screenshot) post separately and fit comfortably.
 MAX_BODY = 24 * 1024 * 1024
+
+# RES-P3-003: bound how long a handler thread may block on the client socket.
+# Without it, a request that declares a Content-Length but never sends the body
+# leaves rfile.read() (and its thread) waiting forever. Applies per socket
+# operation, so a long-lived SSE writer is unaffected.
+REQUEST_TIMEOUT_S = 30
 
 # SEC-P2-003: in-process, per-client-IP abuse limits. Failed auth (401) attempts
 # and /api/v1/register calls each get a small token bucket (default 10/minute);
@@ -200,6 +207,15 @@ class BadJSON(Exception):
     """A write request body was present but not a JSON object."""
 
 
+class BadInput(Exception):
+    """A write request carried a client value of the wrong shape.
+
+    API-P3-001 / DATA-P3-001: raised by the write handlers (a non-list
+    ``samples``, a non-string ``kind``, ...) so the dispatcher can answer a
+    generic 400 instead of letting a TypeError/AttributeError surface as a 500.
+    """
+
+
 class SchemaVersionError(RuntimeError):
     """The database on disk was written by a newer build than this one.
 
@@ -321,7 +337,8 @@ CREATE TABLE IF NOT EXISTS logs (
 CREATE TABLE IF NOT EXISTS commands (
   id TEXT PRIMARY KEY, runner_id TEXT,
   run_id TEXT REFERENCES runs(id) ON DELETE CASCADE, kind TEXT, payload TEXT,
-  status TEXT, created REAL, sent REAL, acked REAL, result TEXT
+  status TEXT, created REAL, sent REAL, acked REAL, result TEXT,
+  attempts INTEGER
 );
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -342,12 +359,14 @@ CREATE TABLE IF NOT EXISTS audit (
   target TEXT, detail TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_runs_started ON runs(started);
+CREATE INDEX IF NOT EXISTS idx_runs_status_started ON runs(status, started);
 CREATE INDEX IF NOT EXISTS idx_runs_runner ON runs(runner_id);
 CREATE INDEX IF NOT EXISTS idx_phases_run ON phases(run_id, seq);
 CREATE INDEX IF NOT EXISTS idx_tele_run ON telemetry(run_id, ts);
 CREATE INDEX IF NOT EXISTS idx_cmd_runner ON commands(runner_id, status);
 CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, ts);
 CREATE INDEX IF NOT EXISTS idx_logs_run ON logs(run_id, id);
+CREATE INDEX IF NOT EXISTS idx_logs_run_ts ON logs(run_id, ts);
 CREATE INDEX IF NOT EXISTS idx_sched_next ON schedules(enabled, next_run);
 """
 
@@ -465,6 +484,10 @@ class Store:
             self.conn.execute("ALTER TABLE runs ADD COLUMN preset TEXT")
         if "stats" not in rcols:
             self.conn.execute("ALTER TABLE runs ADD COLUMN stats TEXT")
+        # RES-P3-001: how many times a fetched-but-unacked command was re-queued.
+        ccols = {r[1] for r in self.conn.execute("PRAGMA table_info(commands)")}
+        if "attempts" not in ccols:
+            self.conn.execute("ALTER TABLE commands ADD COLUMN attempts INTEGER")
         # PRIV-P2-005: replace any plaintext api_key left by an older build with
         # its digest, so the runner's existing key keeps authenticating.
         for r in self.conn.execute("SELECT id, api_key FROM runners "
@@ -900,6 +923,38 @@ def safe_id(v):
     return bool(v) and bool(ID_RE.match(str(v)))
 
 
+# API-P3-001 / DATA-P3-001: client-supplied fields are checked for shape before
+# they reach SQLite. A wrong type is a BadInput (-> 400), never a 500.
+def field_str(b, key, default=None):
+    """A string field, or `default` when absent; a non-string is a 400."""
+    v = b.get(key, default)
+    if v is None:
+        return default
+    if isinstance(v, str):
+        return v
+    raise BadInput("'%s' must be a string" % key)
+
+
+def field_list(b, key):
+    """A list field (default []); anything else is a 400."""
+    v = b.get(key)
+    if v is None:
+        return []
+    if not isinstance(v, list):
+        raise BadInput("'%s' must be a list" % key)
+    return v
+
+
+def field_dict(b, key):
+    """An object field (default {}); anything else is a 400."""
+    v = b.get(key)
+    if v is None:
+        return {}
+    if not isinstance(v, dict):
+        raise BadInput("'%s' must be an object" % key)
+    return v
+
+
 def safe_filename(n):
     """Sanitise a name used in a Content-Disposition header."""
     return re.sub(r"[^A-Za-z0-9._-]", "_", str(n or "artifact"))[:120]
@@ -1106,6 +1161,8 @@ class Handler(BaseHTTPRequestHandler):
     join_token = None
     cors_origin = None
     web_dir = WEB_DIR
+    # RES-P3-003: per-connection socket timeout (StreamRequestHandler applies it).
+    timeout = REQUEST_TIMEOUT_S
 
     # -- plumbing ----------------------------------------------------------
     def log_message(self, fmt, *args):
@@ -1146,13 +1203,16 @@ class Handler(BaseHTTPRequestHandler):
             self.server._bench_metrics = m
         return m
 
-    def _send(self, code, obj=None, raw=None, ctype="application/json", headers=None):
+    def _send(self, code, obj=None, raw=None, ctype="application/json", headers=None,
+              cache="no-store"):
         self._metrics_obj().status(code)
         body = raw if raw is not None else json.dumps(obj).encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        # PERF-P3-001: API responses are never cached; static assets pass their
+        # own short-lived policy (see _static).
+        self.send_header("Cache-Control", cache)
         self.send_header("X-Request-ID", self._request_id())
         # SEC-P2-002: never emit a wildcard. Only echo the request Origin when it
         # is same-origin or an explicitly configured dashboard origin.
@@ -1265,7 +1325,12 @@ class Handler(BaseHTTPRequestHandler):
         # client could pin a thread and its memory with one request
         if n > MAX_BODY:
             raise ValueError("body too large (%d > %d)" % (n, MAX_BODY))
-        raw = self.rfile.read(n).decode("utf-8", "replace")
+        try:
+            raw = self.rfile.read(n).decode("utf-8", "replace")
+        except socket.timeout:
+            # RES-P3-003: the client declared a body it never sent; the socket
+            # timeout frees this handler thread instead of pinning it forever.
+            raise BadInput("request body not received")
         if not raw.strip():
             return {}
         try:
@@ -1395,11 +1460,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_get(path, q)
             except Exception as exc:
                 # OBS-P2-003: record the failure with its traceback; the client
-                # still gets the same short 500 body (never the traceback).
+                # still gets a short, generic 500 body (never the traceback).
                 self._log("error", "api_get failed", route=path,
                           error="%s: %s" % (type(exc).__name__, exc),
                           traceback=traceback.format_exc())
-                return self._err(500, "%s: %s" % (type(exc).__name__, exc))
+                return self._err(500, "internal error")
         return self._static(path)
 
     def do_DELETE(self):
@@ -1456,17 +1521,31 @@ class Handler(BaseHTTPRequestHandler):
             body = self._body()
         except BadJSON:
             return self._err(400, "invalid json")
+        except BadInput as exc:
+            self._log("warning", "bad request body", route=path, error=str(exc))
+            return self._err(400, "invalid request")
         except ValueError as exc:
             return self._err(413, str(exc))
         try:
             return self._api_post(path, q, body)
+        except BadInput as exc:
+            # API-P3-001 / DATA-P3-001: malformed client input is a 400 with a
+            # generic body - never the exception type or message.
+            self._log("warning", "invalid request", route=path, error=str(exc))
+            return self._err(400, "invalid request")
+        except (TypeError, ValueError, KeyError, AttributeError,
+                sqlite3.InterfaceError) as exc:
+            # A client value of the wrong shape must not surface as a 500.
+            self._log("warning", "invalid input", route=path,
+                      error="%s: %s" % (type(exc).__name__, exc))
+            return self._err(400, "invalid request")
         except Exception as exc:
-            # OBS-P2-003: log the traceback server-side; the client still gets
-            # the same short 500 body without it.
+            # OBS-P2-003: log the traceback server-side; the client still gets a
+            # short, generic 500 body without it.
             self._log("error", "api_post failed", route=path,
                       error="%s: %s" % (type(exc).__name__, exc),
                       traceback=traceback.format_exc())
-            return self._err(500, "%s: %s" % (type(exc).__name__, exc))
+            return self._err(500, "internal error")
 
     # -- readiness + metrics (OBS-P2-004 / OBS-P2-005) --------------------
     def _ready(self):
@@ -1511,6 +1590,10 @@ class Handler(BaseHTTPRequestHandler):
             queued = S.one("SELECT COUNT(*) c FROM commands WHERE status='queued'")["c"]
         except Exception:
             queued = 0
+        try:
+            expired = S.one("SELECT COUNT(*) c FROM commands WHERE status='expired'")["c"]
+        except Exception:
+            expired = 0
         lines = [
             "# HELP benchd_uptime_seconds Seconds since the control plane started.",
             "# TYPE benchd_uptime_seconds gauge",
@@ -1533,6 +1616,9 @@ class Handler(BaseHTTPRequestHandler):
             "# HELP benchd_command_queue_depth Commands queued and not yet sent to a runner.",
             "# TYPE benchd_command_queue_depth gauge",
             "benchd_command_queue_depth %d" % queued,
+            "# HELP benchd_commands_expired_total Commands dropped after a re-queue was never acked.",
+            "# TYPE benchd_commands_expired_total counter",
+            "benchd_commands_expired_total %d" % expired,
             "# HELP benchd_sse_subscribers Active SSE subscribers.",
             "# TYPE benchd_sse_subscribers gauge",
             "benchd_sse_subscribers %d" % self.bus.subscriber_count(),
@@ -1807,10 +1893,13 @@ class Handler(BaseHTTPRequestHandler):
             if not S.one("SELECT id FROM runners WHERE id=?", (rid,)):
                 return self._err(404, "no such runner")
             fields, args = ["last_seen=?"], [now()]
-            for k in ("status", "current_run", "capabilities", "version", "git"):
+            for k in ("status", "current_run", "version", "git"):
                 if k in b:
                     fields.append("%s=?" % k)
-                    args.append(json.dumps(b[k]) if k == "capabilities" else b[k])
+                    args.append(field_str(b, k))
+            if "capabilities" in b:
+                fields.append("capabilities=?")
+                args.append(json.dumps(field_dict(b, "capabilities")))
             args.append(rid)
             S.ex("UPDATE runners SET %s WHERE id=?" % ",".join(fields), args)
             r = runner_public(S.one("SELECT * FROM runners WHERE id=?", (rid,)))
@@ -1832,11 +1921,13 @@ class Handler(BaseHTTPRequestHandler):
             cmd = S.one("SELECT runner_id FROM commands WHERE id=?", (cid,))
             if not cmd or cmd["runner_id"] != rid:
                 return self._err(404, "no such command")
+            status = field_str(b, "status", "done") or "done"
+            result = field_dict(b, "result")
             S.ex("UPDATE commands SET status=?, acked=?, result=? WHERE id=?",
-                 (b.get("status", "done"), now(), json.dumps(b.get("result") or {}), cid))
+                 (status, now(), json.dumps(result), cid))
             self.bus.publish({"event": "command", "data": {"id": cid, "runner_id": rid,
-                                                           "status": b.get("status", "done"),
-                                                           "result": b.get("result")}})
+                                                           "status": status,
+                                                           "result": result}})
             return self._send(200, {"ok": True})
         if path == "/api/v1/schedules":
             if not self._is_operator(q):
@@ -1844,7 +1935,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._create_schedule(b)
         if path == "/api/v1/runs":
             op, r = self._caller()
-            rid = b.get("runner_id")
+            rid = field_str(b, "runner_id")
             if not op:
                 if not r:
                     return self._deny(401, "unauthorized")
@@ -1854,12 +1945,14 @@ class Handler(BaseHTTPRequestHandler):
             run_id = b.get("id") or str(uuid.uuid4())
             if not safe_id(run_id):
                 return self._err(400, "bad run id")
+            profile = field_dict(b, "profile")
+            system = field_dict(b, "system")
             S.ex("INSERT INTO runs(id,runner_id,host,label,profile,started,status,platform,gpu,"
                  "driver,torch,system,preset) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                 (run_id, rid, b.get("host"), b.get("label"), json.dumps(b.get("profile") or {}),
-                  b.get("started") or now(), "running", b.get("platform"), b.get("gpu"),
-                  b.get("driver"), b.get("torch"), json.dumps(b.get("system") or {}),
-                  b.get("preset") or (b.get("profile") or {}).get("preset")))
+                 (run_id, rid, field_str(b, "host"), field_str(b, "label"), json.dumps(profile),
+                  b.get("started") or now(), "running", field_str(b, "platform"),
+                  field_str(b, "gpu"), field_str(b, "driver"), field_str(b, "torch"),
+                  json.dumps(system), field_str(b, "preset") or profile.get("preset")))
             if rid:
                 S.ex("UPDATE runners SET status='busy', current_run=? WHERE id=?", (run_id, rid))
             run = run_public(S.one("SELECT * FROM runs WHERE id=?", (run_id,)))
@@ -1870,22 +1963,26 @@ class Handler(BaseHTTPRequestHandler):
         if m:
             run_id = m.group(1)
             seq = int_arg({"seq": [b.get("seq", 0)]}, "seq", 0, hi=100000)
+            grp = field_str(b, "group")
+            label = field_str(b, "label")
+            status = field_str(b, "status", "running") or "running"
+            detail = field_str(b, "detail")
             # DATA-P2-004: (run_id, seq) is unique, so a replayed phase replaces
             # its row atomically instead of racing a SELECT-then-INSERT/UPDATE.
             # t0 is carried over from the existing row when the replay omits it.
             S.ex("INSERT OR REPLACE INTO phases(run_id,seq,grp,label,status,t0,t1,detail) "
                  "VALUES(?,?,?,?,?,"
                  "COALESCE(?, (SELECT t0 FROM phases WHERE run_id=? AND seq=?), ?),?,?)",
-                 (run_id, seq, b.get("group"), b.get("label"), b.get("status", "running"),
-                  b.get("t0"), run_id, seq, now(), b.get("t1"), b.get("detail")))
+                 (run_id, seq, grp, label, status,
+                  b.get("t0"), run_id, seq, now(), b.get("t1"), detail))
             self.bus.publish({"event": "phase", "data": {
-                "run_id": run_id, "seq": seq, "group": b.get("group"), "label": b.get("label"),
-                "status": b.get("status", "running"), "detail": b.get("detail")}})
+                "run_id": run_id, "seq": seq, "group": grp, "label": label,
+                "status": status, "detail": detail}})
             return self._send(200, {"ok": True})
         m = re.match(r"^/api/v1/runs/([^/]+)/telemetry$", path)
         if m:
             run_id = m.group(1)
-            samples = b.get("samples") or []
+            samples = field_list(b, "samples")
             rows = []
             named = []
             for s in samples:
@@ -1899,13 +1996,15 @@ class Handler(BaseHTTPRequestHandler):
                     if isinstance(s.get("ts"), (int, float)):
                         ts = float(s["ts"])
                     named.append(dict(s))
-                else:
+                elif isinstance(s, (list, tuple)):
                     d = dict(zip(SAMPLE_FIELDS,
                                  (list(s) + [None] * len(SAMPLE_FIELDS))[:len(SAMPLE_FIELDS)]))
                     sanitise_sample(d)
                     core = [d.get(f) for f in SAMPLE_FIELDS]
                     extra = {}
                     named.append(dict(d))
+                else:
+                    raise BadInput("each sample must be an object or list")
                 rows.append([run_id, ts or now()] + core + [json.dumps(extra) if extra else None])
             with S.lock:
                 S.conn.executemany(
@@ -1923,18 +2022,20 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "accepted": len(rows)})
         m = re.match(r"^/api/v1/runs/([^/]+)/event$", path)
         if m:
+            level = field_str(b, "level", "info") or "info"
+            message = field_str(b, "message", "") or ""
             S.ex("INSERT INTO events(run_id,ts,level,message) VALUES(?,?,?,?)",
-                 (m.group(1), b.get("ts") or now(), b.get("level", "info"), b.get("message", "")))
+                 (m.group(1), b.get("ts") or now(), level, message))
             self.bus.publish({"event": "event", "data": {"run_id": m.group(1),
-                                                         "level": b.get("level", "info"),
-                                                         "message": b.get("message", "")}})
+                                                         "level": level,
+                                                         "message": message}})
             return self._send(200, {"ok": True})
         m = re.match(r"^/api/v1/runs/([^/]+)/log$", path)
         if m:
             run_id = m.group(1)
-            lines = b.get("lines") or ([b["line"]] if b.get("line") else [])
+            lines = field_list(b, "lines") or ([b["line"]] if b.get("line") else [])
             lines = [str(x)[:4000] for x in lines]
-            stream = b.get("stream", "out")
+            stream = field_str(b, "stream", "out") or "out"
             if lines:
                 with S.lock:
                     S.conn.executemany("INSERT INTO logs(run_id,ts,stream,line) VALUES(?,?,?,?)",
@@ -1946,25 +2047,47 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/v1/runs/([^/]+)/artifact$", path)
         if m:
             run_id = m.group(1)
-            name = b.get("name", "artifact")
-            content = b.get("content") or ""
+            name = field_str(b, "name", "artifact") or "artifact"
+            kind = field_str(b, "kind", "json") or "json"
+            content = field_str(b, "content", "") or ""
+            claimed = b.get("sha256")
+            if claimed is not None and not isinstance(claimed, str):
+                raise BadInput("'sha256' must be a string")
             try:
                 raw = base64.b64decode(content, validate=True) if content else b""
             except Exception:
-                raw = b""
+                return self._err(400, "invalid base64 content")
+            # FILE-P3-001: the client's sha256 was stored unverified. Recompute it
+            # from the bytes we actually received, refuse a mismatch, and persist
+            # (so the download serves) the value we computed.
+            digest = hashlib.sha256(raw).hexdigest()
+            if claimed and not secrets.compare_digest(claimed.lower(), digest):
+                return self._err(400, "sha256 mismatch")
             S.ex("INSERT INTO artifacts(run_id,name,kind,size,sha256,content) VALUES(?,?,?,?,?,?)",
-                 (run_id, name, b.get("kind", "json"), len(raw), b.get("sha256"), content))
-            return self._send(200, {"ok": True})
+                 (run_id, name, kind, len(raw), digest, content))
+            return self._send(200, {"ok": True, "sha256": digest, "size": len(raw)})
         m = re.match(r"^/api/v1/runs/([^/]+)/finish$", path)
         if m:
             run_id = m.group(1)
+            # DATA-P3-002: a late finish must not overwrite a run the reaper (or a
+            # previous finish) already closed - only a still-running run may close.
+            cur = S.one("SELECT status FROM runs WHERE id=?", (run_id,))
+            if not cur:
+                return self._err(404, "no such run")
+            if cur["status"] != "running":
+                self._log("warning", "finish ignored: run not running",
+                          run_id=run_id, status=cur["status"])
+                return self._err(409, "run is not running")
+            status = field_str(b, "status", "done") or "done"
+            summary = field_dict(b, "summary")
+            system = field_dict(b, "system")
             S.ex("UPDATE runs SET status=?, ended=?, exit_code=?, summary=?, platform=COALESCE(?,platform),"
                  " gpu=COALESCE(?,gpu), driver=COALESCE(?,driver), torch=COALESCE(?,torch),"
                  " system=CASE WHEN ?='{}' THEN system ELSE ? END WHERE id=?",
-                 (b.get("status", "done"), b.get("ended") or now(), b.get("exit_code"),
-                  json.dumps(b.get("summary") or {}), b.get("platform"), b.get("gpu"),
-                  b.get("driver"), b.get("torch"), json.dumps(b.get("system") or {}),
-                  json.dumps(b.get("system") or {}), run_id))
+                 (status, b.get("ended") or now(), b.get("exit_code"),
+                  json.dumps(summary), field_str(b, "platform"), field_str(b, "gpu"),
+                  field_str(b, "driver"), field_str(b, "torch"), json.dumps(system),
+                  json.dumps(system), run_id))
             run = S.one("SELECT runner_id FROM runs WHERE id=?", (run_id,))
             if run and run["runner_id"]:
                 S.ex("UPDATE runners SET status='idle', current_run=NULL WHERE id=?",
@@ -1977,15 +2100,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def _register(self, b):
         S = self.store
-        rid = b.get("runner_id")
+        rid = field_str(b, "runner_id")
         if rid and not safe_id(rid):
             rid = None
         # PRIV-P2-005: `key` is the plaintext the caller presented (or None);
         # what is stored below is always key_digest(key).
-        key = b.get("api_key")
-        kind = b.get("kind", "agent")
-        mid = (b.get("machine_id") or "").strip() or None
-        inst = (b.get("instance") or "").strip()
+        key = field_str(b, "api_key")
+        kind = field_str(b, "kind", "agent") or "agent"
+        mid = (field_str(b, "machine_id") or "").strip() or None
+        inst = (field_str(b, "instance") or "").strip()
         existing = None
         rotate = False
         if rid:
@@ -2055,10 +2178,11 @@ class Handler(BaseHTTPRequestHandler):
              "version=excluded.version, capabilities=excluded.capabilities, last_seen=excluded.last_seen, "
              "status=excluded.status, addr=excluded.addr, git=excluded.git, "
              "machine_id=excluded.machine_id, ephemeral=excluded.ephemeral, instance=excluded.instance",
-             (rid, b.get("name"), b.get("os"), kind, b.get("version"),
-              json.dumps(b.get("capabilities") or {}), now(), now(),
-              b.get("status", "idle"), b.get("current_run"), self.client_address[0],
-              b.get("git"), key_digest(key), mid, 1 if b.get("ephemeral") else 0, inst))
+             (rid, field_str(b, "name"), field_str(b, "os"), kind, field_str(b, "version"),
+              json.dumps(field_dict(b, "capabilities")), now(), now(),
+              field_str(b, "status", "idle") or "idle", field_str(b, "current_run"),
+              self.client_address[0], field_str(b, "git"), key_digest(key), mid,
+              1 if b.get("ephemeral") else 0, inst))
         r = runner_public(S.one("SELECT * FROM runners WHERE id=?", (rid,)))
         self.bus.publish({"event": "runner", "data": r})
         S.audit(self._actor(), "register", target=rid,
@@ -2069,13 +2193,17 @@ class Handler(BaseHTTPRequestHandler):
     def _issue_command(self, rid, b):
         S = self.store
         kind = b.get("kind")
-        if kind not in ("start", "stop", "update", "fan_curve", "power_limit", "restart",
-                        "shutdown", "reboot", "exec", "shell",
-                        "update_toolkit", "iso_fetch", "iso_write", "iso_write_slot"):
+        if not isinstance(kind, str) or kind not in (
+                "start", "stop", "update", "fan_curve", "power_limit", "restart",
+                "shutdown", "reboot", "exec", "shell",
+                "update_toolkit", "iso_fetch", "iso_write", "iso_write_slot"):
             return self._err(400, "unknown command kind")
         cid = str(uuid.uuid4())
-        S.ex("INSERT INTO commands(id,runner_id,kind,payload,status,created) VALUES(?,?,?,?,?,?)",
-             (cid, rid, kind, json.dumps(b.get("payload") or {}), "queued", now()))
+        # RES-P3-001: attempts counts how often a fetched-but-unacked command was
+        # re-queued; 0 here, bumped by the stale-command reaper.
+        S.ex("INSERT INTO commands(id,runner_id,kind,payload,status,created,attempts) "
+             "VALUES(?,?,?,?,?,?,?)",
+             (cid, rid, kind, json.dumps(field_dict(b, "payload")), "queued", now(), 0))
         self.bus.publish({"event": "command", "data": {"id": cid, "runner_id": rid,
                                                        "kind": kind, "status": "queued"}})
         S.audit(self._actor(), "command", target=rid, detail=kind)
@@ -2083,18 +2211,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def _create_schedule(self, b):
         S = self.store
-        rid = b.get("runner_id")
+        rid = field_str(b, "runner_id")
         if not rid or not S.one("SELECT id FROM runners WHERE id=?", (rid,)):
             return self._err(400, "runner_id required")
-        kind = b.get("kind", "every")
+        kind = field_str(b, "kind", "every") or "every"
         every_s = int_arg({"e": [b.get("every_s") or 0]}, "e", 0, hi=30 * 86400)
-        at_time = b.get("at_time") or "03:00"
+        at_time = field_str(b, "at_time") or "03:00"
+        label = field_str(b, "label") or "scheduled run"
         sid = str(uuid.uuid4())
         nxt = (next_daily(at_time) if kind == "daily"
                else now() + max(60, every_s))
         S.ex("INSERT INTO schedules(id,runner_id,label,profile,kind,every_s,at_time,next_run,"
              "enabled,last_run,created,last_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-             (sid, rid, b.get("label") or "scheduled run", json.dumps(b.get("profile") or {}),
+             (sid, rid, label, json.dumps(field_dict(b, "profile")),
               kind, every_s, at_time, nxt, 1 if b.get("enabled", True) else 0, None, now(), None))
         s = schedule_public(S.one("SELECT * FROM schedules WHERE id=?", (sid,)))
         self.bus.publish({"event": "schedule", "data": s})
@@ -2120,8 +2249,25 @@ class Handler(BaseHTTPRequestHandler):
                  ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml",
                  ".ico": "image/x-icon", ".png": "image/png"}.get(
             os.path.splitext(full)[1], "application/octet-stream")
+        # PERF-P3-001: static assets get validators and a short cache instead of
+        # no-store; the API keeps no-store (see _send's default).
+        try:
+            st = os.stat(full)
+            etag = '"%x-%x"' % (int(st.st_mtime), st.st_size)
+            lastmod = self.date_time_string(int(st.st_mtime))
+        except OSError:
+            etag, lastmod = "", ""
+        validators = {}
+        if etag:
+            validators["ETag"] = etag
+        if lastmod:
+            validators["Last-Modified"] = lastmod
+        if etag and self.headers.get("If-None-Match") == etag:
+            return self._send(304, raw=b"", ctype=ctype, cache="public, max-age=60",
+                              headers=validators)
         with open(full, "rb") as fb:
-            return self._send(200, raw=fb.read(), ctype=ctype)
+            return self._send(200, raw=fb.read(), ctype=ctype, cache="public, max-age=60",
+                              headers=validators)
 
 
 # ------------------------------------------------------------------ scheduler --
@@ -2149,9 +2295,9 @@ def scheduler_tick(store, bus):
                 store.one("SELECT * FROM schedules WHERE id=?", (s["id"],)))})
             continue
         cmd = str(uuid.uuid4())
-        store.ex("INSERT INTO commands(id,runner_id,kind,payload,status,created) "
-                 "VALUES(?,?,?,?,?,?)",
-                 (cmd, s["runner_id"], "start", s["profile"] or "{}", "queued", now()))
+        store.ex("INSERT INTO commands(id,runner_id,kind,payload,status,created,attempts) "
+                 "VALUES(?,?,?,?,?,?,?)",
+                 (cmd, s["runner_id"], "start", s["profile"] or "{}", "queued", now(), 0))
         nxt = (next_daily(s["at_time"]) if s["kind"] == "daily" else now() + every)
         store.ex("UPDATE schedules SET next_run=?, last_run=?, last_status=? WHERE id=?",
                  (nxt, now(), "queued", s["id"]))
@@ -2269,15 +2415,36 @@ def ack_timeout(kind, payload=None):
 
 
 def reap_stale_commands(store, bus):
-    """Fail commands a runner fetched but never acked (its process died, or the
-    UI thread dropped it) so they don't sit invisible in 'sent' forever."""
+    """Re-queue a fetched-but-unacked command once, then expire it.
+
+    RES-P3-001: the queue is at-most-once - `_runner_commands` marks a command
+    'sent' as it hands it out, so a runner that died (or dropped it) leaves it
+    invisible. A first timeout puts it back in 'queued' (bumping `attempts`) so
+    the next poll delivers it again; a second timeout marks it 'expired'.
+
+    A legacy row with no `attempts` value (inserted before this column existed)
+    keeps the old single-shot behaviour and is marked 'failed'.
+    """
     t = now()
-    for c in store.q("SELECT id, runner_id, kind, sent, payload FROM commands WHERE status='sent'"):
-        if c["sent"] and (t - c["sent"]) > ack_timeout(c["kind"], c["payload"]):
+    for c in store.q("SELECT id, runner_id, kind, sent, payload, attempts "
+                     "FROM commands WHERE status='sent'"):
+        if not c["sent"] or (t - c["sent"]) <= ack_timeout(c["kind"], c["payload"]):
+            continue
+        attempts = c["attempts"]
+        if attempts is None:
+            status = "failed"
             store.ex("UPDATE commands SET status='failed', result=? WHERE id=?",
                      (json.dumps({"error": "no ack from the runner (dropped?)"}), c["id"]))
-            bus.publish({"event": "command", "data": {"id": c["id"], "runner_id": c["runner_id"],
-                                                      "kind": c["kind"], "status": "failed"}})
+        elif attempts < 1:
+            status = "queued"
+            store.ex("UPDATE commands SET status='queued', attempts=?, sent=NULL, "
+                     "result=NULL WHERE id=?", (attempts + 1, c["id"]))
+        else:
+            status = "expired"
+            store.ex("UPDATE commands SET status='expired', result=? WHERE id=?",
+                     (json.dumps({"error": "no ack after re-queue (expired)"}), c["id"]))
+        bus.publish({"event": "command", "data": {"id": c["id"], "runner_id": c["runner_id"],
+                                                  "kind": c["kind"], "status": status}})
 
 
 def scheduler_loop(store, bus, stop):
