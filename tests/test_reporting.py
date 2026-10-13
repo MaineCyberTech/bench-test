@@ -255,6 +255,29 @@ def run():
         c.check("%s uploads the telemetry CSV at the end of a run" % f,
                 "upload_telemetry_csv(" in src, f)
 
+    # ...but only the rows the dashboard did NOT already stream live. Without
+    # this every sample was stored twice: the live stream posted the run, then
+    # this upload posted the whole file again at the end (the charts drew each
+    # point twice and the stored rate looked ~2x the configured one).
+    fr2 = _FakeRep()
+    n2 = upload_telemetry_csv(fr2, tdir, sent={"host-win-1.telemetry.csv": {0.0, 1.0}})
+    c.check("upload_telemetry_csv skips rows the live stream already sent",
+            n2 == 0 and fr2.samples == [], (n2, fr2.samples))
+    c.check("upload_telemetry_csv still attaches the CSV when it skips every row",
+            bool(fr2.arts), fr2.arts)
+    fr3 = _FakeRep()
+    n3 = upload_telemetry_csv(fr3, tdir, sent={"host-win-1.telemetry.csv": {0.0}})
+    c.check("upload_telemetry_csv fills exactly the gap, dropping nothing",
+            n3 == 1 and [s["elapsed"] for s in fr3.samples] == [1.0], (n3, fr3.samples))
+    fr4 = _FakeRep()
+    n4 = upload_telemetry_csv(fr4, tdir, sent={"some-other.telemetry.csv": {0.0, 1.0}})
+    c.check("upload_telemetry_csv keys the watermark per file, so another run cannot silence it",
+            n4 == 2, n4)
+    for f in ("gui.py", "tui.py"):
+        src = open(os.path.join(BENCH, f), encoding="utf-8").read()
+        c.check("%s tells the upload what it already streamed" % f,
+                "upload_telemetry_csv(self.rep, self.results_dir, sent=" in src, f)
+
     # ---- the net phase must not record a 403 as a 0 Mbps measurement ----
     netps = open(os.path.join(BENCH, "Invoke-NetBench.ps1"), encoding="utf-8").read()
     c.check("net phase checks the HTTP status before trusting the speed",

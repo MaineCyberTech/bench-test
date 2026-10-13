@@ -877,7 +877,8 @@ def popen_hidden(cmd, **kw):
 # defaults (cpu 120s, ram 120s, gpu size 12288) - which is why "Quick check" took
 # over half an hour.
 EXTRA_ARG_KEYS = [("cpu_soak", "--cpu-soak"), ("ram_soak", "--ram-soak"),
-                  ("disk_seconds", "--disk-seconds"), ("gpu_size", "--gpu-size"),
+                  ("disk_seconds", "--disk-seconds"), ("disk_size_mb", "--disk-size-mb"),
+                  ("gpu_size", "--gpu-size"),
                   ("cpu_size", "--cpu-size"), ("ram_size_mb", "--ram-size-mb"),
                   ("passes", "--passes"), ("steady_gb", "--steady-gb"),
                   ("stable_hold", "--stable-hold"), ("gfx_engine", "--gfx-engine")]
@@ -906,7 +907,8 @@ def tune_summary(profile):
     t = profile or {}
     parts = []
     for key, fmt in (("cpu_soak", "cpu %ss"), ("ram_soak", "ram %ss"),
-                     ("disk_seconds", "disk %ss"), ("gpu_size", "gpu %s"),
+                     ("disk_seconds", "disk %ss"), ("disk_size_mb", "disk %sMB"),
+                     ("gpu_size", "gpu %s"),
                      ("cpu_size", "cpuN %s"), ("ram_size_mb", "ramN %sMB"),
                      ("passes", "%s pass"), ("steady_gb", "steady %sG")):
         if t.get(key) is not None:
@@ -2425,7 +2427,7 @@ def upload_run_files(rep, results_dir, log=None, limit=60, max_bytes=512 * 1024)
     return n
 
 
-def upload_telemetry_csv(rep, results_dir, log=None, cap=20000):
+def upload_telemetry_csv(rep, results_dir, log=None, cap=20000, sent=None):
     """Send the run's full 1 Hz CSV and attach the raw file.
 
     The live stream carries only the ten fields the charts use, so everything
@@ -2433,6 +2435,13 @@ def upload_telemetry_csv(rep, results_dir, log=None, cap=20000):
     nvenc, ...) was thrown away when a run ended. Every column is now posted
     (the server keeps the ones outside its fixed schema in its `extra` column)
     and the CSV itself is attached, so nothing is lost.
+
+    `sent` is what the dashboard already streamed live, as
+    {csv basename: {elapsed, ...}}. Those rows are skipped: without it every
+    sample was stored twice, because the live stream posts the run and this
+    upload posted the whole file again at the end (the charts then drew each
+    point twice, and the stored rate looked ~2x the configured one). Headless
+    runners (agent.py) stream nothing, pass nothing, and still send every row.
 
     Returns the number of samples sent.
     """
@@ -2446,6 +2455,8 @@ def upload_telemetry_csv(rep, results_dir, log=None, cap=20000):
     if not files:
         return 0
     path = max(files, key=os.path.getmtime)
+    base = os.path.basename(path)
+    already = sent.get(base) if isinstance(sent, dict) else None
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
             lines = [ln for ln in fh.read().splitlines() if ln.strip()]
@@ -2467,11 +2478,16 @@ def upload_telemetry_csv(rep, results_dir, log=None, cap=20000):
             except ValueError:
                 continue            # pstate and friends are labels, not numbers
         if "elapsed" in s:
+            if already and s["elapsed"] in already:
+                continue        # already streamed live; sending it again doubles the chart
             samples.append(s)
     for i in range(0, len(samples), 200):
         rep.telemetry(samples[i:i + 200])
     rep.artifact(os.path.basename(path), "\n".join(lines) + "\n", kind="csv")
-    log("[report] telemetry: %d samples + %s" % (len(samples), os.path.basename(path)))
+    log("[report] telemetry: %d samples%s + %s"
+        % (len(samples),
+           " (%d already streamed live)" % len(already) if already else "",
+           os.path.basename(path)))
     return len(samples)
 
 

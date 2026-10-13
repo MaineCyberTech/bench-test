@@ -110,17 +110,22 @@ _DEF_DUR = {"gpu": 600, "combined": 300, "fullsoak": 300, "gfx": 60}
 
 # Knobs the runner already accepts but the four spin boxes above do not expose.
 # A preset carries them in "tune"; the runner's long defaults apply otherwise
-# (cpu 120s, ram 120s, gpu matrix 12288, steady 10GB) - the reason a "Quick check"
-# used to take over half an hour.
-_TUNE = {"cpu_soak": 45, "ram_soak": 30, "disk_seconds": 30, "gpu_size": 4096,
-         "cpu_size": 2048, "ram_size_mb": 512, "passes": 1, "steady_gb": 2,
-         "stable": 1, "stable_hold": 60, "gfx_engine": "furmark"}
+# (cpu 120s, ram 120s, gpu matrix 12288, steady 10GB, disk 2048MB) - the reason a
+# "Quick check" used to take over half an hour.
+#
+# disk_size_mb is the one that bit hardest: the randread/randwrite/randmix phases
+# are size-bound, not seconds-bound, so the default 2048MB cost 226s of the
+# desktop's 1368s stabilized run. 512MB does the same job in ~57s.
+_TUNE = {"cpu_soak": 45, "ram_soak": 30, "disk_seconds": 30, "disk_size_mb": 512,
+         "gpu_size": 4096, "cpu_size": 2048, "ram_size_mb": 512, "passes": 1,
+         "steady_gb": 2, "stable": 1, "stable_hold": 60, "gfx_engine": "furmark"}
 
 # "Quick check" has to be quick: with no tune it inherits the runner's long
 # defaults (cpu 120s, ram 120s, 10 GiB steady write, gpu matrix 12288) and ran
 # ~14 min on the live stick.
-_QUICK_TUNE = {"cpu_soak": 60, "ram_soak": 30, "disk_seconds": 15, "gpu_size": 4096,
-               "cpu_size": 2048, "ram_size_mb": 512, "passes": 1, "steady_gb": 2}
+_QUICK_TUNE = {"cpu_soak": 60, "ram_soak": 30, "disk_seconds": 15, "disk_size_mb": 256,
+               "gpu_size": 4096, "cpu_size": 2048, "ram_size_mb": 512, "passes": 1,
+               "steady_gb": 2}
 
 PRESETS = {
     "Select a preset...": None,
@@ -177,6 +182,9 @@ class Dashboard:
         self.tele_path = None
         self._cols = {}
         self._last_elapsed = None
+        # {csv basename: {elapsed, ...}} already streamed live, so the end-of-run
+        # bulk upload does not store the same samples a second time
+        self._tel_sent = {}
         self.tel = {"t": [], "temp": [], "fan": [], "power": [], "util": []}
         self.running = False
         self.exited = False
@@ -778,6 +786,7 @@ class Dashboard:
             self.tree.delete(row)
         self.last_row, self.starts = {}, {}
         self.tele_path, self._cols, self._last_elapsed = None, {}, None
+        self._tel_sent = {}
         self.tel = {"t": [], "temp": [], "fan": [], "power": [], "util": []}
         self.exited = False
         self._stopped = False
@@ -923,7 +932,7 @@ class Dashboard:
                 summary = {}
             si = getattr(self, "sysinfo", None) or {}
             inv = read_inventory(self.results_dir) or si
-            upload_telemetry_csv(self.rep, self.results_dir)
+            upload_telemetry_csv(self.rep, self.results_dir, sent=self._tel_sent)
             upload_run_files(self.rep, self.results_dir)
             self.rep.finish("done" if rc == 0 else ("stopped" if self._stopped else "failed"),
                             rc or 0, summary, gpu=inv.get("gpu"), driver=inv.get("driver"),
@@ -1044,6 +1053,8 @@ class Dashboard:
                           ((n, get(n)) for n in self._cols) if v is not None}
                 if sample:
                     self.pump.push_sample(sample)
+                    self._tel_sent.setdefault(
+                        os.path.basename(self.tele_path or ""), set()).add(elapsed)
             for key in self.tel:
                 if len(self.tel[key]) > 900:
                     self.tel[key] = self.tel[key][-900:]
