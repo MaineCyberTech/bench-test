@@ -256,6 +256,61 @@ def _web(c):
             't.setAttribute("role", "status")' in js
             and 't.setAttribute("aria-live", "polite")' in js, "")
 
+    # ---- W19: web UI P3 backlog ----
+    # USE-P3-001: schedule deletion is destructive and must be gated like the other
+    # destructive controls (forget runner / power off).
+    c.check("deleting a schedule goes through a confirm gate",
+            re.search(r"function deleteSchedule\(id\)\s*\{[^}]*confirm\(", js) is not None, "")
+    # USE-P3-002: notify on completion (Notification API only after an explicit
+    # grant) and always fall back to a flashing tab title.
+    c.check("a finished run raises a completion notification when permitted",
+            "function notifyDone" in js and "new Notification(" in js
+            and 'Notification.permission === "granted"' in js, "")
+    c.check("notifications are requested only from an explicit user action",
+            'id="notifyBtn"' in html and "function enableNotifications" in js
+            and "Notification.requestPermission()" in js
+            and re.search(r'#notifyBtn"\)\.onclick\s*=\s*enableNotifications', js) is not None, "")
+    c.check("a run completion flashes the tab title as a fallback",
+            "function flashTitle" in js and "document.title" in js, "")
+    c.check("a run that finished before load does not notify",
+            "function checkCompletions" in js and "_activeSeen === null" in js, "")
+    # USE-P3-003: Compare needs an empty state and must never compare a run to itself.
+    c.check("compare shows an empty state",
+            "function renderCompareEmpty" in js and "Not enough finished runs" in js
+            and 'Choose two different runs' in js, "")
+    c.check("compare refuses to compare a run with itself",
+            "if (A === B)" in js and "pick two different runs to compare" in js, "")
+    c.check("the compare button is disabled with fewer than two runs",
+            'btn.disabled = finished.length < 2' in js, "")
+    # UX-P3-001: honour prefers-reduced-motion, and state the dark-only theme.
+    c.check("reduced-motion turns off animations and transitions",
+            "prefers-reduced-motion: reduce" in css
+            and "animation:none" in css.replace(" ", "")
+            and "transition:none" in css.replace(" ", ""), "")
+    c.check("the dark-only theme is declared explicitly",
+            'name="color-scheme"' in html and "color-scheme:dark" in css.replace(" ", ""), "")
+    # UX-P3-002: offline cards must dim without blending muted text below AA.
+    c.check("offline runner cards no longer use a whole-card opacity",
+            ".runner.off{opacity:.55}" not in css.replace(" ", ""), "")
+    c.check("offline runner cards keep a dim affordance without dropping contrast",
+            ".runner.off{opacity:1" in css.replace(" ", "") and ".runner.off .statusp" in css, "")
+    # MOB-P3-002: fixed/sticky chrome must respect safe-area insets.
+    c.check("the viewport opts into safe-area insets",
+            "viewport-fit=cover" in html, "")
+    c.check("fixed and sticky chrome honours safe-area insets",
+            "env(safe-area-inset-top)" in css and "env(safe-area-inset-bottom)" in css
+            and "env(safe-area-inset-left)" in css and "env(safe-area-inset-right)" in css, "")
+    # PRIV-P3-001 / SECRET-P3-001: token storage.
+    c.check("the operator token defaults to sessionStorage",
+            "sessionStorage.getItem(\"benchd_token\")" in js
+            and 'sessionStorage.setItem("benchd_token", TOKEN)' in js, "")
+    c.check("localStorage is an explicit remember-on-this-device opt-in",
+            'id="tokRemember"' in js and "remember on this device" in js
+            and "benchd_remember" in js, "")
+    c.check("a token passed in the URL is stripped after it is read",
+            'new URLSearchParams(location.search).get("token")' in js
+            and "history.replaceState" in js, "")
+
 
 def run():
     c = Checker("dashboards")
