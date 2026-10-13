@@ -24,9 +24,10 @@ from tkinter import filedialog, font as tkfont, ttk
 def _repo_dir():
     """The toolkit checkout, resolved even when frozen (PyInstaller) or run from
     elsewhere: $BENCH_REPO, next to the executable, or the cwd."""
-    cands = [os.environ.get("BENCH_REPO"), os.getcwd()]
+    cands = [os.environ.get("BENCH_REPO")]      # explicit override wins
     if getattr(sys, "frozen", False):
-        cands.insert(0, os.path.dirname(os.path.abspath(sys.executable)))
+        cands.append(os.path.dirname(os.path.abspath(sys.executable)))
+    cands.append(os.getcwd())
     for c in cands:
         if c and os.path.isdir(os.path.join(c, "bench")):
             return os.path.abspath(c)

@@ -421,6 +421,21 @@ def run():
         src = open(os.path.join(BENCH, f), encoding="utf-8").read()
         c.check("%s refuses a toolkit update while a run is in progress" % f,
                 "a run is in progress - update once it finishes" in src, f)
+        # $BENCH_REPO is the explicit override, so it is tried before the bundle dir
+        c.check("%s tries $BENCH_REPO before the bundle dir (source order)" % f,
+                'cands = [os.environ.get("BENCH_REPO")]' in src
+                and "cands.append(os.path.dirname(os.path.abspath(sys.executable)))" in src
+                and "cands.insert(0," not in src, f)
+
+    # ---- no canonical field may be a phantom ----
+    # mem_used stayed in SAMPLE_FIELDS long after the samplers stopped emitting it: every
+    # row carried a permanently null column and the docs advertised it as canonical.
+    _seen = set()
+    for f in ("run_win.py", "telemetry_log.py"):
+        src = open(os.path.join(BENCH, f), encoding="utf-8").read()
+        _seen |= {k for k in _SF if k in src}
+    _orphan = [k for k in _SF if k not in _seen]
+    c.check("every canonical telemetry field is mentioned by a sampler", not _orphan, _orphan)
 
     # ---- the run's full CSV must reach the server when it ends ----
     class _FakeRep:
