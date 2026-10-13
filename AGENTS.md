@@ -233,7 +233,18 @@ you add behaviour. Never commit with a failing suite.
   → PyInstaller bundles; CI `.github/workflows/build-app.yml` attaches them to an
   `app-<n>` release). They resolve the toolkit via `_repo_dir()` —
   `$BENCH_REPO` → next to the frozen exe → cwd → repo root — so keep that helper
-  when changing their top-of-file path setup.
+  when changing their top-of-file path setup. The bundle ships `bench/` next to the
+  exe, so `_repo_dir()` finds it and a local battery needs no checkout.
+  **A bundle carries two version files, deliberately:** `VERSION` (the release, read
+  by `bench_version()`) and `.bench-version` (the build, read by
+  `toolkit_version()`). With only the stamp a downloaded app reported
+  `0.0.0+unknown` for its version. `bench_version()` also falls back to the stamp's
+  `version` field, so a bundle built by an older script still recovers.
+  **A bundle can update its shipped toolkit in place** (`update` →
+  `_app_bundle_root`/`_install_into_bundle`): it is neither a git checkout nor a
+  live runner, so the old "use git pull" guard refused it and a downloaded app
+  could not update at all. Only `bench/` is replaced — the frozen dashboard itself
+  needs a new bundle download, which the result says explicitly.
 - **Read result files as UTF-8.** Windows' default code page (cp1252) throws on
   the sysinfo/report JSON (`°C`, etc.), silently dropping the inventory — always
   pass `encoding="utf-8-sig"` when opening a run's artifacts.

@@ -12,8 +12,9 @@ Each bundle also carries the whole `bench/` toolkit next to the exe, so a *local
 battery runs with no checkout: on first run `bench/bootstrap.py` provisions a
 runner interpreter + the compute deps (numpy/psutil, plus DirectML for AMD/Intel
 or CUDA PyTorch for NVIDIA) into a per-user cache. A repo `.venv` or `$BENCH_REPO`
-still wins when present. A baked `.bench-version` gives the app a real toolkit
-identity (otherwise a non-git bundle reports an empty version).
+still wins when present. Both `VERSION` and `.bench-version` are baked in: the
+dashboard reads `VERSION` for the release and the stamp for the build, so a
+non-git bundle reports `1.7.0+<commit>` instead of `0.0.0+unknown`.
 
 CI builds these for Windows and Linux and attaches them to a release
 (`.github/workflows/build-app.yml`).
@@ -72,18 +73,34 @@ def write_agent_conf(bundle_dir):
 
 
 def write_version(bundle_dir):
-    """Write `.bench-version` so a non-git bundle reports a real identity."""
+    """Write `.bench-version` **and** `VERSION` so a non-git bundle reports a real
+    identity.
+
+    `bench_version()` reads `VERSION` (the release) while `toolkit_version()` reads
+    `.bench-version` (the build), so a bundle needs both: with only the stamp the
+    dashboard reported `0.0.0+unknown` for its version.
+    """
     commit = _git("rev-parse", "--short", "HEAD")
     ref = _git("rev-parse", "--abbrev-ref", "HEAD")
     if commit and _git("status", "--porcelain"):
         commit += "-dirty"
+    rel = ""
+    try:
+        with open(os.path.join(REPO, "VERSION"), encoding="utf-8") as fh:
+            rel = fh.read().strip().splitlines()[0].strip()
+    except (OSError, IndexError):
+        rel = ""
     v = {"mode": "app", "commit": commit, "ref": ref, "sha256": None,
+         "version": rel or None,
          "built_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds")}
     try:
         with open(os.path.join(bundle_dir, ".bench-version"), "w", encoding="utf-8") as fh:
             json.dump(v, fh, indent=2)
+        if rel:
+            with open(os.path.join(bundle_dir, "VERSION"), "w", encoding="utf-8") as fh:
+                fh.write(rel + "\n")
     except OSError as e:
-        print("warning: could not write .bench-version: %s" % e)
+        print("warning: could not write the version stamp: %s" % e)
     return v
 
 

@@ -417,6 +417,54 @@ def run():
     c.check("hostile archive: symlink not created",
             not os.path.islink(os.path.join(toolkit_dir, "bench", "evil")), "")
 
+    # ---- an app bundle updates its bundled toolkit in place ----
+    # A PyInstaller bundle is neither a git checkout nor a live runner, so the
+    # "use git pull" guard used to refuse it outright; a downloaded app could not
+    # update at all. It ships the toolkit next to its exe, which is what an update
+    # can replace (the frozen dashboard itself needs a new download).
+    bdir = tmpdir()
+    os.makedirs(os.path.join(bdir, "bench"))
+    with open(os.path.join(bdir, ".bench-version"), "w") as fh:
+        json.dump({"mode": "app", "commit": "aa6ca7c", "ref": "main"}, fh)
+    src = tmpdir()                       # stand-in for an extracted toolkit tarball
+    os.makedirs(os.path.join(src, "bench"))
+    with open(os.path.join(src, "VERSION"), "w") as fh:
+        fh.write("9.9.9\n")
+    for name in ("benchreport.py", "Run-LinuxBench.sh"):
+        with open(os.path.join(src, "bench", name), "w") as fh:
+            fh.write("# new\n")
+    c.check("_app_bundle_root spots a bundle", br._app_bundle_root(bdir) is True, bdir)
+    c.check("_app_bundle_root rejects a git checkout",
+            br._app_bundle_root(os.path.dirname(BENCH)) is False, "")
+    c.check("_app_bundle_root rejects an unstamped dir",
+            br._app_bundle_root(tmpdir()) is False, "")
+    r5 = br._install_into_bundle(bdir, src, "main", "abc1234", "sha", 10)
+    c.check("bundle update reports ok and its kind", r5.get("ok") and r5.get("kind") == "app", r5)
+    c.check("bundle update refreshes the shipped toolkit",
+            os.path.isfile(os.path.join(bdir, "bench", "Run-LinuxBench.sh")), "")
+    c.check("bundle update bakes VERSION so the version stops reading 0.0.0",
+            open(os.path.join(bdir, "VERSION")).read().strip() == "9.9.9", "")
+    c.check("bundle update stamps the release it installed",
+            json.load(open(os.path.join(bdir, ".bench-version"))).get("version") == "9.9.9", "")
+    c.check("bundle update says the dashboard itself needs a new download",
+            "download a new app bundle" in (r5.get("note") or ""), r5.get("note"))
+    c.check("a bundle still reports mode=app after updating",
+            br._app_bundle_root(bdir) is True, "")
+    c.check("the version really resolves after the update",
+            br.bench_version(bdir) == "9.9.9", br.bench_version(bdir))
+    # a plain copy (no git, not live, not a bundle) must still be refused - the
+    # suite sets BENCH_ALLOW_TOOLKIT_SWITCH for its own scenarios, so clear it here
+    plain = tmpdir()
+    os.makedirs(os.path.join(plain, "bench"))
+    _switch = os.environ.pop("BENCH_ALLOW_TOOLKIT_SWITCH", None)
+    try:
+        r6 = br.update_toolkit("main", root=plain)
+    finally:
+        if _switch is not None:
+            os.environ["BENCH_ALLOW_TOOLKIT_SWITCH"] = _switch
+    c.check("a plain non-live copy is still refused",
+            not r6.get("ok") and "not a live runner" in (r6.get("error") or ""), r6)
+
     httpd.shutdown()
     for k in ("BENCH_TOOLKIT_DIR", "BENCH_PERSIST_DIR", "BENCH_ALLOW_TOOLKIT_SWITCH",
               "BENCH_TOOLKIT_URL", "BENCH_GH_API", "BENCH_REPO_SLUG"):

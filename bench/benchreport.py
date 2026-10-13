@@ -977,7 +977,16 @@ def bench_version(root=None):
         with open(os.path.join(root, SEMVER_FILE), encoding="utf-8") as fh:
             v = fh.read().strip().splitlines()[0].strip()
     except (OSError, IndexError):
-        return "0.0.0+unknown"
+        # No git and no VERSION file: an app bundle carries its release in the
+        # .bench-version stamp (packaging/build_app.py bakes it). Read it here
+        # rather than via toolkit_version(), which calls back into this function.
+        try:
+            with open(os.path.join(root, VERSION_FILE), encoding="utf-8") as fh:
+                v = str(json.load(fh).get("version") or "").strip()
+        except Exception:
+            v = ""
+        if v.endswith(("+unknown", "+invalid")):
+            v = ""
     if not v:
         return "0.0.0+unknown"
     return v if _SEMVER_RE.match(v) else "0.0.0+invalid"
@@ -1177,6 +1186,63 @@ def repoint_toolkit(toolkit_dir, target, force=False):
     return True
 
 
+def _app_bundle_root(root):
+    """True when `root` is a PyInstaller app bundle rather than a checkout.
+
+    A bundle ships the toolkit next to its exe and stamps itself `.bench-version`
+    with mode 'app' (packaging/build_app.py). It is neither a live runner nor a git
+    checkout, so the "use git pull instead" guard does not apply to it.
+    """
+    if not root or os.path.isdir(os.path.join(root, ".git")):
+        return False
+    try:
+        with open(os.path.join(root, VERSION_FILE), encoding="utf-8") as fh:
+            return json.load(fh).get("mode") == "app"
+    except Exception:
+        return False
+
+
+def _install_into_bundle(bundle, src, ref, commit, sha256, nbytes, log=None):
+    """Refresh the toolkit copy that ships next to a bundled dashboard's exe.
+
+    Only the toolkit can be replaced in place - the frozen dashboard keeps running
+    its own bundled code - so the result says exactly that instead of implying the
+    whole app was updated.
+    """
+    log = log or (lambda _m: None)
+    dst = os.path.join(bundle, "bench")
+    try:
+        if os.path.isdir(dst):
+            shutil.rmtree(dst)
+        shutil.copytree(os.path.join(src, "bench"), dst)
+    except OSError as e:
+        return {"error": "could not refresh the bundled toolkit: %s" % e, "root": bundle}
+    ver = ""
+    try:
+        with open(os.path.join(src, SEMVER_FILE), encoding="utf-8") as fh:
+            ver = fh.read().strip().splitlines()[0].strip()
+    except (OSError, IndexError):
+        ver = ""
+    if ver:
+        try:
+            with open(os.path.join(bundle, SEMVER_FILE), "w", encoding="utf-8") as fh:
+                fh.write(ver + "\n")
+        except OSError:
+            pass
+    try:
+        with open(os.path.join(bundle, VERSION_FILE), "w", encoding="utf-8") as fh:
+            json.dump({"mode": "app", "ref": ref, "commit": commit, "sha256": sha256,
+                       "fetched_at": time.time(), "version": ver or None}, fh, indent=1)
+    except OSError:
+        pass
+    log("[update] refreshed the bundled toolkit in %s" % dst)
+    return {"ok": True, "kind": "app", "ref": ref, "bytes": nbytes, "sha256": sha256,
+            "dest": dst, "commit": commit, "version": ver or None,
+            "restart_required": True,
+            "note": "the bundled toolkit (runners + phases) was refreshed; download a "
+                    "new app bundle to update the dashboard itself"}
+
+
 def update_toolkit(ref="main", sha256=None, log=None, root=None):
     """Fetch the toolkit at `ref` onto the stick and switch the runner onto it.
 
@@ -1188,6 +1254,7 @@ def update_toolkit(ref="main", sha256=None, log=None, root=None):
     if os.path.isdir(os.path.join(toolkit_dir, ".git")) and not os.path.islink(toolkit_dir):
         return {"kind": "git", "error": "a git checkout updates with the 'update' command"}
     if root and os.path.isdir(root) and not is_live() and \
+            not _app_bundle_root(root) and \
             os.environ.get("BENCH_ALLOW_TOOLKIT_SWITCH") != "1":
         return {"kind": "install", "toolkit": toolkit_dir,
                 "error": "not a live runner - update the checkout with 'update' (git pull) "
@@ -1221,13 +1288,24 @@ def update_toolkit(ref="main", sha256=None, log=None, root=None):
             pass
     if not os.path.isfile(os.path.join(tmp, "bench", "benchreport.py")):
         return {"error": "archive did not contain the toolkit"}
+    commit = _resolve_commit(ref)
+    ver = ""
+    try:
+        with open(os.path.join(tmp, SEMVER_FILE), encoding="utf-8") as fh:
+            ver = fh.read().strip().splitlines()[0].strip()
+    except (OSError, IndexError):
+        ver = ""
+    if _app_bundle_root(toolkit_dir):
+        # a bundle refreshes the toolkit it ships next to its exe, in place
+        res = _install_into_bundle(toolkit_dir, tmp, ref, commit, got, n, log)
+        shutil.rmtree(tmp, ignore_errors=True)
+        return res
     shutil.rmtree(dest, ignore_errors=True)
     os.replace(tmp, dest)
-    commit = _resolve_commit(ref)
     try:
         with open(os.path.join(dest, VERSION_FILE), "w", encoding="utf-8") as fh:
             json.dump({"mode": "copy", "ref": ref, "commit": commit, "sha256": got,
-                       "fetched_at": time.time()}, fh, indent=1)
+                       "fetched_at": time.time(), "version": ver or None}, fh, indent=1)
     except OSError:
         pass
     os.makedirs(root, exist_ok=True)

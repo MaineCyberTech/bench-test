@@ -6,6 +6,7 @@ stick is on which release, so it must exist, be well formed, and actually reach
 the places that display it.
 """
 import importlib.util
+import json
 import os
 import re
 
@@ -61,6 +62,32 @@ def run():
     c.check("toolkit_version advertises the protocol",
             rep.toolkit_version(REPO).get("protocol") == rep.PROTOCOL,
             rep.toolkit_version(REPO))
+
+    # an app bundle (PyInstaller) has no git and no VERSION file, so its release
+    # has to come from the .bench-version stamp the packaging script bakes -
+    # otherwise the dashboard reports 0.0.0 for its version
+    with tempfile.TemporaryDirectory() as td:
+        os.makedirs(os.path.join(td, "bench"))
+        with open(os.path.join(td, ".bench-version"), "w") as fh:
+            json.dump({"mode": "app", "commit": "abc1234", "ref": "main",
+                       "sha256": None, "version": "2.3.4"}, fh)
+        c.check("an app bundle reads its release from the stamp",
+                rep.bench_version(td) == "2.3.4", rep.bench_version(td))
+        c.check("an app bundle reports release+build",
+                rep.version_string(td) == "2.3.4+abc1234", rep.version_string(td))
+        c.check("an app bundle's toolkit_version agrees",
+                rep.toolkit_version(td).get("version") == "2.3.4",
+                rep.toolkit_version(td).get("version"))
+        # a stamp with no version (an older bundle) must degrade cleanly, not crash
+        with open(os.path.join(td, ".bench-version"), "w") as fh:
+            json.dump({"mode": "app", "commit": "abc1234"}, fh)
+        c.check("an unversioned stamp does not invent a release",
+                rep.bench_version(td) == "0.0.0+unknown", rep.bench_version(td))
+        # ...and the failure sentinel must not be echoed back as if it were real
+        with open(os.path.join(td, ".bench-version"), "w") as fh:
+            json.dump({"mode": "app", "version": "0.0.0+unknown"}, fh)
+        c.check("the unknown sentinel is not echoed back as a release",
+                rep.bench_version(td) == "0.0.0+unknown", rep.bench_version(td))
     # the version is tag-derived, so a checkout that has a tag reports it and the
     # release only moves when the tag does
     rel, n, cm = rep.git_describe(REPO)
