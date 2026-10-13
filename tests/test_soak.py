@@ -31,11 +31,12 @@ def run():
     rep = _load("benchreport", os.path.join(BENCH, "benchreport.py"))
     got = rep.extra_runner_args({"cpu_soak": 45, "ram_soak": 30, "disk_seconds": 30,
                                  "gpu_size": 4096, "cpu_size": 2048, "ram_size_mb": 512,
-                                 "passes": 1, "steady_gb": 2, "stable": 1, "stable_hold": 60})
+                                 "passes": 1, "steady_gb": 2, "stable": 1, "stable_hold": 60,
+                                 "gfx_engine": "furmark"})
     want = ["--cpu-soak", "45", "--ram-soak", "30", "--disk-seconds", "30",
             "--gpu-size", "4096", "--cpu-size", "2048", "--ram-size-mb", "512",
             "--passes", "1", "--steady-gb", "2", "--stable-hold", "60",
-            "--soak-until-stable"]
+            "--gfx-engine", "furmark", "--soak-until-stable"]
     c.check("extra_runner_args maps every knob", got == want, got)
     c.check("extra_runner_args empty without tune", rep.extra_runner_args({}) == [], "")
     c.check("extra_runner_args ignores absent keys",
@@ -49,6 +50,9 @@ def run():
     c.check("tune_summary shows the hold",
             rep.tune_summary({"stable": 1, "stable_hold": 90}) == "until stable +90s",
             rep.tune_summary({"stable": 1, "stable_hold": 90}))
+    c.check("tune_summary shows the gfx engine",
+            rep.tune_summary({"gfx_engine": "furmark"}) == "gfx furmark",
+            rep.tune_summary({"gfx_engine": "furmark"}))
 
     # ---- both runners must accept the flags (parity) ----
     sh = open(os.path.join(BENCH, "Run-LinuxBench.sh"), encoding="utf-8").read()
@@ -60,6 +64,12 @@ def run():
             '"--soak-until-stable"' in win and "-SoakUntilStable" in win, "")
     c.check("windows runner accepts --stable-hold",
             '"--stable-hold"' in win and "-StableHold" in win, "")
+    c.check("linux runner accepts --gfx-engine", "--gfx-engine" in sh, "")
+    c.check("windows runner accepts --gfx-engine",
+            '"--gfx-engine"' in win and "-GfxEngine" in win, "")
+    c.check("windows battery has a FurMark path",
+            "Invoke-FurMarkBench.ps1" in open(os.path.join(BENCH, "Run-WorkstationBench.ps1"),
+                                              encoding="utf-8").read(), "")
     c.check("windows battery forwards the flag",
             "$SoakUntilStable" in open(os.path.join(BENCH, "Run-WorkstationBench.ps1"),
                                        encoding="utf-8").read(), "")

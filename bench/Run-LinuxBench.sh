@@ -10,7 +10,7 @@
 #   [--skip-gpu] [--skip-cpu] [--skip-ram] [--skip-disk]
 #   [--skip-combined] [--skip-fullsoak] [--skip-net] [--skip-nvenc] [--skip-sys]
 #   [--skip-gfx] [--skip-fan]
-#   [--soak-until-stable] [--stable-hold S]
+#   [--soak-until-stable] [--stable-hold S] [--gfx-engine furmark|glmark2]
 #
 # Env: BENCH_PY overrides the Python interpreter (default: .venv/bin/python, else python3).
 #      FURMARK overrides the FurMark 2 binary path (default: tools/furmark/FurMark_linux64/furmark).
@@ -30,7 +30,7 @@ DISK_PATH="${TMPDIR:-/tmp}"; DISK_SIZE_MB=2048; DISK_SECONDS=15; STEADY_GB=10
 DISK_PATH_SET=0
 DO_GPU=1; DO_CPU=1; DO_RAM=1; DO_DISK=1
 DO_COMBINED=1; DO_FULLSOAK=1; DO_NET=1; DO_NVENC=1; DO_SYS=1; DO_GFX=1; DO_FAN=1
-STABLE_ARG=""; STABLE_HOLD=60
+STABLE_ARG=""; STABLE_HOLD=60; GFX_ENGINE=furmark
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -65,6 +65,7 @@ while [ $# -gt 0 ]; do
         --skip-fan)        DO_FAN=0; shift ;;
     --soak-until-stable) STABLE_ARG="--until-stable --stable-hold $STABLE_HOLD"; shift ;;
     --stable-hold)     STABLE_HOLD="$2"; STABLE_ARG="--until-stable --stable-hold $STABLE_HOLD"; shift 2 ;;
+    --gfx-engine)      GFX_ENGINE="$2"; shift 2 ;;
         -h|--help)         sed -n '2,19p' "$0"; exit 0 ;;
         *)                 echo "unknown option: $1" >&2; exit 1 ;;
     esac
@@ -186,19 +187,30 @@ if [ "$DO_SYS" = 1 ]; then
 fi
 
 if [ "$DO_GFX" = 1 ]; then
-    echo "[gfx] FurMark 2 (furmark-gl, 1920x1080, ${GFX_SECONDS}s)"
-    FM="${FURMARK:-}"
-    if [ -z "$FM" ]; then
-        for c in "$ROOT/tools/furmark/FurMark_linux64/furmark" \
-                 "${BENCH_PERSIST_DIR:-/mnt/benchdata}/tools/FurMark_linux64/furmark" \
-                 /opt/bench-tools/furmark/FurMark_linux64/furmark; do
-            [ -x "$c" ] && FM="$c" && break
-        done
+    FM=""
+    if [ "$GFX_ENGINE" != "glmark2" ]; then
+        echo "[gfx] FurMark 2 (furmark-gl, 1920x1080, ${GFX_SECONDS}s)"
+        FM="${FURMARK:-}"
+        if [ -z "$FM" ]; then
+            for c in "$ROOT/tools/furmark/FurMark_linux64/furmark" \
+                     "${BENCH_PERSIST_DIR:-/mnt/benchdata}/tools/FurMark_linux64/furmark" \
+                     /opt/bench-tools/furmark/FurMark_linux64/furmark; do
+                [ -x "$c" ] && FM="$c" && break
+            done
+        fi
     fi
     if [ -z "$FM" ] || [ ! -x "$FM" ]; then
-        echo "    furmark not found (looked in the toolkit, \$BENCH_PERSIST_DIR/tools and /opt/bench-tools) -- download FurMark 2 (linux64) from geeks3d.com into tools/, or set \$FURMARK"
-        printf '{"group":"gfx","phase":"furmark","result":{"skipped":true,"reason":"furmark not installed"}}\n' >> "$JSONL"
-    else
+        if [ "$GFX_ENGINE" = "glmark2" ]; then
+            echo "[gfx] glmark2 (engine requested; FurMark skipped)"
+        else
+            echo "    furmark not found (looked in the toolkit, \$BENCH_PERSIST_DIR/tools and /opt/bench-tools) -- download FurMark 2 (linux64) from geeks3d.com into tools/, or set \$FURMARK"
+            printf '{"group":"gfx","phase":"furmark","result":{"skipped":true,"reason":"furmark not installed"}}\n' >> "$JSONL"
+        fi
+        # no FurMark to run: still set up the display for the glmark2 fallbacks
+        GFRC=${GFRC:-1}
+        mkdir -p "$LOGDIR"
+    fi
+    if [ -n "$FM" ] && [ -x "$FM" ]; then
         # live consoles have no X; start a headless one on :9 (nvidia
         # UseDisplayDevice=none) so GL works without blanking the console and
         # without stealing the GUI's :0 display
@@ -221,11 +233,19 @@ if [ "$DO_GFX" = 1 ]; then
         if [ -n "$(command -v xrandr 2>/dev/null)" ]; then
             xrandr -display "$DISPLAY" --setmonitor bench 1920/597x1080/336+0+0 none 2>/dev/null || true
         fi
-        for i in 1 2 3 4 5; do
-            xprop -display "$DISPLAY" -root -f RESOURCE_MANAGER 8s -set RESOURCE_MANAGER '*dpi: 96' 2>/dev/null || true
-            xprop -display "$DISPLAY" -root RESOURCE_MANAGER 2>/dev/null | grep -q dpi && break
-            sleep 0.5
-        done
+        if [ -n "$(command -v xprop 2>/dev/null)" ]; then
+            for i in 1 2 3 4 5; do
+                xprop -display "$DISPLAY" -root -f RESOURCE_MANAGER 8s -set RESOURCE_MANAGER '*dpi: 96' 2>/dev/null || true
+                xprop -display "$DISPLAY" -root RESOURCE_MANAGER 2>/dev/null | grep -q dpi && break
+                sleep 0.5
+            done
+        fi
+        # report what the probe actually saw - FurMark dies on a zero-monitor or
+        # missing-RESOURCE_MANAGER display, and this is how we find out why
+        MON="$(xrandr -display "$DISPLAY" --listmonitors 2>/dev/null | head -1)"
+        RM="$(xprop -display "$DISPLAY" -root RESOURCE_MANAGER 2>/dev/null | head -1)"
+        [ -n "$MON" ] && case "$MON" in *"Monitors: 0"*) echo "    WARNING: $MON (FurMark's probe may crash; glmark2 fallback will run)" ;; esac
+        [ -z "$RM" ] && echo "    WARNING: no RESOURCE_MANAGER on $DISPLAY"
         # diagnostic snapshot: uploaded with the run logs for gfx post-mortems
         {
             echo "display: $DISPLAY"
@@ -242,10 +262,11 @@ if [ "$DO_GFX" = 1 ]; then
         printf '%s\n' "$GFX_OUT" > "$LOGDIR/gfx-furmark.log"
         printf '%s\n' "$GFX_OUT" | grep -a -v '^$' | sed 's/^/    /'
         # if FurMark still dies, fall back to glmark2 so the gfx phase always
-        # produces a score (glmark2 ships in the live image)
+        # produces a score (glmark2 ships in the live image). Note: glmark2's -b
+        # takes a benchmark NAME, so a bare "-b" is an error - run the default suite.
         if [ "$GFRC" -ne 0 ] && command -v glmark2 >/dev/null 2>&1; then
             echo "    furmark failed (rc=$GFRC) - falling back to glmark2"
-            GM_OUT="$(timeout $((GFX_SECONDS * 2 + 120)) glmark2 -b 2>&1)"; GMRC=$?
+            GM_OUT="$(timeout $((GFX_SECONDS * 2 + 180)) glmark2 2>&1)"; GMRC=$?
             printf '%s\n' "$GM_OUT" > "$LOGDIR/gfx-glmark2.log"
             printf '%s\n' "$GM_OUT" | grep -E "glmark2 Score|FPS:" | tail -3 | sed 's/^/    /'
             GSCORE="$(printf '%s\n' "$GM_OUT" | grep -oE "glmark2 Score: [0-9]+" | tail -1 | grep -oE "[0-9]+")"
@@ -255,7 +276,7 @@ if [ "$DO_GFX" = 1 ]; then
         # headless NVIDIA server has none, which is what kills the GL apps above)
         if [ "${GSCORE:-0}" = "0" ] && command -v glmark2-es2 >/dev/null 2>&1; then
             echo "    trying glmark2-es2 --off-screen (EGL, no X output needed)"
-            GME_OUT="$(DISPLAY= timeout $((GFX_SECONDS * 2 + 120)) glmark2-es2 --off-screen -b 2>&1)"; GMERC=$?
+            GME_OUT="$(DISPLAY= timeout $((GFX_SECONDS * 2 + 180)) glmark2-es2 --off-screen 2>&1)"; GMERC=$?
             printf '%s\n' "$GME_OUT" > "$LOGDIR/gfx-glmark2-es2.log"
             printf '%s\n' "$GME_OUT" | grep -E "glmark2 Score|FPS:" | tail -3 | sed 's/^/    /'
             GESCORE="$(printf '%s\n' "$GME_OUT" | grep -oE "glmark2 Score: [0-9]+" | tail -1 | grep -oE "[0-9]+")"

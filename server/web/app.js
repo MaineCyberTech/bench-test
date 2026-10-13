@@ -9,16 +9,18 @@ const DEF_SPIN = { gpu: 600, combined: 300, fullsoak: 300, gfx: 60 };
 // at these defaults a run inherits the runner's long values (cpu 120s, ram 120s,
 // gpu matrix 12288, steady 10GB); a preset overrides them via `tune`.
 const TUNE_DEFAULT = { cpu_soak: 120, ram_soak: 120, disk_seconds: 15, gpu_size: 12288,
-  cpu_size: 4096, ram_size_mb: 1024, passes: 2, steady_gb: 10, stable: 0, stable_hold: 60 };
+  cpu_size: 4096, ram_size_mb: 1024, passes: 2, steady_gb: 10, stable: 0, stable_hold: 60,
+  gfx_engine: "furmark" };
 const PRESETS = {
   "Quick check (short soaks)": { groups: gset("gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "sys", "gfx"), spin: { gpu: 60, combined: 60, fullsoak: 60, gfx: 30 } },
-  "Stabilized full soak (15 min)": { groups: gset("gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "fan", "sys", "gfx"), spin: { gpu: 180, combined: 45, fullsoak: 90, gfx: 30 }, tune: { ...TUNE_DEFAULT, cpu_soak: 45, ram_soak: 30, disk_seconds: 30, gpu_size: 4096, cpu_size: 2048, ram_size_mb: 512, passes: 1, steady_gb: 2, stable: 1, stable_hold: 60 } },
+  "Stabilized full soak (15 min)": { groups: gset("gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "fan", "sys", "gfx"), spin: { gpu: 180, combined: 45, fullsoak: 90, gfx: 30 }, tune: { ...TUNE_DEFAULT, cpu_soak: 45, ram_soak: 30, disk_seconds: 30, gpu_size: 4096, cpu_size: 2048, ram_size_mb: 512, passes: 1, steady_gb: 2, stable: 1, stable_hold: 60, gfx_engine: "furmark" } },
   "System info + 60s soak (all)": { groups: gset("sys", "fullsoak"), spin: { ...DEF_SPIN, fullsoak: 60 } },
   "Full run (defaults)": { groups: gset(...ALL_GROUPS), spin: { ...DEF_SPIN } },
   "GPU compute": { groups: gset("gpu", "sys"), spin: { ...DEF_SPIN, gpu: 60 } },
   "CPU + RAM + disk": { groups: gset("cpu", "ram", "disk", "sys"), spin: { ...DEF_SPIN } },
   "Storage + network": { groups: gset("disk", "net", "sys"), spin: { ...DEF_SPIN } },
   "Video / graphics": { groups: gset("nvenc", "gfx", "sys"), spin: { ...DEF_SPIN } },
+  "Graphics only (FurMark/Valley)": { groups: gset("gfx", "sys"), spin: { ...DEF_SPIN, gfx: 30 }, tune: { ...TUNE_DEFAULT, gfx_engine: "furmark" } },
   "LLM inference (Ollama)": { groups: gset("llm", "sys"), spin: { ...DEF_SPIN } },
   "Fan response": { groups: gset("fan", "sys"), spin: { ...DEF_SPIN } },
   "Soak only (long)": { groups: gset("gpu", "fullsoak", "sys"), spin: { ...DEF_SPIN, gpu: 1800, fullsoak: 1800 } },
@@ -940,7 +942,9 @@ async function startRun(runnerId) {
       steady GB <input id="mSteady" type="number" value="10" style="width:80px">
       passes <input id="mPasses" type="number" value="2" style="width:80px">
       <label><input type="checkbox" id="mStable"> soak until stable, hold</label>
-      <input id="mStableHold" type="number" value="60" style="width:70px"> s after plateau</div>
+      <input id="mStableHold" type="number" value="60" style="width:70px"> s after plateau
+      <label>gfx engine</label>
+      <select id="mGfxEngine"><option>furmark</option><option>valley</option></select></div>
     <div class="formrow" style="justify-content:flex-end">
       <button class="ghost" id="mCancel">cancel</button>
       <button class="accent" id="mGo">start</button></div>`);
@@ -957,6 +961,7 @@ async function startRun(runnerId) {
     $("#mRamSoak").value = tune.ram_soak; $("#mDiskSec").value = tune.disk_seconds;
     $("#mSteady").value = tune.steady_gb; $("#mPasses").value = tune.passes;
     $("#mStable").checked = !!tune.stable; $("#mStableHold").value = tune.stable_hold;
+    $("#mGfxEngine").value = tune.gfx_engine || "furmark";
     const want = GROUPS.filter((g) => groups[g]);
     const un = want.filter((g) => !sup.includes(g));
     const info = $("#mPresetInfo");
@@ -983,6 +988,7 @@ async function startRun(runnerId) {
       cpu_size: +$("#mCpuSize").value, ram_size_mb: +$("#mRamSize").value,
       passes: +$("#mPasses").value, steady_gb: +$("#mSteady").value,
       stable: $("#mStable").checked ? 1 : 0, stable_hold: +$("#mStableHold").value,
+      gfx_engine: $("#mGfxEngine").value,
     };
     closeModal();
     try {

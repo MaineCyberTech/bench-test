@@ -871,7 +871,7 @@ EXTRA_ARG_KEYS = [("cpu_soak", "--cpu-soak"), ("ram_soak", "--ram-soak"),
                   ("disk_seconds", "--disk-seconds"), ("gpu_size", "--gpu-size"),
                   ("cpu_size", "--cpu-size"), ("ram_size_mb", "--ram-size-mb"),
                   ("passes", "--passes"), ("steady_gb", "--steady-gb"),
-                  ("stable_hold", "--stable-hold")]
+                  ("stable_hold", "--stable-hold"), ("gfx_engine", "--gfx-engine")]
 
 
 def extra_runner_args(profile):
@@ -905,6 +905,8 @@ def tune_summary(profile):
     if t.get("stable") or t.get("stable_hold") not in (None, ""):
         hold = t.get("stable_hold")
         parts.append("until stable" + ((" +%ss" % hold) if hold not in (None, "") else ""))
+    if t.get("gfx_engine"):
+        parts.append("gfx %s" % t["gfx_engine"])
     return " · ".join(parts)
 
 

@@ -81,7 +81,7 @@ _DEF_DUR = {"gpu": "600", "combined": "300", "fullsoak": "300", "gfx": "60"}
 # defaults (cpu 120s, ram 120s, gpu matrix 12288, steady 10GB).
 _TUNE = {"cpu_soak": 45, "ram_soak": 30, "disk_seconds": 30, "gpu_size": 4096,
          "cpu_size": 2048, "ram_size_mb": 512, "passes": 1, "steady_gb": 2,
-         "stable": 1, "stable_hold": 60}
+         "stable": 1, "stable_hold": 60, "gfx_engine": "furmark"}
 
 PRESETS = [
     ("Quick check (short soaks)", {"groups": _g("gpu", "cpu", "ram", "disk", "combined", "fullsoak",
@@ -98,6 +98,9 @@ PRESETS = [
     ("CPU + RAM + disk", {"groups": _g("cpu", "ram", "disk", "sys"), "dur": dict(_DEF_DUR)}),
     ("Storage + network", {"groups": _g("disk", "net", "sys"), "dur": dict(_DEF_DUR)}),
     ("Video / graphics", {"groups": _g("nvenc", "gfx", "sys"), "dur": dict(_DEF_DUR)}),
+    ("Graphics only (FurMark/Valley)", {"groups": _g("gfx", "sys"),
+                                        "dur": {**_DEF_DUR, "gfx": "30"},
+                                        "tune": {"gfx_engine": "furmark"}}),
     ("LLM inference (Ollama)", {"groups": _g("llm", "sys"), "dur": dict(_DEF_DUR)}),
     ("Fan response", {"groups": _g("fan", "sys"), "dur": dict(_DEF_DUR)}),
     ("Soak only (long)", {"groups": _g("gpu", "fullsoak", "sys"),
