@@ -227,6 +227,70 @@ def _web(c):
             'new URLSearchParams(location.search).get("token")' in js
             and "history.replaceState" in js, "")
 
+    # ---- W22b: regression tests for the W19 responsive / a11y additions ----
+    # MOB-P3-003 / UX-P3-003: the main tab strip must stay usable on a phone and by
+    # keyboard. Assert the wiring end to end (handler -> element -> behaviour),
+    # not just that a token appears somewhere in the file.
+    c.check("the tab strip scrolls instead of clipping on phones",
+            ".tabs{flex-wrap:nowrap;overflow-x:auto" in css.replace(" ", ""), "")
+    _kbd = re.search(r'document\.addEventListener\("keydown", \(e\) => \{\s*'
+                     r'const tab = e\.target\.closest.*?e\.key !== "Enter"', js, re.S)
+    _kbd = _kbd.group(0) if _kbd else ""
+    c.check("the roving-tabindex keydown handler is wired to the real tabs",
+            '#tabs [role="tab"]' in _kbd and 'tabs[j].focus()' in _kbd
+            and 'tabs[j].click()' in _kbd and 'e.preventDefault()' in _kbd, "")
+    c.check("the tabs it drives exist with role and roving tabindex",
+            'id="tabs"' in html and 'role="tablist"' in html
+            and html.count('role="tab"') >= 6 and 'tabindex="-1"' in html, "")
+    # the destructive schedule delete must stay behind its confirm gate: prove the
+    # DELETE is unreachable when confirm() returns false (control flow, not text).
+    _del = re.search(r"async function deleteSchedule\(id\) \{(.*?)\n\}", js, re.S)
+    _del = _del.group(1) if _del else ""
+    c.check("the schedule delete gate blocks the DELETE until confirmed",
+            re.search(r'if \(!confirm\(.*?\)\) return;.*?api\("/schedules/', _del, re.S)
+            is not None, "")
+    c.check("schedule rows carry the hook the delete handler consumes",
+            'data-sched-del=' in js and "t.dataset.schedDel) return deleteSchedule(" in js, "")
+
+    # ---- W22b: PERF-P3-002 / SEARCH-P3-001 ----
+    # History and Fleet cap the rows they fetch; they must say so and use the total
+    # the API already returns instead of silently truncating.
+    c.check("history shows the loaded count against the API total",
+            "showing ${rows.length} of ${total} run" in js
+            and "const total = typeof d.total" in js, "")
+    c.check("history flags when its page was capped",
+            "const loaded = d.runs.length" in js and "newest ${loaded} loaded" in js, "")
+    c.check("fleet shows the loaded count against the API total",
+            "showing ${runs.length} of ${total} runs" in js
+            and "total = typeof d.total" in js, "")
+    c.check("fleet flags when its page was capped",
+            "newest ${runs.length} loaded" in js, "")
+    # the runs endpoint has no search param, so the box must be labelled as a page
+    # filter and must not be sent to the server as a query.
+    c.check("history search is labelled as a page filter",
+            'id="histSearch"' in html and "filter this page" in html
+            and "not the whole history" in html, "")
+    c.check("history search is not passed to the API (no query param)",
+            '"/runs?limit=" + HIST_LIMIT' in js and "&q=" not in js and "?q=" not in js, "")
+    # Behavioural: the total the History/Fleet affordances print really comes from
+    # the API. Seed three runs and confirm the list returns a total the page limit
+    # does not hide (the UI reads exactly this field).
+    try:
+        from harness import Server
+        srv = Server()
+        try:
+            cl = srv.client()
+            for i in range(3):
+                cl.call("POST", "/api/v1/runs",
+                        {"runner_id": "w22b-runner", "host": "w22b-host", "label": "r%d" % i})
+            _, page = cl.call("GET", "/api/v1/runs?limit=2&host=w22b-host")
+            c.check("the runs API returns the total the UI shows",
+                    page.get("total") == 3 and len(page["runs"]) == 2, page)
+        finally:
+            srv.stop()
+    except Exception as e:
+        c.check("the runs API returns the total the UI shows", False, e)
+
 
 def run():
     c = Checker("dashboards")

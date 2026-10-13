@@ -62,7 +62,9 @@
           <option value="running">running</option><option value="failed">failed</option>
           <option value="stopped">stopped</option>
         </select>
-        <input id="histSearch" placeholder="filter…" />
+        <input id="histSearch" placeholder="filter this page…"
+               title="Filters only the runs loaded on this page — not the whole history."
+               aria-label="Filter this page of runs" />
         <span class="muted mono" id="histCount"></span>
         <button class="ghost" id="histRefresh">refresh</button>
       </div>

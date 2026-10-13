@@ -1012,7 +1012,15 @@ async function renderHistory(force) {
       if (typeof x === "string" || typeof y === "string") return String(x).localeCompare(String(y)) * SORT.dir;
       return (x - y) * SORT.dir;
     });
-    $("#histCount").textContent = `${rows.length} run${rows.length === 1 ? "" : "s"}`;
+    // PERF-P3-002: never hide the cap — show what was loaded against the server's
+    // total. SEARCH-P3-001: the search/status filter is client-side over this page
+    // only (the API has no query param), so say so instead of implying a full scan.
+    const loaded = d.runs.length;
+    const total = typeof d.total === "number" ? d.total : loaded;
+    let count = `showing ${rows.length} of ${total} run${total === 1 ? "" : "s"}`;
+    if (rows.length !== loaded) count += ` (filtered from ${loaded} on this page)`;
+    if (total > loaded) count += ` · newest ${loaded} loaded`;
+    $("#histCount").textContent = count;
     $$("#histTable th.sortable").forEach((th) => {
       th.innerHTML = th.textContent.replace(/[▲▼]\s*$/, "").trim() + sortArrow(th.dataset.sort);
       th.setAttribute("aria-sort", SORT.key === th.dataset.sort
@@ -1053,8 +1061,12 @@ async function renderHistory(force) {
 
 /* -------------------------------------------------------------- fleet --- */
 async function renderFleet() {
-  let runs = [];
-  try { runs = (await api("/runs?limit=500")).runs; } catch (e) { return; }
+  let runs = [], total = 0;
+  try {
+    const d = await api("/runs?limit=500");
+    runs = d.runs;
+    total = typeof d.total === "number" ? d.total : runs.length;
+  } catch (e) { return; }
   const done = runs.filter((r) => r.status !== "running");
   const byHost = {}, byGpu = {};
   for (const r of done) {
@@ -1077,8 +1089,12 @@ async function renderFleet() {
     }
     return seen || "—";
   };
-  $("#fleetCount").textContent = `${Object.keys(byHost).length} machines · ${done.length} finished runs` +
-    (STATE.server_git ? ` · control plane ${STATE.server_git}` : "");
+  // PERF-P3-002: the medians below come from a capped page of runs — show how many
+  // that is against the server total instead of implying it is all of history.
+  $("#fleetCount").textContent = `${Object.keys(byHost).length} machines · ${done.length} finished runs`
+    + ` · showing ${runs.length} of ${total} runs`
+    + (total > runs.length ? ` (newest ${runs.length} loaded)` : "")
+    + (STATE.server_git ? ` · control plane ${STATE.server_git}` : "");
   $("#fleetHosts tbody").innerHTML = Object.entries(byHost).sort().map(([h, rs]) => {
     const a = agg(rs), L = latest(rs), tk = tkState(rs);
     const stale = tk === "update available";
