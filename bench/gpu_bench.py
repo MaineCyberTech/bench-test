@@ -217,6 +217,31 @@ def _telemetry_summary(samples):
     }
 
 
+def _temp_stable(samples, window=8, tol=0.5):
+    """True when the GPU temperature has plateaued.
+
+    Temperatures settle onto a plateau rather than stopping dead, so compare the
+    mean of the older half of the window with the newer half: under `tol` degrees
+    of drift means stable. The window is 2s-spaced samples (~16s here).
+    """
+    if len(samples) < window:
+        return False
+    recent = [s[0] for s in samples[-window:]]
+    half = len(recent) // 2
+    return abs(statistics.mean(recent[half:]) - statistics.mean(recent[:half])) < tol
+
+
+def _soak_continue(t0, a, samples):
+    """Keep soaking until the ceiling, or stop early once temps plateau."""
+    el = time.time() - t0
+    if el >= a.seconds:
+        return False
+    if getattr(a, "until_stable", False) and el >= min(45.0, a.seconds) \
+            and _temp_stable(samples):
+        return False
+    return True
+
+
 def phase_soak(a):
     N = min(a.size, 10240)
     A = torch.randn(N, N, device=DEV, dtype=torch.bfloat16)
@@ -229,14 +254,14 @@ def phase_soak(a):
     t0 = time.time(); mats = convs = 0
     if torch.cuda.get_device_capability(0) >= (7, 0):
         streams = [torch.cuda.Stream() for _ in range(4)]
-        while time.time() - t0 < a.seconds:
+        while _soak_continue(t0, a, samples):
             for s in streams:
                 with torch.cuda.stream(s):
                     _ = A @ B; mats += 1
                     _ = F.conv2d(xi, w, padding=1); convs += 1
     else:
         # Single-stream on pre-Volta; sync each iteration to bound the kernel queue.
-        while time.time() - t0 < a.seconds:
+        while _soak_continue(t0, a, samples):
             _ = A @ B; mats += 1
             _ = F.conv2d(xi, w, padding=1); convs += 1
             torch.cuda.synchronize()
@@ -245,7 +270,9 @@ def phase_soak(a):
     stop.set(); tel.join(timeout=5)
     out = {"phase": "soak", "seconds": round(dt, 1), "matmuls": mats, "convs": convs,
            "matmul_tflops": round(2.0 * N ** 3 * mats / dt / 1e12, 1),
-           "peak_vram_gib": round(torch.cuda.max_memory_allocated() / 1024 ** 3, 1)}
+           "peak_vram_gib": round(torch.cuda.max_memory_allocated() / 1024 ** 3, 1),
+           "until_stable": bool(getattr(a, "until_stable", False)),
+           "stable": bool(getattr(a, "until_stable", False) and dt < a.seconds - 0.5)}
     ts = _telemetry_summary(samples)
     if ts:
         out["telemetry"] = ts
@@ -267,6 +294,8 @@ def main():
     ap.add_argument("--seconds", type=float, default=12.0, help="per-measurement seconds")
     ap.add_argument("--size", type=int, default=12288, help="matrix size N")
     ap.add_argument("--force", action="store_true", help="skip VRAM-fill confirmation")
+    ap.add_argument("--until-stable", action="store_true",
+                    help="soak until the GPU temperature plateaus (--seconds is the ceiling)")
     a = ap.parse_args()
     if not torch.cuda.is_available():
         print("ERROR: torch.cuda not available", file=sys.stderr)

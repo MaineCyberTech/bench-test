@@ -48,7 +48,8 @@ from benchreport import (Reporter, PhaseTracker, TelemetryTail,  # noqa: E402
                          update_toolkit, iso_fetch, iso_write, iso_write_slot,
                          self_update, restart_self,
                          toolkit_version, is_live, update_needs_restart,
-                         auto_update, venv_python, upload_telemetry_csv, upload_run_files)
+                         auto_update, venv_python, upload_telemetry_csv, upload_run_files,
+                         extra_runner_args)
 
 DEFAULT_GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc",
                   "llm", "fan", "sys", "gfx"]
@@ -101,6 +102,7 @@ def build_runner_args(profile):
     for k, flag in dur.items():
         if profile.get(k) not in (None, ""):
             args += ["--" + flag, str(profile[k])]
+    args += extra_runner_args(profile)
     return args
 
 

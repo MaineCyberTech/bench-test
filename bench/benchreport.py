@@ -863,6 +863,28 @@ def popen_hidden(cmd, **kw):
     return subprocess.Popen(cmd, **kw)
 
 
+# preset/payload knobs -> runner flags. The runners already accept all of these;
+# they were simply unreachable from a preset, so runs used the runner's long
+# defaults (cpu 120s, ram 120s, gpu size 12288) - which is why "Quick check" took
+# over half an hour.
+EXTRA_ARG_KEYS = [("cpu_soak", "--cpu-soak"), ("ram_soak", "--ram-soak"),
+                  ("disk_seconds", "--disk-seconds"), ("gpu_size", "--gpu-size"),
+                  ("cpu_size", "--cpu-size"), ("ram_size_mb", "--ram-size-mb"),
+                  ("passes", "--passes"), ("steady_gb", "--steady-gb")]
+
+
+def extra_runner_args(profile):
+    """Tuning flags a preset may set beyond gpu/combined/fullsoak/gfx."""
+    args = []
+    for key, flag in EXTRA_ARG_KEYS:
+        v = (profile or {}).get(key)
+        if v not in (None, ""):
+            args += [flag, str(v)]
+    if (profile or {}).get("stable"):
+        args.append("--soak-until-stable")
+    return args
+
+
 def is_live():
     """True on a booted live image (archiso) rather than a normal install."""
     return os.path.isdir("/run/archiso") or os.path.exists("/etc/arch-release")

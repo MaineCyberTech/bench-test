@@ -29,6 +29,7 @@ DISK_PATH="${TMPDIR:-/tmp}"; DISK_SIZE_MB=2048; DISK_SECONDS=15; STEADY_GB=10
 DISK_PATH_SET=0
 DO_GPU=1; DO_CPU=1; DO_RAM=1; DO_DISK=1
 DO_COMBINED=1; DO_FULLSOAK=1; DO_NET=1; DO_NVENC=1; DO_SYS=1; DO_GFX=1; DO_FAN=1
+STABLE_ARG=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -61,6 +62,7 @@ while [ $# -gt 0 ]; do
         --skip-sys)        DO_SYS=0; shift ;;
         --skip-gfx)        DO_GFX=0; shift ;;
         --skip-fan)        DO_FAN=0; shift ;;
+    --soak-until-stable) STABLE_ARG="--until-stable"; shift ;;
         -h|--help)         sed -n '2,19p' "$0"; exit 0 ;;
         *)                 echo "unknown option: $1" >&2; exit 1 ;;
     esac
@@ -111,7 +113,7 @@ if [ "$DO_GPU" = 1 ]; then
     run_phase gpu gpu_bench.py conv   --size "$GPU_SIZE" --seconds 15 --force
     run_phase gpu gpu_bench.py integrity --size "$GPU_SIZE" --force
     run_phase gpu gpu_bench.py streams --size "$GPU_SIZE" --seconds 8 --force
-    run_phase gpu gpu_bench.py soak   --size "$GPU_SIZE" --seconds "$GPU_SOAK" --force
+    run_phase gpu gpu_bench.py soak   --size "$GPU_SIZE" --seconds "$GPU_SOAK" --force $STABLE_ARG
 fi
 
 if [ "$DO_CPU" = 1 ]; then
@@ -314,7 +316,7 @@ fi
 if [ "$DO_COMBINED" = 1 ]; then
     echo "[combined] gpu soak + cpu soak (${COMBINED_SECONDS}s)"
     D="$(mktemp -d)"
-    "$PY" "$BENCH/gpu_bench.py" soak --size "$GPU_SIZE" --seconds "$COMBINED_SECONDS" --force >"$D/gpu.out" 2>&1 &
+    "$PY" "$BENCH/gpu_bench.py" soak --size "$GPU_SIZE" --seconds "$COMBINED_SECONDS" --force $STABLE_ARG >"$D/gpu.out" 2>&1 &
     GPID=$!
     "$PY" "$BENCH/cpu_bench.py" soak --size "$CPU_SIZE" --seconds "$COMBINED_SECONDS" >"$D/cpu.out" 2>&1 &
     CPID=$!
@@ -352,7 +354,7 @@ fi
 if [ "$DO_FULLSOAK" = 1 ]; then
     echo "[fullsoak] gpu + cpu + ram + disk concurrently (${FULLSOAK_SECONDS}s)"
     D="$(mktemp -d)"
-    "$PY" "$BENCH/gpu_bench.py" soak --size "$GPU_SIZE" --seconds "$FULLSOAK_SECONDS" --force >"$D/gpu.out" 2>&1 &
+    "$PY" "$BENCH/gpu_bench.py" soak --size "$GPU_SIZE" --seconds "$FULLSOAK_SECONDS" --force $STABLE_ARG >"$D/gpu.out" 2>&1 &
     GPID=$!
     "$PY" "$BENCH/cpu_bench.py" soak --size "$CPU_SIZE" --seconds "$FULLSOAK_SECONDS" >"$D/cpu.out" 2>&1 &
     CPID=$!
