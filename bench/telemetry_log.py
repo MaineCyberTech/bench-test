@@ -141,7 +141,12 @@ def disk_net_counters():
                 if len(p) < 14:
                     continue
                 name = p[2]
-                if name.startswith(("loop", "ram", "dm-", "sr", "zram")):
+                # virtual/stacked devices: their members are counted separately,
+                # so adding both doubled the figures. md*/bcache*/nbd*/drbd* are
+                # arrays/network/HA devices built on top of real disks - without
+                # them an md-RAID array was added on top of its own members.
+                if name.startswith(("loop", "ram", "dm-", "sr", "zram",
+                                    "md", "bcache", "nbd", "drbd")):
                     continue
                 # a partition is already counted in its whole disk's figures,
                 # so adding both doubled the throughput on any partitioned disk
@@ -167,15 +172,25 @@ def disk_net_counters():
     return rd, wr, rx, tx
 
 
+_GPU_CHIP = re.compile(r"amdgpu|nouveau|radeon|nvidia|gpu|drm", re.I)
+
+
 def sensors_temps():
-    """(package_c, max_core_c, max_fan_rpm) from `sensors -j`; any may be ''."""
+    """(package_c, max_core_c, max_fan_rpm) from `sensors -j`; any may be ''.
+
+    Package/cores include k10temp's Tctl/Tdie/Tccd* names: most Ryzen systems
+    have no "Package" sensor, so cpu_package_c/cpu_max_core_c were blank there.
+    Fans are scoped away from GPU chips - taking the max over every chip put the
+    GPU fan in the CPU fan column on AMD boxes. (A motherboard/SIO fan is still
+    the best available proxy when the CPU's own chip exposes none.)
+    """
     package = maxcore = maxfan = ""
     try:
         out = subprocess.run(["sensors", "-j"], capture_output=True, text=True, timeout=5).stdout
         data = json.loads(out)
         cores = []
         fans = []
-        for _chip, sensors in data.items():
+        for chip, sensors in data.items():
             for name, vals in sensors.items():
                 if not isinstance(vals, dict):
                     continue
@@ -183,12 +198,13 @@ def sensors_temps():
                     if not isinstance(v, (int, float)):
                         continue
                     if k.startswith("temp") and k.endswith("_input"):
-                        if "Package" in name and package == "":
+                        if package == "" and any(p in name for p in ("Package", "Tctl", "Tdie")):
                             package = v
-                        elif "core" in name.lower():
+                        if "core" in name.lower() or name.startswith("Tccd"):
                             cores.append(v)
                     elif k.startswith("fan") and k.endswith("_input"):
-                        fans.append(v)
+                        if not _GPU_CHIP.search(chip):
+                            fans.append(v)
         if package == "" and cores:
             package = max(cores)
         if cores:
@@ -225,9 +241,43 @@ def gpu_fan_rpm():
     return ""
 
 
+def _root_blockdev():
+    """Kernel name of the block device backing / (e.g. 'nvme0n1p2'), or ''."""
+    try:
+        with open("/proc/self/mountinfo") as fh:
+            for ln in fh:
+                p = ln.split()
+                if len(p) > 4 and p[4] == "/":
+                    return os.path.basename(os.path.realpath("/sys/dev/block/" + p[2]))
+    except OSError:
+        pass
+    return ""
+
+
+def _nvme_of(dev):
+    """'nvme0' when `dev` (or a device it is stacked on) is an NVMe controller."""
+    m = re.match(r"(nvme\d+)", dev)
+    if m:
+        return m.group(1)
+    for slave in glob.glob("/sys/class/block/%s/slaves/*" % dev):
+        m = re.match(r"(nvme\d+)", os.path.basename(slave))
+        if m:
+            return m.group(1)
+    return ""
+
+
 def nvme_temp():
+    """Temperature of the NVMe backing the filesystem under test (root).
+
+    The max over every nvme device reported the hottest secondary drive as "the"
+    NVMe temp; the run's disk phases write on the root volume, so that
+    controller is the one under test. Blank when root is not on NVMe.
+    """
+    ctrl = _nvme_of(_root_blockdev())
+    if not ctrl:
+        return ""
     best = ""
-    for path in glob.glob("/sys/class/nvme/nvme*/hwmon*/temp1_input"):
+    for path in glob.glob("/sys/class/nvme/%s/hwmon*/temp1_input" % ctrl):
         try:
             with open(path) as fh:
                 val = int(fh.read().strip()) / 1000.0

@@ -44,24 +44,35 @@ def ping_stats(target, count, interval):
     return None
 
 
-def download_mbps(url, megabytes, chunk_mb=25, timeout=90):
-    """Cloudflare rejects large `bytes=` values (>=100MB -> 403), so fetch in chunks."""
+def download_mbps(url, megabytes, chunk_mb=25, timeout=90, max_mb=95):
+    """One HTTP request, timed from the first byte received.
+
+    Cloudflare rejects `bytes=` >= 100MB with a 403, so the request is capped at
+    95MB. The old code opened a new connection per 25MB chunk and started the
+    clock before the first, so TLS/TCP/slow-start were inside the number;
+    `chunk_mb` is now the socket read size, not a new connection.
+    """
+    n = max(1, min(int(megabytes), max_mb))
     total = 0
-    t0 = time.time()
+    t0 = None
     try:
-        remaining = megabytes
-        while remaining > 0:
-            n = min(chunk_mb, remaining)
-            req = urllib.request.Request(url % (n << 20), headers={"User-Agent": UA})
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                total += len(r.read())
-            remaining -= n
+        req = urllib.request.Request(url % (n << 20), headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            first = r.read(1)
+            if first:
+                t0 = time.time()          # first byte: setup/TTFB stay out
+                total = 1
+                while True:
+                    b = r.read(chunk_mb << 20)
+                    if not b:
+                        break
+                    total += len(b)
     except Exception as exc:
         print("download error after %d bytes: %s" % (total, exc))
-    dt = time.time() - t0
-    if total:
-        return round(total * 8 / dt / 1e6, 1), total
-    return None, 0
+    if total and t0 is not None:
+        dt = time.time() - t0
+        return round(total * 8 / dt / 1e6, 1), total, n
+    return None, 0, n
 
 
 def upload_mbps(url, megabytes, timeout=120):
@@ -91,7 +102,7 @@ def main():
     if ping:
         print("ping min/avg/max/mdev %.1f/%.1f/%.1f/%.1f ms loss %.0f%% (%s)" % (
             ping["min"], ping["avg"], ping["max"], ping.get("mdev", 0.0), ping.get("loss_pct", 0.0), a.target))
-    down, nbytes = download_mbps(
+    down, nbytes, down_mb = download_mbps(
         "https://speed.cloudflare.com/__down?bytes=%d", a.down_mb)
     print(("download %.1f Mbps" % down) if down is not None else "download failed")
     up = upload_mbps("https://speed.cloudflare.com/__up", a.up_mb)
@@ -99,7 +110,8 @@ def main():
     jline({"phase": "bench", "target": a.target, "ping_ms": ping,
            "ping_avg_ms": ping and ping["avg"], "ping_mdev_ms": ping and ping.get("mdev"),
            "ping_loss_pct": ping and ping.get("loss_pct"),
-           "download_mbps": down, "download_bytes": nbytes, "upload_mbps": up})
+           "download_mbps": down, "download_bytes": nbytes, "download_mb": down_mb,
+           "upload_mbps": up})
     return 0
 
 

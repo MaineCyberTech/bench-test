@@ -53,7 +53,10 @@ function Get-DiskHealth {
 
 function Invoke-Phase($name, $extraArgs) {
     Write-Host "[disk] $name" -ForegroundColor Cyan
-    $out = & python $bench $name --path $Path --size-mb $SizeMB --seconds $Seconds --force @extraArgs 2>&1
+    # --keep: every phase shares the one file, so seqread/latency read what
+    # seqwrite wrote instead of a freshly generated copy. It is removed at the
+    # end unless the caller asked to keep it.
+    $out = & python $bench $name --path $Path --size-mb $SizeMB --seconds $Seconds --force --keep @extraArgs 2>&1
     $out | Where-Object { $_ -notmatch '^RESULT_JSON:' } | ForEach-Object { Write-Host "    $_" }
     $jl = $out | Where-Object { $_ -match '^RESULT_JSON:' } | Select-Object -Last 1
     if ($jl) { ($jl -replace '^RESULT_JSON:', '') | ConvertFrom-Json } else { $null }
@@ -69,6 +72,8 @@ $phases += Invoke-Phase 'randmix' @()
 $phases += Invoke-Phase 'latency' @()
 $phases += Invoke-Phase 'steadywrite' @('--steady-gb', "$SteadyGB")
 
+if (-not $Keep) { Remove-Item (Join-Path $Path 'benchtest_disk.tmp') -Force -ErrorAction SilentlyContinue }
+
 $report = [ordered]@{ host = $hostname; timestamp = (Get-Date).ToString('o'); path = $Path; size_mb = $SizeMB; health = $health; phases = $phases }
 $report | ConvertTo-Json -Depth 8 | Set-Content "$base.json" -Encoding UTF8
 
@@ -77,16 +82,17 @@ $md += ""; $md += "**Drive:** $($health.friendly) | $($health.media) $($health.b
 $md += ""; $md += "**Test file:** $SizeMB MiB in $Path"; $md += ""
 $md += "| phase | result |"; $md += "|---|---|"
 foreach ($p in $phases) { if (-not $p) { continue }
+    $cs = if ($p.cache_served) { ' [cache-served - not device throughput]' } else { '' }
     switch ($p.phase) {
         'seqwrite' { $md += "| seq write | $($p.mbps) MB/s ($($p.seconds) s) |" }
-        'seqread' { $md += "| seq read | $($p.mbps) MB/s ($($p.seconds) s) |" }
+        'seqread' { $md += "| seq read | $($p.mbps) MB/s ($($p.seconds) s)$cs |" }
         'randread' { $md += "| rand 4K read | $($p.iops) IOPS, $($p.mbps) MB/s |" }
         'randwrite' { $md += "| rand 4K write | $($p.iops) IOPS, $($p.mbps) MB/s |" }
         'randmix' { $md += "| rand 4K mix (70/30) | $($p.iops) IOPS, $($p.mbps) MB/s |" }
-        'latency' { $md += "| 4K latency | $($p.iops) IOPS, p50 $($p.us_p50)/p99 $($p.us_p99)/p99.9 $($p.us_p999) us |" }
+        'latency' { $md += "| 4K latency | $($p.iops) IOPS, p50 $($p.us_p50)/p99 $($p.us_p99)/p99.9 $($p.us_p999) us$cs |" }
         'steadywrite' { $md += "| steady-state write ($($p.gib) GiB) | first $($p.first10_mbps) -> last $($p.last10_mbps) MB/s (drop $($p.drop_pct)%) |" }
     }
 }
-$md += ""; $md += "_Buffered I/O: sequential reads may be cache-served. Use a file larger than RAM for truer reads._"
+$md += ""; $md += "_Buffered I/O: on Windows a file that fits in RAM is read from the page cache; those phases carry cache_served in the JSON. Use a file larger than RAM for truer reads._"
 $md -join "`n" | Set-Content "$base.md" -Encoding UTF8
 Write-Host "[done] wrote $base.json and $base.md" -ForegroundColor Green

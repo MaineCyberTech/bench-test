@@ -101,6 +101,11 @@ $res = @()
 foreach ($t in $tests) { $res += Bench $t[0] $t[1] }
 Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 
-$out = [ordered]@{ ffmpeg = $ff; vendor = $vendor; results = $res }
+# Record what the fps means: the source is pre-encoded (frame generation is
+# outside the timed run) and the pipeline is decode+encode, with CUDA decode on
+# NVIDIA. The Python bench records the same fields for cross-platform comparison.
+$pipeline = if ($vendor -eq 'nvidia') { 'decode (hwaccel cuda) + encode to null muxer' } else { 'decode + encode to null muxer' }
+$out = [ordered]@{ ffmpeg = $ff; vendor = $vendor; frames = 1200
+    source = 'testsrc2 1920x1080@60 pre-encoded with libx264'; pipeline = $pipeline; results = $res }
 if ($OutFile) { $out | ConvertTo-Json -Depth 5 | Set-Content $OutFile -Encoding UTF8; Write-Host "[video] wrote $OutFile" }
 $out | ConvertTo-Json -Depth 5

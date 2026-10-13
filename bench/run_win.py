@@ -95,8 +95,64 @@ _CPU_TEMP = {"v": None}
 _GPU_ENGINE = {"3d": None, "copy": None}
 # LibreHardwareMonitor values (Sample-Sensors.ps1), used when there is no
 # nvidia-smi - i.e. AMD/Intel GPUs on Windows - so the GPU columns are populated.
+# Every value update also stamps "ts", so a sampler that stops answering can be
+# detected and its last values blanked instead of being reused forever.
 _LHM = {}
 _LHM_LOCK = threading.Lock()
+# identity/bookkeeping keys that do not go stale like a sensor reading
+_LHM_STATIC = ("gpu_name", "cpu_name", "ncores", "elevated", "elevation_warned", "error", "ts")
+
+
+def _lhm_stale(d):
+    """True when the library's last sample is older than 5s.
+
+    A dict with no "ts" (only possible when a caller sets values directly) is
+    not called stale: there is no age to compare.
+    """
+    ts = d.get("ts")
+    return ts is not None and time.time() - ts > 5.0
+
+
+def _lhm_view():
+    """Snapshot of _LHM with stale sensor values blanked out.
+
+    If the sampler child died or is being restarted, the same reading must not
+    keep being written to every row; past ~5s the value is dropped (blank, not a
+    number that stopped being true). Static identity strings are kept.
+    """
+    with _LHM_LOCK:
+        d = dict(_LHM)
+    if _lhm_stale(d):
+        for k in [k for k in d if k not in _LHM_STATIC]:
+            d.pop(k, None)
+    return d
+
+
+def cpu_temp_thread(stop_evt):
+    """Fallback Windows CPU temp via ACPI (root/wmi), off the row path.
+
+    LibreHardwareMonitor's CPU temp is preferred (a direct sensor read); the ACPI
+    thermal zone is only asked when the library has no fresh value, and at a
+    >=30s cadence - it returned nothing at all on a box where it still cost
+    0.3-1.3s of CPU every 3s.
+    """
+    if os.name != "nt":
+        return
+    ps = ("(Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature "
+          "-ErrorAction SilentlyContinue | Measure-Object -Property CurrentTemperature -Maximum).Maximum")
+    while not stop_evt.is_set():
+        with _LHM_LOCK:
+            have_lhm = _LHM.get("cpu_temp") is not None and not _lhm_stale(_LHM)
+        if not have_lhm:
+            try:
+                out = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                                     capture_output=True, text=True, timeout=8,
+                                     creationflags=subprocess.CREATE_NO_WINDOW).stdout.strip()
+                v = float(out)
+                _CPU_TEMP["v"] = round(v / 10.0 - 273.15, 1) if 2732 < v < 3832 else None
+            except Exception:
+                _CPU_TEMP["v"] = None
+        stop_evt.wait(30.0)
 
 
 def _bits(s):
@@ -111,24 +167,6 @@ def _flag(s):
     """nvidia-smi yes/no -> 1/0."""
     v = str(s).strip().lower()
     return 1 if v in ("yes", "true", "1") else (0 if v in ("no", "false", "0") else None)
-
-
-def cpu_temp_thread(stop_evt):
-    """Best-effort Windows CPU temp via ACPI (root/wmi), off the row path."""
-    if os.name != "nt":
-        return
-    ps = ("(Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature "
-          "-ErrorAction SilentlyContinue | Measure-Object -Property CurrentTemperature -Maximum).Maximum")
-    while not stop_evt.is_set():
-        try:
-            out = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                                 capture_output=True, text=True, timeout=8,
-                                 creationflags=subprocess.CREATE_NO_WINDOW).stdout.strip()
-            v = float(out)
-            _CPU_TEMP["v"] = round(v / 10.0 - 273.15, 1) if 2732 < v < 3832 else None
-        except Exception:
-            _CPU_TEMP["v"] = None
-        stop_evt.wait(3.0)
 
 
 def _num(s):
@@ -246,45 +284,58 @@ def lhm_thread(stop_evt):
 
     nvidia-smi carries the GPU telemetry on NVIDIA; on AMD/Intel the library is
     the only local source for GPU temp/power/clocks/VRAM. Best-effort and off the
-    row path (a value the library cannot read stays blank)."""
+    row path (a value the library cannot read stays blank). The child is restarted
+    like gpu_engine_thread, so a sampler that exits does not leave its last
+    values in _LHM forever; each good line stamps "ts" so the sampler can blank
+    values that stop updating. An error line is stored once so its message prints
+    once instead of on every line."""
     if os.name != "nt":
         return
     script = os.path.join(BENCH, "Sample-Sensors.ps1")
     if not os.path.isfile(script):
         return
-    try:
-        p = subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                              "-File", script, "-IntervalMs", "1000",
-                              "-ParentPid", str(os.getpid())],
-                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-                             bufsize=1, creationflags=subprocess.CREATE_NO_WINDOW)
-    except Exception:
-        return
-    try:
-        for line in p.stdout:
-            if stop_evt.is_set():
-                break
-            upd = _parse_lhm_line(line)
-            # A sensor backend that cannot start has to be visible: otherwise the
-            # GPU/CPU columns are simply blank on AMD/Intel and nothing says why.
-            if upd.get("error") and _LHM.get("error") != upd["error"]:
-                print("[win] LibreHardwareMonitor: %s - GPU/CPU sensor columns will be "
-                      "blank" % upd["error"], flush=True)
-            if upd.get("elevated") == "0" and not _LHM.get("elevation_warned"):
-                print("[win] sensor note: not elevated - CPU temp/power/clock sensors "
-                      "normally need an administrator shell", flush=True)
-                _LHM["elevation_warned"] = True
-            if upd.get("error"):
-                continue          # an error line must not wipe the last good values
-            with _LHM_LOCK:
-                _LHM.update(upd)
-    except Exception:
-        pass
-    finally:
+    while not stop_evt.is_set():
+        p = None
         try:
-            p.terminate()
+            p = subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                                  "-File", script, "-IntervalMs", "1000",
+                                  "-ParentPid", str(os.getpid())],
+                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                                 bufsize=1, creationflags=subprocess.CREATE_NO_WINDOW)
         except Exception:
-            pass
+            p = None
+        if p is not None:
+            try:
+                for line in p.stdout:
+                    if stop_evt.is_set():
+                        break
+                    upd = _parse_lhm_line(line)
+                    # A sensor backend that cannot start has to be visible: otherwise the
+                    # GPU/CPU columns are simply blank on AMD/Intel and nothing says why.
+                    # Storing the error is what makes the guard print it once.
+                    if upd.get("error"):
+                        if _LHM.get("error") != upd["error"]:
+                            print("[win] LibreHardwareMonitor: %s - GPU/CPU sensor columns will be "
+                                  "blank" % upd["error"], flush=True)
+                        with _LHM_LOCK:
+                            _LHM["error"] = upd["error"]
+                        continue      # an error line must not wipe the last good values
+                    if upd.get("elevated") == "0" and not _LHM.get("elevation_warned"):
+                        print("[win] sensor note: not elevated - CPU temp/power/clock sensors "
+                              "normally need an administrator shell", flush=True)
+                        _LHM["elevation_warned"] = True
+                    with _LHM_LOCK:
+                        _LHM.update(upd)
+                        _LHM["ts"] = time.time()
+            except Exception:
+                pass
+            finally:
+                try:
+                    p.terminate()
+                except Exception:
+                    pass
+        if not stop_evt.is_set():
+            stop_evt.wait(2.0)        # the child exited; start it again
 
 
 def _gpu_row():
@@ -326,8 +377,62 @@ def _win_cpu_pct(prev):
         return None
 
 
+def _win_pagefile_used_gib():
+    """Real page-file usage (GiB) via NtQuerySystemInformation, or None.
+
+    GlobalMemoryStatusEx's TotalPageFile - AvailPageFile is the system commit
+    charge (13.03 GiB measured on a box whose page file actually held 62 MiB), so
+    it must not be reported as swap. SystemPageFileInformation (0x12) returns one
+    entry per page file and TotalInUse is the real usage - the same call
+    psutil.swap_memory() makes on Windows. Blank (None) when it cannot be read.
+    """
+    try:
+        import ctypes
+
+        class UnicodeString(ctypes.Structure):
+            _fields_ = [("Length", ctypes.c_ushort), ("MaximumLength", ctypes.c_ushort),
+                        ("Buffer", ctypes.c_wchar_p)]
+
+        class PageFileInfo(ctypes.Structure):
+            _fields_ = [("NextEntryOffset", ctypes.c_ulong), ("CurrentSize", ctypes.c_ulong),
+                        ("TotalInUse", ctypes.c_ulong), ("PeakUsage", ctypes.c_ulong),
+                        ("PageFileName", UnicodeString)]
+
+        class SysInfo(ctypes.Structure):
+            _fields_ = [("wProcessorArchitecture", ctypes.c_ushort), ("wReserved", ctypes.c_ushort),
+                        ("dwPageSize", ctypes.c_ulong), ("lpMinimumApplicationAddress", ctypes.c_void_p),
+                        ("lpMaximumApplicationAddress", ctypes.c_void_p),
+                        ("dwActiveProcessorMask", ctypes.c_void_p),
+                        ("dwNumberOfProcessors", ctypes.c_ulong), ("dwProcessorType", ctypes.c_ulong),
+                        ("dwAllocationGranularity", ctypes.c_ulong), ("wProcessorLevel", ctypes.c_ushort),
+                        ("wProcessorRevision", ctypes.c_ushort)]
+        si = SysInfo()
+        ctypes.windll.kernel32.GetSystemInfo(ctypes.byref(si))
+        buf = ctypes.create_string_buffer(1 << 16)
+        ret = ctypes.c_ulong(0)
+        if ctypes.windll.ntdll.NtQuerySystemInformation(0x12, buf, ctypes.sizeof(buf),
+                                                        ctypes.byref(ret)) != 0:
+            return None
+        pages = 0
+        off = 0
+        while True:
+            p = PageFileInfo.from_buffer(buf, off)
+            pages += p.TotalInUse
+            if not p.NextEntryOffset:
+                break
+            off += p.NextEntryOffset
+        return round(pages * si.dwPageSize / 1024 ** 3, 2)
+    except Exception:
+        return None
+
+
 def _win_mem():
-    """(used_gib, total_gib, swap_used_gib) via GlobalMemoryStatusEx."""
+    """(used_gib, total_gib, pagefile_used_gib) via GlobalMemoryStatusEx.
+
+    The third value is the real page-file usage (like the Linux sampler's real
+    swap), not the commit charge: the two diverge by orders of magnitude under
+    load and the old formula reported 13 GiB of "swap" on a box using 62 MiB.
+    """
     if os.name != "nt":
         return None, None, None
     try:
@@ -347,7 +452,7 @@ def _win_mem():
             return None, None, None
         return (round((st.ullTotalPhys - st.ullAvailPhys) / 1024 ** 3, 2),
                 round(st.ullTotalPhys / 1024 ** 3, 2),
-                round((st.ullTotalPageFile - st.ullAvailPageFile) / 1024 ** 3, 2))
+                _win_pagefile_used_gib())
     except Exception:
         return None, None, None
 
@@ -373,16 +478,34 @@ def sampler(csv_path, stop_evt, interval=0.25, gpu_interval=0.5):
         # nvidia-smi costs ~66ms a call; the psutil/GetSystemTimes stats are
         # sub-millisecond, so only the GPU query is throttled and reused between
         # rows (it also carries temp + power, which change on a thermal timescale).
-        gpu_v, gpu_t = None, 0.0
+        # A failing/hanging call (a TDR is exactly what the suite hunts) would
+        # otherwise block every row at its 5s timeout, so after one failure the
+        # next try waits 30s and the rows in between carry no nvidia-smi values
+        # (blank/LHM, never stale repeats) - that gap marks the outage.
+        gpu_v, gpu_t, gpu_fail_t, gpu_warned = None, 0.0, 0.0, False
         while not stop_evt.is_set():
             tick = time.time()
-            if gpu_v is None or tick - gpu_t >= gpu_interval:
+            due = (tick - gpu_fail_t >= 30.0) if gpu_v is None else (tick - gpu_t >= gpu_interval)
+            if due:
                 gpu_v = _gpu_row()
                 gpu_t = tick
+                if gpu_v is None:
+                    gpu_fail_t = tick
+                    if not gpu_warned:
+                        print("[win] nvidia-smi failed - backing off 30s; GPU columns stay blank "
+                              "until it answers", flush=True)
+                        gpu_warned = True
+                else:
+                    gpu_warned = False
             row = [round(tick - t0, 2)]
             g = gpu_v
-            with _LHM_LOCK:
-                lhm = dict(_LHM)
+            lhm = _lhm_view()
+            # LibreHardwareMonitor's CPU temp is the preferred source; the ACPI
+            # thermal zone is only the fallback (it answered nothing on the box
+            # where it still cost 0.3-1.3s of CPU per poll).
+            cpu_temp = lhm.get("cpu_temp")
+            if cpu_temp is None:
+                cpu_temp = _CPU_TEMP["v"]
             extra = [None] * 11
             extra[9] = _GPU_ENGINE["3d"]
             extra[10] = _GPU_ENGINE["copy"]
@@ -424,7 +547,7 @@ def sampler(csv_path, stop_evt, interval=0.25, gpu_interval=0.5):
                         round(vm.used / 1024 ** 3, 2) if vm else None,
                         round(vm.total / 1024 ** 3, 2) if vm else None,
                         round(sm.used / 1024 ** 3, 2) if sm else None,
-                        (_CPU_TEMP["v"] if _CPU_TEMP["v"] is not None else lhm.get("cpu_temp"))]
+                        cpu_temp]
                 try:
                     dio = psutil.disk_io_counters()
                     nio = psutil.net_io_counters()
@@ -446,8 +569,7 @@ def sampler(csv_path, stop_evt, interval=0.25, gpu_interval=0.5):
                     row += [None, None, None, None]
             else:
                 used, total, swap = _win_mem()
-                row += [_win_cpu_pct(prev), used, total, swap,
-                        (_CPU_TEMP["v"] if _CPU_TEMP["v"] is not None else lhm.get("cpu_temp")),
+                row += [_win_cpu_pct(prev), used, total, swap, cpu_temp,
                         None, None, None, None]
             row += extra
             # the appended columns (see COLUMNS) + per-core loads; a value the

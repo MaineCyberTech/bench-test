@@ -123,6 +123,12 @@ machines that actually run the disk group; the 226 s figure above is measured, t
 is still outstanding (that machine was offline). Do not quote the desktop's post-trim
 total as measured until it is.
 
+**Shared test file (new).** `Invoke-DiskBench.ps1` now forwards `--keep`, so the
+`seqread` / `latency` (and random) phases read the file `seqwrite` created instead
+of each re-creating 2 GiB first. Wall-clock disk figures measured before this
+(e.g. the desktop's 289 s disk group) include that untimed re-creation and are
+upper bounds now; the per-phase `seconds` fields were always measured work only.
+
 ## Telemetry cadence (per stat, measured)
 
 A row used to call every stat, including three subprocesses, so an iteration cost

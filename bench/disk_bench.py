@@ -11,8 +11,12 @@ Phases (human lines + one "RESULT_JSON:" line):
   soak       - alternate seq r/w + random r/w for N seconds
 
 CAVEAT: uses OS-buffered I/O, so sequential *reads* of a just-written file can be
-served from cache. Use a file larger than RAM for truer read numbers, and treat
-results as a like-for-like comparison across drives rather than absolute peaks.
+served from cache. Where the OS allows it the read phases drop the page cache
+first (Linux posix_fadvise DONTNEED); Windows stdlib has no equivalent, so those
+phases record `cache_flushed`/`cache_served` instead - a cache-served number is
+still cache speed, not device throughput. Use a file larger than RAM for truer
+read numbers, and treat results as a like-for-like comparison across drives
+rather than absolute peaks.
 """
 import argparse
 import json
@@ -80,6 +84,74 @@ def ensure_file(a):
     return f
 
 
+def _ram_bytes():
+    """Installed RAM in bytes, or None when it cannot be read (stdlib only)."""
+    try:
+        with open("/proc/meminfo") as fh:
+            for ln in fh:
+                if ln.startswith("MemTotal:"):
+                    return int(ln.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            class MS(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong),
+                            ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong),
+                            ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            st = MS()
+            st.dwLength = ctypes.sizeof(MS)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+                return st.ullTotalPhys
+        except Exception:
+            pass
+    return None
+
+
+def _drop_cache(path):
+    """Evict `path` from the page cache where the OS allows it; (flushed, method).
+
+    Linux posix_fadvise(POSIX_FADV_DONTNEED) tells the kernel the cached pages of
+    the just-written file will not be needed again, so the read that follows hits
+    the device. Windows has no stdlib equivalent (FILE_FLAG_NO_BUFFERING needs a
+    native handle, not an os.open one), so the caller records `cache_served`
+    instead of pretending a cache-speed read is device throughput.
+    """
+    if hasattr(os, "posix_fadvise") and hasattr(os, "POSIX_FADV_DONTNEED"):
+        try:
+            fd = os.open(path, os.O_RDONLY)
+            try:
+                os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+            finally:
+                os.close(fd)
+            return True, "posix_fadvise_dontneed"
+        except OSError:
+            pass
+    return False, "unavailable"
+
+
+def _read_cache_note(a):
+    """Result fields saying whether a read phase measured the device or the cache.
+
+    With no way to flush, a file that fits in RAM can be fully served from the
+    page cache: `cache_served` marks the number as not being device throughput.
+    A larger file cannot be cached whole, though parts of it still may be.
+    """
+    f = datafile(a)
+    flushed, method = _drop_cache(f)
+    note = {"cache_flushed": flushed, "cache_flush_method": method}
+    if not flushed:
+        ram = _ram_bytes()
+        note["cache_served"] = bool(ram and os.path.getsize(f) <= ram)
+    return note
+
+
 def phase_seqwrite(a):
     f = datafile(a)
     buf = randbytes(BLK)
@@ -99,6 +171,7 @@ def phase_seqwrite(a):
 
 def phase_seqread(a):
     f = ensure_file(a)
+    note = _read_cache_note(a)      # the just-written file is in the page cache
     t0 = time.time()
     n = 0
     with open(f, "rb", buffering=0) as fh:
@@ -110,6 +183,7 @@ def phase_seqread(a):
     dt = time.time() - t0
     mbps = (n / BLK) / dt
     out = {"phase": "seqread", "size_mb": n // BLK, "seconds": round(dt, 2), "mbps": round(mbps, 1)}
+    out.update(note)
     print("disk seqread %.0f MB/s (%.1f s for %d MiB)" % (mbps, dt, n // BLK))
     jline(out)
 
@@ -213,6 +287,7 @@ def phase_steadywrite(a):
 
 def phase_latency(a):
     f = ensure_file(a)
+    note = _read_cache_note(a)      # random 4K reads of cached pages are RAM latency
     size = os.path.getsize(f)
     nmax = max(1, size // IO)
     rnd = random.Random(2)
@@ -231,6 +306,7 @@ def phase_latency(a):
     p50, p90, p99, p999 = (np.percentile(arr, [50, 90, 99, 99.9])).tolist()
     out = {"phase": "latency", "ops": ops, "iops": round(ops / dt, 0),
            "us_p50": round(p50, 1), "us_p90": round(p90, 1), "us_p99": round(p99, 1), "us_p999": round(p999, 1)}
+    out.update(note)
     print("disk 4K latency %.0f IOPS: p50=%.0f p90=%.0f p99=%.0f p99.9=%.0f us" % (
         out["iops"], p50, p90, p99, p999))
     jline(out)
