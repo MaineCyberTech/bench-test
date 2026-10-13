@@ -14,7 +14,7 @@ import tarfile
 import threading
 import time
 
-from harness import Checker, Server, BENCH, tmpdir
+from harness import Checker, Server, BENCH, tmpdir, wait_for
 import benchreport as br
 import import_results as imp
 
@@ -93,6 +93,67 @@ def run():
     ok2 = rep2.finish("done", 0, {"x": 1}, retries=2, backoff=0.01)
     c.check("a network blip never marks a finished run failed",
             ok2 is False and rep2.run_id == "run-down", (ok2, rep2.run_id))
+
+    # ---- RES-P3-002: bounded retries + circuit breaker + visible drops ----
+    rep3 = br.Reporter("http://127.0.0.1:1", "t", name="resilient", kind="test",
+                       retries=3, backoff=0.001, circuit_threshold=3, circuit_cooldown=0.05)
+    rep3.enabled = True
+    rep3.run_id = "run-x"
+    attempts = {"n": 0}
+
+    def flaky_attempt(method, path, body=None):
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            rep3.last_error = "boom"
+            return 0, {}
+        return 200, {"ok": True}
+
+    rep3._attempt = flaky_attempt
+    s, _r = rep3._req("POST", "/api/v1/runs/run-x/telemetry", {"samples": [1]})
+    c.check("a request retries with backoff and then succeeds",
+            s == 200 and attempts["n"] == 3 and rep3.retry_count == 2,
+            (s, attempts["n"], rep3.retry_count))
+    c.check("the breaker stays closed after a recovered blip",
+            rep3.circuit_state == "closed" and rep3._fail_streak == 0, rep3.circuit_state)
+
+    # consecutive failures open the breaker
+    rep3._attempt = lambda *a, **k: (0, {})
+    for _ in range(3):
+        rep3._req("POST", "/api/v1/runs/run-x/telemetry", {"samples": [1]})
+    c.check("the breaker opens after N consecutive failures",
+            rep3.circuit_state == "open", (rep3.circuit_state, rep3._fail_streak))
+    calls = {"n": 0}
+
+    def counting_attempt(method, path, body=None):
+        calls["n"] += 1
+        return 200, {}
+
+    rep3._attempt = counting_attempt
+    s2, _r2 = rep3._req("GET", "/api/v1/runners/run-x/commands")
+    c.check("an open breaker fails fast without a transport attempt",
+            s2 == 0 and calls["n"] == 0, (s2, calls["n"]))
+    c.check("an open breaker is visible as 'unreachable'",
+            rep3.status() == "unreachable", rep3.status())
+
+    # after the cooldown one half-open probe is allowed and success closes it
+    wait_for(lambda: time.time() >= rep3._circuit_open_until, timeout=1)
+    s3, _r3 = rep3._req("GET", "/api/v1/runners/run-x/commands")
+    c.check("after the cooldown a half-open probe is allowed and closes the breaker",
+            s3 == 200 and calls["n"] == 1 and rep3.circuit_state == "closed",
+            (s3, calls["n"], rep3.circuit_state))
+
+    # a dropped telemetry batch is counted and logged, not silent
+    logs = []
+    rep4 = br.Reporter("http://127.0.0.1:1", "t", name="drops", kind="test",
+                       retries=1, log=logs.append)
+    rep4.enabled = True
+    rep4.run_id = "run-y"
+    rep4._attempt = lambda *a, **k: (0, {})
+    ok = rep4.telemetry([{"elapsed": 1.0}])
+    c.check("a telemetry drop returns False and is counted",
+            ok is False and rep4.drops == 1, (ok, rep4.drops))
+    c.check("a dropped batch is surfaced in the log, not silent",
+            any("dropped" in m for m in logs), logs)
 
     # ---- RES-P2-003: a concurrent second start is rejected atomically ----
     import agent as agmod

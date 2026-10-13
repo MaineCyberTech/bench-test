@@ -20,6 +20,7 @@ import glob
 import hashlib
 import json
 import os
+import random
 import re
 import shutil
 import socket
@@ -443,10 +444,24 @@ def machine_id():
     return mid
 
 
+# Control-plane resilience (RES-P3-002). The client used to make one attempt per
+# request and discard anything that failed: telemetry vanished during an outage and
+# every dashboard re-registered against a dead server at a fixed interval forever.
+# These bound the work per call and stop a fleet hammering an unreachable server,
+# while keeping the client fail-soft (a benchmark never dies because benchd is down).
+REQ_RETRIES = 3            # transport attempts per request (1 = no retry)
+REQ_BACKOFF = 0.5          # seconds before the first retry; doubles per attempt
+REQ_BACKOFF_MAX = 5.0      # cap so a black-holed server cannot stall the pump
+CIRCUIT_THRESHOLD = 5      # consecutive failures before the breaker opens
+CIRCUIT_COOLDOWN = 30.0    # seconds the breaker stays open before one probe
+
+
 class Reporter:
     def __init__(self, server, token, name=None, kind="agent", version=None,
                  os_name=None, timeout=6, log=None, git=None, runner_id=None,
-                 api_key=None, persist=False, ephemeral=False, instance=None):
+                 api_key=None, persist=False, ephemeral=False, instance=None,
+                 retries=REQ_RETRIES, backoff=REQ_BACKOFF,
+                 circuit_threshold=CIRCUIT_THRESHOLD, circuit_cooldown=CIRCUIT_COOLDOWN):
         self.server = (server or "").rstrip("/")
         self.join_token = token or ""
         self.token = api_key or token or ""
@@ -471,21 +486,71 @@ class Reporter:
         self.enabled = bool(self.server and self.token)
         self.last_error = None
         self.last_ok = None
+        # bounded retry + circuit breaker state (RES-P3-002)
+        self.retries = max(1, int(retries))
+        self.backoff = max(0.0, float(backoff))
+        self.circuit_threshold = max(1, int(circuit_threshold))
+        self.circuit_cooldown = max(0.0, float(circuit_cooldown))
+        self.circuit_state = "closed"    # closed | open | half-open
+        self.retry_count = 0             # transport retries performed
+        self.drops = 0                   # writes dropped (unreachable / breaker open)
+        self._fail_streak = 0
+        self._circuit_open_until = 0.0
+        self._drop_log = 0.0             # last time a drop was logged (rate-limit)
 
     def status(self):
-        """'off' | 'connecting' | 'connected' | 'offline' for the dashboards."""
+        """'off' | 'connecting' | 'connected' | 'offline' | 'unreachable' for the dashboards."""
         if not self.enabled:
             return "off"
+        if self.circuit_state == "open":
+            return "unreachable"
         if not self.runner_id:
             return "connecting"
         if self.last_ok and (time.time() - self.last_ok) < 10:
             return "connected"
         return "offline"
 
+    # -- resilience --------------------------------------------------------
+    def _backoff_delay(self, attempt):
+        """Exponential backoff with a little jitter, capped (attempt is 0-based)."""
+        d = min(self.backoff * (2 ** attempt), REQ_BACKOFF_MAX)
+        return d + (random.uniform(0, d * 0.1) if d else 0.0)
+
+    def _circuit_allows(self):
+        """True when a request may be attempted; opens/half-opens the breaker."""
+        if self._circuit_open_until and time.time() < self._circuit_open_until:
+            self.circuit_state = "open"
+            return False
+        if self._circuit_open_until:
+            # cooldown elapsed: let one probe through (half-open)
+            self.circuit_state = "half-open"
+        return True
+
+    def _note_ok(self):
+        self._fail_streak = 0
+        self._circuit_open_until = 0.0
+        self.circuit_state = "closed"
+
+    def _note_fail(self):
+        self._fail_streak += 1
+        if self._fail_streak >= self.circuit_threshold:
+            self._circuit_open_until = time.time() + self.circuit_cooldown
+            self.circuit_state = "open"
+            self.logfn("[report] circuit open after %d consecutive failures (%s)"
+                       % (self._fail_streak, self.last_error))
+
+    def _drop(self, what):
+        """Count a dropped write and surface it (rate-limited), so it is not silent."""
+        self.drops += 1
+        now = time.time()
+        if now - self._drop_log >= 5.0:
+            self._drop_log = now
+            self.logfn("[report] dropped %s (%d total; circuit %s)"
+                       % (what, self.drops, self.circuit_state))
+
     # -- transport ---------------------------------------------------------
-    def _req(self, method, path, body=None):
-        if not self.enabled:
-            return 0, {}
+    def _attempt(self, method, path, body=None):
+        """One transport attempt; returns (status, decoded-json). 0 = no answer."""
         url = self.server + path
         req = urllib.request.Request(url, method=method)
         req.add_header("Authorization", "Bearer " + self.token)
@@ -504,6 +569,35 @@ class Reporter:
         except Exception as e:
             self.last_error = str(e)
             return 0, {}
+
+    def _req(self, method, path, body=None):
+        """A request with bounded retries + a circuit breaker (fail-soft).
+
+        Retries transport failures (status 0) and server-side 5xx/429 with
+        exponential backoff; a 4xx is a client error and is *not* retried or
+        counted against the breaker (the server is clearly reachable). After
+        CIRCUIT_THRESHOLD consecutive failures the breaker opens and calls return
+        immediately until CIRCUIT_COOLDOWN elapses, then one half-open probe is
+        allowed through. Always returns (status, json) and never raises.
+        """
+        if not self.enabled:
+            return 0, {}
+        if not self._circuit_allows():
+            self.last_error = "circuit open"
+            return 0, {}
+        for attempt in range(self.retries):
+            s, r = self._attempt(method, path, body)
+            if s and s < 500 and s != 429:
+                # any answer below 500 (incl. 4xx) means the server is reachable: a
+                # 4xx is the caller's problem, not a connectivity failure, so it
+                # neither retries nor trips the breaker
+                self._note_ok()
+                return s, r
+            if attempt < self.retries - 1:
+                self.retry_count += 1
+                time.sleep(self._backoff_delay(attempt))
+        self._note_fail()
+        return 0, {}
 
     # -- lifecycle ---------------------------------------------------------
     def register(self, capabilities=None, status="idle"):
@@ -554,29 +648,41 @@ class Reporter:
     def phase(self, seq, group, label, status="running", t0=None, t1=None, detail=None):
         if not self.run_id:
             return
-        self._req("POST", "/api/v1/runs/%s/phase" % self.run_id,
-                  {"seq": seq, "group": group, "label": label, "status": status,
-                   "t0": t0, "t1": t1, "detail": detail})
+        s, _r = self._req("POST", "/api/v1/runs/%s/phase" % self.run_id,
+                          {"seq": seq, "group": group, "label": label, "status": status,
+                           "t0": t0, "t1": t1, "detail": detail})
+        if s not in (200, 201):
+            self._drop("phase %s" % label)
 
     def telemetry(self, samples):
         if not self.run_id or not samples:
-            return
-        self._req("POST", "/api/v1/runs/%s/telemetry" % self.run_id, {"samples": samples})
+            return True
+        s, _r = self._req("POST", "/api/v1/runs/%s/telemetry" % self.run_id, {"samples": samples})
+        if s in (200, 201):
+            return True
+        self._drop("telemetry batch of %d" % len(samples))
+        return False
 
     def event(self, message, level="info"):
         if not self.run_id:
             return
-        self._req("POST", "/api/v1/runs/%s/event" % self.run_id,
-                  {"level": level, "message": message, "ts": time.time()})
+        s, _r = self._req("POST", "/api/v1/runs/%s/event" % self.run_id,
+                          {"level": level, "message": message, "ts": time.time()})
+        if s not in (200, 201):
+            self._drop("event")
 
     def log(self, lines, stream="out"):
         """Stream runner output lines to the server (live console / remote view)."""
         if not self.run_id or not lines:
-            return
+            return True
         if isinstance(lines, str):
             lines = [lines]
-        self._req("POST", "/api/v1/runs/%s/log" % self.run_id,
-                  {"stream": stream, "lines": [str(x) for x in lines]})
+        s, _r = self._req("POST", "/api/v1/runs/%s/log" % self.run_id,
+                          {"stream": stream, "lines": [str(x) for x in lines]})
+        if s in (200, 201):
+            return True
+        self._drop("log batch of %d" % len(lines))
+        return False
 
     def artifact(self, name, text, kind="json"):
         if not self.run_id:
@@ -690,8 +796,10 @@ class PhaseTracker:
 class ReporterPump:
     """Background thread that flushes telemetry, heartbeats and polls commands.
 
-    Keeps the dashboard UI thread free of blocking HTTP calls; if the server is
-    unreachable the queue simply drains into no-ops.
+    Keeps the dashboard UI thread free of blocking HTTP calls. A batch that the
+    server refuses is kept in a small bounded spool and re-sent on the next tick,
+    so a short outage does not lose the run; the reporter also counts and logs the
+    drop, so nothing is lost silently.
     """
 
     def __init__(self, reporter, on_command=None, interval=2.0, log=None):
@@ -702,6 +810,8 @@ class ReporterPump:
         self.log = log or (lambda *_a: None)
         self.samples = queue.Queue()
         self.logs = queue.Queue()
+        self.spool_max = 1000        # bounded local spool for a short outage
+        self._pending = []
         self._stop = False
         self._thread = None
 
@@ -728,14 +838,17 @@ class ReporterPump:
             pass
 
     def _drain(self):
-        batch = []
+        batch = self._pending
+        self._pending = []
         while len(batch) < 120:
             try:
                 batch.append(self.samples.get_nowait())
             except Exception:
                 break
-        if batch:
-            self.rep.telemetry(batch)
+        if batch and not self.rep.telemetry(batch):
+            # a short outage must not lose the run: keep a bounded local spool and
+            # re-send it on the next tick (the drop is still counted + logged)
+            self._pending = (batch + self._pending)[-self.spool_max:]
         lines = []
         while len(lines) < 200:
             try:
