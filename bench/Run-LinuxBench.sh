@@ -462,7 +462,7 @@ sensors -j > "$LOGDIR/sensors.end.json" 2>&1 || true
 journalctl -k --since "$ISO" --no-pager > "$LOGDIR/kernel-since-start.log" 2>&1 || true
 journalctl -p err --since "$ISO" --no-pager > "$LOGDIR/errors-since-start.log" 2>&1 || true
 
-"$PY" - "$JSONL" "$BASE.json" "$BASE.md" "$HOST" "$ISO" "$PY" "$ROOT" "$TELEMETRY" "$LOGDIR" <<'PYEOF'
+"$PY" - "$JSONL" "$BASE.json" "$BASE.md" "$HOST" "$ISO" "$PY" "$ROOT" "$TELEMETRY" "$LOGDIR" <<'PYEOF' 2> "$LOGDIR/summary-error.txt"
 import json, os, subprocess, sys, platform
 jsonl, json_out, md_out, host, iso, py, root, telemetry_csv, logdir = sys.argv[1:10]
 
@@ -862,3 +862,15 @@ with open(md_out, "w") as fh:
 
 print("[done] wrote %s and %s" % (json_out, md_out))
 PYEOF
+# The battery itself is done at this point; if the report writer throws we must not
+# report the whole run as failed (it also loses the summary). Surface it loudly,
+# keep the traceback next to the logs, and exit 0 - the phases really did run.
+SUMMARY_RC=$?
+if [ "$SUMMARY_RC" -ne 0 ]; then
+    echo "[warn] summary generation failed (rc=$SUMMARY_RC) - phases completed, report missing"
+    {
+        echo "Run-LinuxBench.sh: summary step exited $SUMMARY_RC"
+        echo "results dir: $OUT"
+    } > "$LOGDIR/summary-error.txt" 2>/dev/null || true
+fi
+exit 0
