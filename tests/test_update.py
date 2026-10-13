@@ -369,7 +369,13 @@ def run():
         c.check("exactly one commit call for three files",
                 len([x for x in calls if x[0] == "POST" and x[1].endswith("/git/commits")]) == 1, calls)
         c.check("one blob per file",
-                len([x for x in calls if x[1].endswith("/git/blobs")]) == 3, calls)
+        # small text files ride along in the tree request: one API call for the
+        # whole batch instead of a blob POST each (which tripped the secondary
+        # rate limit and pushed the uploader onto its per-file fallback)
+        c.check("no blob calls for small text files",
+                len([x for x in calls if x[1].endswith("/git/blobs")]) == 0, calls)
+        c.check("one tree call carries the batch",
+                len([x for x in calls if x[0] == "POST" and x[1].endswith("/git/trees")]) == 1, calls)
         c.check("the branch is moved once",
                 len([x for x in calls if x[0] == "PATCH"]) == 1, calls)
     finally:
