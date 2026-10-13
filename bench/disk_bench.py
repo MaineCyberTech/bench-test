@@ -25,6 +25,12 @@ import time
 import numpy as np
 
 BLK = 1 << 20      # 1 MiB
+
+# Flush this often inside the write phases. With a single flush at the end the
+# page cache absorbs the whole file and the number measures free RAM instead of
+# the device: 512 MiB reported 45 MB/s that way and 128 MiB 279 MB/s, while the
+# same machine measured 257-278 MB/s at either size when flushed every 32 MiB.
+FLUSH_EVERY_MB = 32
 IO = 4096          # 4 KiB
 
 _RANDBUF = b""
@@ -79,8 +85,10 @@ def phase_seqwrite(a):
     buf = randbytes(BLK)
     t0 = time.time()
     with open(f, "wb", buffering=0) as fh:
-        for _ in range(a.size_mb):
+        for i in range(a.size_mb):
             fh.write(buf)
+            if (i + 1) % FLUSH_EVERY_MB == 0:
+                fh.flush(); os.fsync(fh.fileno())
         fh.flush(); os.fsync(fh.fileno())
     dt = time.time() - t0
     mbps = a.size_mb / dt
@@ -111,7 +119,7 @@ def rand_loop(a, read_pct):
     size = os.path.getsize(f)
     nmax = max(1, size // IO)
     rnd = random.Random(1)
-    ops = 0; reads = 0; writes = 0
+    ops = 0; reads = 0; writes = 0; last_flush = time.time()
     t0 = time.time()
     with open(f, "r+b", buffering=0) as fh:
         while time.time() - t0 < a.seconds:
@@ -122,6 +130,12 @@ def rand_loop(a, read_pct):
             else:
                 fh.write(randbytes(IO)); writes += 1
             ops += 1
+            # Writes only reach the page cache until they are flushed, so a random-write
+            # figure measured without one is RAM speed. Flush about once a second: enough
+            # to keep the device involved without swamping the loop.
+            if writes and time.time() - last_flush >= 1.0:
+                fh.flush(); os.fsync(fh.fileno())
+                last_flush = time.time()
         # stop the clock before the closing flush: it is durability, not speed
         dt = time.time() - t0
         fh.flush(); os.fsync(fh.fileno())

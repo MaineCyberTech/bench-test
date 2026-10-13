@@ -718,6 +718,34 @@ def run():
                 x["text"] for x in _hardware_verdicts(hd) if x["level"] == "good") or
             not [x for x in v if x["level"] == "good"], v)
 
+    # ---- the sequential write must flush as it goes ----
+    # With one flush at the end the page cache absorbs the whole file and the number
+    # measures free RAM: 512 MiB reported 45 MB/s that way and 128 MiB 279 MB/s, while
+    # the same machine measured 257-278 MB/s at either size when flushed every 32 MiB.
+    try:
+        import disk_bench as _dbm
+    except Exception as e:
+        print("  SKIP the sequential-write flush check (%s)" % e)
+    else:
+        real_fsync, real_jline = os.fsync, _dbm.jline
+        calls = {"n": 0}
+
+        def counting(fd):
+            calls["n"] += 1
+            return real_fsync(fd)
+
+        class _W:
+            size_mb = 96                 # 3 windows of FLUSH_EVERY_MB plus the close
+            path = tmpdir()
+
+        os.fsync, _dbm.jline = counting, (lambda o: None)
+        try:
+            _dbm.phase_seqwrite(_W())
+        finally:
+            os.fsync, _dbm.jline = real_fsync, real_jline
+        c.check("the sequential write flushes as it goes, not once at the end",
+                calls["n"] >= 4, calls)
+
     srv.stop()
     return c.fails
 
