@@ -869,8 +869,9 @@ SUMMARY_RC=$?
 if [ "$SUMMARY_RC" -ne 0 ]; then
     echo "[warn] summary generation failed (rc=$SUMMARY_RC) - phases completed, report missing"
     {
+        echo ""
         echo "Run-LinuxBench.sh: summary step exited $SUMMARY_RC"
         echo "results dir: $OUT"
-    } > "$LOGDIR/summary-error.txt" 2>/dev/null || true
+    } >> "$LOGDIR/summary-error.txt" 2>/dev/null || true
 fi
 exit 0
