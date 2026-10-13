@@ -251,7 +251,7 @@ async function refresh() {
 function ensureTel(id) {
   if (TEL[id]) return;
   TEL[id] = [];
-  api("/runs/" + id + "/telemetry?max=1500").then((d) => {
+  api("/runs/" + id + "/telemetry?max=4000").then((d) => {
     TEL[id] = (d.rows || []).filter((x) => x.elapsed != null);
     renderActive();
   }).catch(() => {});
@@ -260,7 +260,7 @@ function ensureTel(id) {
 /* Re-read a run's telemetry while the live view is open: the SSE stream is the
    fast path, this is the authoritative one (a batch can be missed). */
 function reloadTel(id) {
-  api("/runs/" + id + "/telemetry?max=1500").then((d) => {
+  api("/runs/" + id + "/telemetry?max=4000").then((d) => {
     const rows = (d.rows || []).filter((x) => x.elapsed != null);
     if (rows.length) TEL[id] = rows;
     if (FOCUS === id) {
@@ -677,7 +677,7 @@ function paintFocusHealth(el, v) {
 /* Sparkline panel: one small chart per metric, so the whole picture is visible
    at once instead of switching the main chart's preset. */
 function drawMiniCharts(el, runId) {
-  const buf = (TEL[runId] || []).slice(-1500);
+  const buf = (TEL[runId] || []).slice(-2000);
   const base = teleBase(buf);
   const win = runWindow(runId);
   FOCUS_MINI.forEach(([k]) => {
@@ -1145,7 +1145,7 @@ function runWindow(runId) {
 function drawRunChart(card, runId) {
   const cv = card.querySelector(".runchart");
   if (!cv) return;
-  const buf = (TEL[runId] || []).slice(-1500);
+  const buf = (TEL[runId] || []).slice(-2000);
   const base = teleBase(buf);
   const win = runWindow(runId);
   const preset = CHART[runId] || Object.keys(CHART_PRESETS)[0];
@@ -1352,7 +1352,7 @@ async function showDetail(runId) {
   const r = await api("/runs/" + runId);
   const s = r.summary || {};
   const sy = r.system || {};
-  const tel = await api("/runs/" + runId + "/telemetry?max=1500");
+  const tel = await api("/runs/" + runId + "/telemetry?max=4000");
   const telBuf = tel.rows || [];
   const telBase0 = teleBase(telBuf);
   const pts = (n) => seriesPoints(telBuf.filter((x) => x[n] != null), n, telBase0, r.started);

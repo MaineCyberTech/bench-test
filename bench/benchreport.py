@@ -1852,7 +1852,7 @@ def iso_write(iso_path, device, confirm=False, log=None):
 class TelemetryTail:
     """Tails this run's telemetry CSV (sampled at 2 Hz) and yields canonical rows."""
 
-    def __init__(self, results_dir, interval=0.5, since=None):
+    def __init__(self, results_dir, interval=0.3, since=None):
         self.dir = results_dir
         self.interval = interval
         self.path = None

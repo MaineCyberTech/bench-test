@@ -1041,7 +1041,7 @@ class Handler(BaseHTTPRequestHandler):
                     core = [s.get(f) for f in SAMPLE_FIELDS]
                     extra = {k: v for k, v in s.items()
                              if k not in SAMPLE_FIELDS and k != "ts"
-                             and isinstance(v, (int, float)) and not isinstance(v, bool)}
+                             and isinstance(v, (int, float, str)) and not isinstance(v, bool)}
                     if isinstance(s.get("ts"), (int, float)):
                         ts = float(s["ts"])
                     named.append(dict(s))

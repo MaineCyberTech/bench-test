@@ -85,8 +85,8 @@ TELE_PID=""
 trap 'rm -f "$JSONL"; [ -n "$TELE_PID" ] && kill "$TELE_PID" 2>/dev/null' EXIT
 
 echo "[env] python: $($PY -c 'import sys; print(sys.version.split()[0])')  out: $BASE.json|.md"
-echo "[telemetry] $PY $BENCH/telemetry_log.py --out $TELEMETRY --interval 0.5"
-"$PY" "$BENCH/telemetry_log.py" --out "$TELEMETRY" --interval 0.5 &
+echo "[telemetry] $PY $BENCH/telemetry_log.py --out $TELEMETRY --interval 0.25"
+"$PY" "$BENCH/telemetry_log.py" --out "$TELEMETRY" --interval 0.25 &
 TELE_PID=$!
 nvidia-smi -q > "$LOGDIR/nvidia-smi-q.start.txt" 2>&1 || true
 sensors -j > "$LOGDIR/sensors.start.json" 2>&1 || true

@@ -655,6 +655,13 @@ class BenchTUI:
                 # what the charts plot against, and leaving it out made every
                 # sample land with elapsed=NULL, so the web chart showed "no data"
                 sample = {k: get(k) for k in self.tel_cols if get(k) is not None}
+                # get() is float-only, so non-numeric columns (pstate) were dropped
+                # on the floor - send them raw so nothing the sampler gathered is lost
+                for k in ("pstate",):
+                    if k not in sample:
+                        rv = raw(k)
+                        if rv:
+                            sample[k] = rv
                 if sample:
                     self.pump.push_sample(sample)
 
