@@ -84,6 +84,12 @@ def run():
         rw = fh.read()
     c.check("run_win.py wires the LibreHardwareMonitor sampler",
             "Sample-Sensors.ps1" in rw and "lhm_thread" in rw, "")
+    c.check("run_win ties the sampler to its own lifetime (-ParentPid)",
+            "-ParentPid" in rw, "")
+    with open(os.path.join(BENCH, "tui.py"), encoding="utf-8") as fh:
+        tui = fh.read()
+    c.check("TUI kills the run tree on close (taskkill + teardown)",
+            "_kill_tree" in tui and "taskkill" in tui and "def teardown" in tui, "")
 
     return c.fails
 

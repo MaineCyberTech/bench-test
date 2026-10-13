@@ -82,6 +82,29 @@ else:
     def runner_command(args):
         return [RUNNER] + args, ""
 
+
+def _kill_tree(proc):
+    """Kill a battery process AND its children (run_win -> powershell -> python).
+
+    On Windows the runner tree (bootstrap python -> run_win.py -> PowerShell
+    battery -> phase python + the sensor sampler) must go: a plain terminate
+    leaves the grandchildren orphaned, holding the toolkit folder."""
+    if not proc or proc.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        else:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except Exception:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+
+
 GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "llm", "fan", "sys", "gfx"]
 
 def _g(*on):
@@ -436,10 +459,30 @@ class BenchTUI:
         if self.proc and self.proc.poll() is None:
             self._stopped = True
             try:
-                os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
+                _kill_tree(self.proc)
                 self._set("stopping...", 3)
             except Exception:
                 pass
+
+    def teardown(self):
+        """Kill any battery this dashboard started - on quit, Ctrl-C or crash.
+
+        Runs from curses.wrapper's finally so a closed window never leaves the
+        runner tree (and the LibreHardwareMonitor sampler) alive."""
+        try:
+            if self.proc and self.proc.poll() is None:
+                _kill_tree(self.proc)
+                for _ in range(20):
+                    if self.proc.poll() is not None:
+                        break
+                    time.sleep(0.05)
+        except Exception:
+            pass
+        try:
+            if getattr(self, "pump", None):
+                self.pump.stop()
+        except Exception:
+            pass
 
     def collect(self):
         if os.path.exists(RESULT_COLLECTOR):
@@ -1383,6 +1426,12 @@ def main():
             app.run()
         except KeyboardInterrupt:
             pass
+        finally:
+            # whatever the exit path (q, Ctrl-C, crash), never leave the run tree
+            try:
+                app.teardown()
+            except Exception:
+                pass
 
     curses.wrapper(wrapped)
     return 0
