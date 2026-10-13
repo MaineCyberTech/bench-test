@@ -1,0 +1,36 @@
+Oct 13 01:11:58 bench-live (coredump-worker)[62301]: Process 62281 (furmark) of user 0 dumped core.
+                                                     
+                                                     Stack trace of thread 62281:
+                                                     #0  0x00007f645702eefa n/a (libc.so.6 + 0xbaefa)
+                                                     #1  0x00007f64569bf39b n/a (libX11.so.6 + 0x5139b)
+                                                     #2  0x00007f64569c08c0 XrmGetStringDatabase (libX11.so.6 + 0x528c0)
+                                                     #3  0x00007f64585148a7 _Z17X11_GetMonitorDPIP9_XDisplay (libgpumagick_sdk_linux64.so + 0x978a7)
+                                                     #4  0x00007f64585153c4 _ZN11GM_Window3D16create_linux_x11EP23GM_Window3DCreateParams (libgpumagick_sdk_linux64.so + 0x983c4)
+                                                     #5  0x00007f64585130ec _ZN11GM_Window3D6createEP23GM_Window3DCreateParams (libgpumagick_sdk_linux64.so + 0x960ec)
+                                                     #6  0x00007f6458514187 _Z18gm_window3d_createP23GM_Window3DCreateParams (libgpumagick_sdk_linux64.so + 0x97187)
+                                                     #7  0x00007f6458504cf3 _Z15gm_gxc_demo_runPKc (libgpumagick_sdk_linux64.so + 0x87cf3)
+                                                     #8  0x00007f64584b595e _ZN2gm8run_demoEPNS_11demo_paramsEPKc (libgpumagick_sdk_linux64.so + 0x3895e)
+                                                     #9  0x0000000000406dc7 n/a (furmark + 0x6dc7)
+                                                     #10 0x00007f6456f9b781 n/a (libc.so.6 + 0x27781)
+                                                     #11 0x00007f6456f9b8b9 __libc_start_main (libc.so.6 + 0x278b9)
+                                                     #12 0x000000000040548a n/a (furmark + 0x548a)
+                                                     
+                                                     Stack trace of thread 62296:
+                                                     #0  0x00007f64570148f2 n/a (libc.so.6 + 0xa08f2)
+                                                     #1  0x00007f6457058aad clock_nanosleep (libc.so.6 + 0xe4aad)
+                                                     #2  0x00007f6457064ee7 __nanosleep (libc.so.6 + 0xf0ee7)
+                                                     #3  0x00007f645709420a usleep (libc.so.6 + 0x12020a)
+                                                     #4  0x00007f64579f0437 _ZN3gxc5utils12thread_sleepEm (libgxc_r_linux_x64.so + 0x559437)
+                                                     #5  0x00007f64584efec4 _Z13gpumon_threadPv (libgpumagick_sdk_linux64.so + 0x72ec4)
+                                                     #6  0x00007f645700c042 n/a (libc.so.6 + 0x98042)
+                                                     #7  0x00007f645709472c n/a (libc.so.6 + 0x12072c)
+                                                     
+                                                     Stack trace of thread 62295:
+                                                     #0  0x00007f64570148f2 n/a (libc.so.6 + 0xa08f2)
+                                                     #1  0x00007f64570852e5 __poll (libc.so.6 + 0x1112e5)
+                                                     #2  0x00007f644b033fa7 n/a (libcuda.so.1 + 0x319fa7)
+                                                     #3  0x00007f644b1209e7 n/a (libcuda.so.1 + 0x4069e7)
+                                                     #4  0x00007f644b020de3 n/a (libcuda.so.1 + 0x306de3)
+                                                     #5  0x00007f645700c042 n/a (libc.so.6 + 0x98042)
+                                                     #6  0x00007f645709472c n/a (libc.so.6 + 0x12072c)
+                                                     ELF object binary architecture: AMD x86-64

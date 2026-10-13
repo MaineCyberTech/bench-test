@@ -1,0 +1,4 @@
+[backend] cuda
+membw fp32  add=240 GB/s reduce=248 GB/s
+membw bf16  add=238 GB/s reduce=246 GB/s
+RESULT_JSON:{"phase": "membw", "backend": "cuda", "results": {"fp32": {"add_gbps": 240.0, "reduce_gbps": 248.0}, "bf16": {"add_gbps": 238.0, "reduce_gbps": 246.0}}}

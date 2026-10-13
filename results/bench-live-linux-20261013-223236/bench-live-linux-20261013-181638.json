@@ -1,0 +1,674 @@
+{
+  "host": "bench-live",
+  "timestamp": "2026-10-13T18:16:38+00:00",
+  "platform": "Linux-7.2.9-arch1-1-x86_64-with-glibc2.44",
+  "env": {
+    "python": "/usr/bin/python3",
+    "torch": "2.14.1+cu126",
+    "torch_cuda": "12.6",
+    "cuda_available": true,
+    "git_commit": "",
+    "git_dirty": false
+  },
+  "fan_curve": "35:26 45:34 55:44 60:52 68:64 75:76 82:90 88:100",
+  "telemetry": {
+    "file": "bench-live-linux-20261013-181638.telemetry.csv",
+    "samples": 3404,
+    "duration_s": 851.5,
+    "temp_c": [
+      22.0,
+      56.4,
+      74.0
+    ],
+    "fan_pct": [
+      20.0,
+      51.6,
+      711.0
+    ],
+    "power_w": [
+      107.8,
+      195.98
+    ]
+  },
+  "log_dir": "/mnt/benchdata/results/bench-live-linux-20261013-181638-logs",
+  "phases": [
+    {
+      "group": "gpu",
+      "phase": "info",
+      "result": {
+        "phase": "info",
+        "backend": "cuda",
+        "device": "NVIDIA GeForce GTX 1080",
+        "torch": "2.14.1+cu126",
+        "cuda": "12.6",
+        "arch": [
+          6,
+          1
+        ],
+        "sm_count": 20,
+        "vram_gib": 7.9,
+        "cudnn": 91002
+      }
+    },
+    {
+      "group": "gpu",
+      "phase": "matmul",
+      "result": {
+        "phase": "matmul",
+        "backend": "cuda",
+        "n": 4096,
+        "results": {
+          "fp16": {
+            "iters": 535,
+            "seconds": 10.02,
+            "tflops": 7.3
+          },
+          "bf16": {
+            "iters": 279,
+            "seconds": 10.01,
+            "tflops": 3.8
+          },
+          "tf32": {
+            "iters": 515,
+            "seconds": 10.01,
+            "tflops": 7.1
+          },
+          "fp32": {
+            "iters": 512,
+            "seconds": 10.0,
+            "tflops": 7.0
+          },
+          "fp64": {
+            "iters": 20,
+            "seconds": 10.03,
+            "tflops": 0.3
+          }
+        }
+      }
+    },
+    {
+      "group": "gpu",
+      "phase": "membw",
+      "result": {
+        "phase": "membw",
+        "backend": "cuda",
+        "results": {
+          "fp32": {
+            "add_gbps": 240.0,
+            "reduce_gbps": 248.0
+          },
+          "bf16": {
+            "add_gbps": 238.0,
+            "reduce_gbps": 246.0
+          }
+        }
+      }
+    },
+    {
+      "group": "gpu",
+      "phase": "pcie",
+      "result": {
+        "phase": "pcie",
+        "backend": "cuda",
+        "h2d_gbps": 12.0,
+        "d2h_gbps": 13.0
+      }
+    },
+    {
+      "group": "gpu",
+      "phase": "conv",
+      "result": {
+        "phase": "conv",
+        "backend": "cuda",
+        "tflops": 12.4,
+        "iters": 604
+      }
+    },
+    {
+      "group": "gpu",
+      "phase": "integrity",
+      "result": {
+        "phase": "integrity",
+        "backend": "cuda",
+        "chunks": 7,
+        "gib": 7.0,
+        "float_mismatched": 0,
+        "int_bad_elements": 0
+      }
+    },
+    {
+      "group": "gpu",
+      "phase": "streams",
+      "result": {
+        "phase": "streams",
+        "backend": "cuda",
+        "skipped": true,
+        "reason": "pre-Volta GPU"
+      }
+    },
+    {
+      "group": "gpu",
+      "phase": "soak",
+      "result": {
+        "phase": "soak",
+        "backend": "cuda",
+        "seconds": 180.0,
+        "matmuls": 3215,
+        "convs": 3215,
+        "size": 4096,
+        "matmul_tflops": 2.5,
+        "total_tflops": 5.2,
+        "peak_vram_gib": 0.5,
+        "until_stable": true,
+        "stable": false,
+        "stable_at_s": null,
+        "stable_hold_s": 60.0,
+        "telemetry": {
+          "samples": 89,
+          "temp_c": [
+            63.0,
+            71.2,
+            74.0
+          ],
+          "fan_pct": [
+            43.0,
+            67.6,
+            71.0
+          ],
+          "power_w": [
+            172.7,
+            189.83
+          ],
+          "sm_mhz": [
+            1740
+          ]
+        }
+      }
+    },
+    {
+      "group": "cpu",
+      "phase": "info",
+      "result": {
+        "phase": "info",
+        "numpy": "2.5.4",
+        "logical_cpus": 8
+      }
+    },
+    {
+      "group": "cpu",
+      "phase": "matmul",
+      "result": {
+        "phase": "matmul",
+        "n": 2048,
+        "results": {
+          "fp32": {
+            "iters": 86,
+            "seconds": 10.12,
+            "gflops": 146.1
+          },
+          "fp64": {
+            "iters": 41,
+            "seconds": 10.04,
+            "gflops": 70.2
+          }
+        }
+      }
+    },
+    {
+      "group": "cpu",
+      "phase": "membw",
+      "result": {
+        "phase": "membw",
+        "bytes_per_array": 268435456,
+        "results": {
+          "copy_gbps": 18.0,
+          "add_gbps": 13.0,
+          "reduce_gbps": 13.0
+        }
+      }
+    },
+    {
+      "group": "cpu",
+      "phase": "hash",
+      "result": {
+        "phase": "hash",
+        "sha256_mbps": 380.0,
+        "mb": 64
+      }
+    },
+    {
+      "group": "cpu",
+      "phase": "compress",
+      "result": {
+        "phase": "compress",
+        "zlib_compress_mbps": 43.0,
+        "zlib_decompress_mbps": 1474.0,
+        "lzma_compress_mbps": 6.0,
+        "lzma_decompress_mbps": 6.0
+      }
+    },
+    {
+      "group": "cpu",
+      "phase": "aes",
+      "result": {
+        "phase": "aes",
+        "aes256gcm_mbps": 1142.0,
+        "mb": 64
+      }
+    },
+    {
+      "group": "cpu",
+      "phase": "flops",
+      "result": {
+        "phase": "flops",
+        "gflops": 1.4,
+        "elements": 67108864,
+        "dtype": "fp32"
+      }
+    },
+    {
+      "group": "cpu",
+      "phase": "soak",
+      "result": {
+        "phase": "soak",
+        "seconds": 45.0,
+        "iters": 402,
+        "size": 2048,
+        "gflops": 153.4
+      }
+    },
+    {
+      "group": "ram",
+      "phase": "info",
+      "result": {
+        "phase": "info",
+        "total_gib": 15.6,
+        "available_gib": 9.9,
+        "used_pct": 36.5,
+        "logical_cpus": 8,
+        "numpy": "2.5.4"
+      }
+    },
+    {
+      "group": "ram",
+      "phase": "bandwidth",
+      "result": {
+        "phase": "bandwidth",
+        "elements": 67108864,
+        "gib_per_array": 0.5,
+        "results": {
+          "copy": 17.5,
+          "scale": 11.4,
+          "add": 12.8,
+          "triad": 10.4
+        }
+      }
+    },
+    {
+      "group": "ram",
+      "phase": "latency",
+      "result": {
+        "phase": "latency",
+        "accesses": 5000000,
+        "ns_per_access_approx": 14.1,
+        "gather_gbps_approx": 0.6,
+        "note": "numpy gather; not a pure dependent-load chase"
+      }
+    },
+    {
+      "group": "ram",
+      "phase": "integrity",
+      "result": {
+        "phase": "integrity",
+        "giB": 6.8,
+        "chunks": 27,
+        "passes": 1,
+        "planned_chunks": 27,
+        "planned_passes": 1,
+        "bad_elements": 0
+      }
+    },
+    {
+      "group": "ram",
+      "phase": "soak",
+      "result": {
+        "phase": "soak",
+        "seconds": 30.1,
+        "iters": 158,
+        "gbps": 14.1,
+        "errors": 0,
+        "gib_per_array": 0.5
+      }
+    },
+    {
+      "group": "net",
+      "phase": "bench",
+      "result": {
+        "phase": "bench",
+        "target": "1.1.1.1",
+        "ping_ms": {
+          "min": 32.568,
+          "avg": 34.995,
+          "max": 36.652
+        },
+        "ping_avg_ms": 34.995,
+        "ping_mdev_ms": null,
+        "ping_loss_pct": null,
+        "download_mbps": 217.3,
+        "download_bytes": 104857600,
+        "upload_mbps": 41.2
+      }
+    },
+    {
+      "group": "nvenc",
+      "phase": "bench",
+      "result": {
+        "phase": "bench",
+        "width": 1920,
+        "height": 1080,
+        "frames": 1200,
+        "results": {
+          "h264_nvenc": {
+            "skipped": true,
+            "reason": "[h264_nvenc @ 0x55b4bb90f000] Driver does not support the required nvenc API version. Required: 13.1 Found: 13.0"
+          },
+          "hevc_nvenc": {
+            "skipped": true,
+            "reason": "[hevc_nvenc @ 0x55da78dc6000] Driver does not support the required nvenc API version. Required: 13.1 Found: 13.0"
+          },
+          "av1_nvenc": {
+            "skipped": true,
+            "reason": "[av1_nvenc @ 0x55902319b000] Driver does not support the required nvenc API version. Required: 13.1 Found: 13.0"
+          }
+        }
+      }
+    },
+    {
+      "group": "sys",
+      "phase": "info",
+      "result": {
+        "phase": "info",
+        "distro": "Arch Linux",
+        "kernel": "7.2.9-arch1-1",
+        "arch": "x86_64",
+        "cpu": {
+          "model": "Intel(R) Core(TM) i7-3770 CPU @ 3.40GHz",
+          "logical_cpus": 8,
+          "max_mhz_observed": 3915
+        },
+        "memory_gib": 15.6,
+        "gpu": {
+          "name": "NVIDIA GeForce GTX 1080",
+          "driver": "580.178.04",
+          "vram": "8192 MiB",
+          "pcie_link_gen": "1",
+          "pcie_link_width": "16",
+          "uuid": "GPU-1011ed60-5946-c902-f948-f17c44ffdfd1",
+          "vbios": "86.04.17.00.01",
+          "pci_bus": "00000000:01:00.0",
+          "temp_limit_c": "[N/A]",
+          "power_default_w": "180.00 W",
+          "power_max_w": "217.00 W"
+        },
+        "storage": [
+          "loop0 4.9G loop 0",
+          "sda 931.5G disk 0 SanDisk SSD PLUS 1000GB",
+          "sdb 29.8G disk 1 SanDisk SSD U100 32GB"
+        ],
+        "network_ifaces": [
+          {
+            "name": "enp5s0",
+            "state": "up",
+            "speed_mbps": "1000"
+          }
+        ],
+        "booted": "2026-10-13 17:55:13",
+        "errors_since_boot": 8,
+        "hardware_errors": [
+          "Oct 13 17:55:43 bench-live kernel: acpi PNP0A08:00: _OSC: OS requested [PCIeHotplug SHPCHotplug PME AER PCIeCapability LTR DPC]",
+          "Oct 13 17:55:43 bench-live kernel: acpi PNP0A08:00: _OSC: platform willing to grant [PCIeHotplug SHPCHotplug PME AER PCIeCapability LTR DPC]",
+          "Oct 13 17:55:43 bench-live kernel: r8169 0000:05:00.0 eth0: RTL8168evl/8111evl, c8:60:00:a0:43:ee, XID 2c9, IRQ 38"
+        ],
+        "disk_health": {
+          "/dev/sda": {
+            "model": null,
+            "fw": null,
+            "temp_c": 18,
+            "used_pct": null,
+            "media_errors": null,
+            "reallocated": 0,
+            "pending": null,
+            "power_on_hours": 915,
+            "health": true
+          },
+          "/dev/sdb": {
+            "model": null,
+            "fw": null,
+            "temp_c": null,
+            "used_pct": null,
+            "media_errors": null,
+            "reallocated": 0,
+            "pending": null,
+            "power_on_hours": 48,
+            "health": true
+          }
+        },
+        "ecc": {}
+      }
+    },
+    {
+      "group": "gfx",
+      "phase": "furmark",
+      "result": {
+        "skipped": true,
+        "reason": "no monitor on the X display"
+      }
+    },
+    {
+      "group": "gfx",
+      "phase": "glmark2",
+      "result": {
+        "score": 31662,
+        "furmark_rc": 1,
+        "scenes": 8,
+        "per_scene_s": 2,
+        "exit": 0
+      }
+    },
+    {
+      "group": "gfx",
+      "phase": "furmark",
+      "result": {
+        "phase": "furmark",
+        "demo": "furmark-gl",
+        "width": 1920,
+        "height": 1080,
+        "seconds": 30,
+        "exit": 1,
+        "score": null,
+        "fps_min": null,
+        "fps_avg": null,
+        "fps_max": null,
+        "temp_max_c": null,
+        "api": null,
+        "gpu_csv": null,
+        "skipped": true,
+        "reason": "furmark exited 1"
+      }
+    },
+    {
+      "group": "fan",
+      "phase": "check",
+      "result": {
+        "cmd": "check",
+        "seconds": 90,
+        "vendor": "nvidia",
+        "temp_start": 41.0,
+        "temp_max": 73.0,
+        "fan_start_pct": 24.0,
+        "fan_max_pct": 69.0,
+        "fan_max_rpm": 2773.0,
+        "verdict": "ok"
+      }
+    },
+    {
+      "group": "combined",
+      "phase": "stress",
+      "result": {
+        "seconds": 45,
+        "gpu_exit": 0,
+        "cpu_exit": 0,
+        "gpu": {
+          "phase": "soak",
+          "backend": "cuda",
+          "seconds": 45.0,
+          "matmuls": 801,
+          "convs": 801,
+          "size": 4096,
+          "matmul_tflops": 2.4,
+          "total_tflops": 5.2,
+          "peak_vram_gib": 0.5,
+          "until_stable": true,
+          "stable": false,
+          "stable_at_s": null,
+          "stable_hold_s": 60.0,
+          "telemetry": {
+            "samples": 22,
+            "temp_c": [
+              68.0,
+              70.9,
+              72.0
+            ],
+            "fan_pct": [
+              50.0,
+              65.0,
+              71.0
+            ],
+            "power_w": [
+              173.8,
+              186.94
+            ],
+            "sm_mhz": [
+              1747
+            ]
+          }
+        },
+        "cpu": {
+          "phase": "soak",
+          "seconds": 45.0,
+          "iters": 254,
+          "size": 2048,
+          "gflops": 96.9
+        },
+        "telemetry": {
+          "samples": 22,
+          "temp_c": [
+            68.0,
+            70.9,
+            72.0
+          ],
+          "fan_pct": [
+            50.0,
+            65.0,
+            71.0
+          ],
+          "power_w": [
+            173.8,
+            186.94
+          ],
+          "sm_mhz": [
+            1747
+          ]
+        }
+      }
+    },
+    {
+      "group": "fullsoak",
+      "phase": "stress",
+      "result": {
+        "seconds": 90,
+        "gpu": {
+          "phase": "soak",
+          "backend": "cuda",
+          "seconds": 90.1,
+          "matmuls": 1592,
+          "convs": 1592,
+          "size": 4096,
+          "matmul_tflops": 2.4,
+          "total_tflops": 5.2,
+          "peak_vram_gib": 0.5,
+          "until_stable": true,
+          "stable": true,
+          "stable_at_s": 55.2,
+          "stable_hold_s": 60.0,
+          "telemetry": {
+            "samples": 44,
+            "temp_c": [
+              67.0,
+              71.9,
+              73.0
+            ],
+            "fan_pct": [
+              48.0,
+              67.9,
+              71.0
+            ],
+            "power_w": [
+              175.3,
+              188.63
+            ],
+            "sm_mhz": [
+              1746
+            ]
+          }
+        },
+        "cpu": {
+          "phase": "soak",
+          "seconds": 90.0,
+          "iters": 442,
+          "size": 2048,
+          "gflops": 84.3
+        },
+        "ram": {
+          "phase": "soak",
+          "seconds": 90.1,
+          "iters": 238,
+          "gbps": 7.1,
+          "errors": 0,
+          "gib_per_array": 0.5
+        },
+        "disk": null,
+        "telemetry": {
+          "samples": 44,
+          "temp_c": [
+            67.0,
+            71.9,
+            73.0
+          ],
+          "fan_pct": [
+            48.0,
+            67.9,
+            71.0
+          ],
+          "power_w": [
+            175.3,
+            188.63
+          ],
+          "sm_mhz": [
+            1746
+          ]
+        },
+        "verdict": {
+          "clean": true,
+          "exits": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "xid_lines": 0
+        }
+      }
+    }
+  ]
+}
