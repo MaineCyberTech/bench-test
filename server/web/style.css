@@ -222,4 +222,12 @@ table td.num{font-family:var(--mono);text-align:right}
 .focuspane .phases{max-height:42vh}
 .focuspane .console{max-height:34vh}
 .focuspane .statstable{font-size:11px}
+
+/* chart legend: the real numbers behind a normalised (mixed-unit) plot */
+.chartlegend{display:flex;flex-wrap:wrap;gap:3px 16px;margin:7px 2px 0;font-size:11px}
+.chartlegend:empty{display:none}
+.chartlegend .cl{display:inline-flex;align-items:center;gap:6px;color:var(--muted)}
+.chartlegend .cl i{width:10px;height:3px;border-radius:2px;display:inline-block;flex:none}
+.chartlegend .cl b{color:var(--text);font-family:var(--mono);font-weight:600}
+.chartlegend .cl .muted{font-family:var(--mono);font-size:10px}
 @media (max-width:980px){.fgrid,.fgrid.two{grid-template-columns:1fr}}

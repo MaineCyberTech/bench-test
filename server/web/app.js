@@ -379,6 +379,7 @@ function runCardHTML(a) {
         <canvas class="runchart" height="180"></canvas>
         <select class="csel" data-chart="${a.id}">${Object.keys(CHART_PRESETS).map((k) => `<option${k === preset ? " selected" : ""}>${esc(k)}</option>`).join("")}</select>
       </div>
+      <div class="chartlegend"></div>
       <div class="phases"></div>
       <div class="consolewrap">
         <div class="chead"><span class="muted">live console</span>
@@ -498,6 +499,7 @@ function focusShell(r, live) {
         <div class="fcard"><h4>Telemetry</h4>
           <div class="chartrow"><canvas class="runchart" height="240"></canvas>
             <select class="csel" data-chart="${esc(r.id)}">${sel(r.id)}</select></div>
+          <div class="chartlegend"></div>
           <table class="statstable" data-f="stats"></table>
         </div>
       </div>
@@ -981,18 +983,46 @@ function attachHover(cv) {
 }
 function niceMax(v) { const p = Math.pow(10, Math.floor(Math.log10(v || 1))); return Math.ceil((v || 1) / p) * p; }
 
+/* x for a telemetry sample: seconds since the run started, from the wall clock.
+ * `elapsed` is written by the sampler and is not reliably monotonic across
+ * phases, which made the chart draw vertical zigzags; `ts` always is. */
+function teleX(sample, runStart) {
+  if (sample.ts != null && runStart != null) return sample.ts - runStart;
+  if (sample.elapsed != null) return sample.elapsed;
+  return null;
+}
+
+function runStarted(runId) {
+  const r = STATE.active.find((x) => x.id === runId) || STATE.recent.find((x) => x.id === runId);
+  return r && r.started ? r.started : null;
+}
+
+function seriesPoints(buf, key, runStart) {
+  const out = [];
+  for (const b of buf) {
+    if (b[key] == null) continue;
+    const x = teleX(b, runStart);
+    if (x == null || x < 0) continue;
+    out.push({ x, y: b[key] });
+  }
+  out.sort((a, b) => a.x - b.x);
+  return out;
+}
+
 function drawRunChart(card, runId) {
   const cv = card.querySelector(".runchart");
   if (!cv) return;
-  const buf = (TEL[runId] || []).slice(-240);
+  const buf = (TEL[runId] || []).slice(-600);
+  const start = runStarted(runId);
   const preset = CHART[runId] || Object.keys(CHART_PRESETS)[0];
   const keys = CHART_PRESETS[preset] || [];
   const series = keys.map((k) => {
     const meta = SERIES[k] || [k, "#4c9aff"];
-    return { name: meta[0], color: meta[1],
-             points: buf.filter((b) => b[k] != null).map((b) => ({ x: b.elapsed, y: b[k] })) };
+    return { name: meta[0], color: meta[1], points: seriesPoints(buf, k, start) };
   });
-  drawChart(cv, series);
+  drawChart(cv, series, { normalize: true, xElapsed: true });
+  const lg = card.querySelector(".chartlegend");
+  if (lg) lg.innerHTML = chartLegendHTML(series);
 }
 
 /* ------------------------------------------------------------ actions --- */
@@ -1189,7 +1219,7 @@ async function showDetail(runId) {
   const s = r.summary || {};
   const sy = r.system || {};
   const tel = await api("/runs/" + runId + "/telemetry?max=900");
-  const pts = (n) => (tel.rows || []).filter((x) => x[n] != null).map((x) => ({ x: x.elapsed, y: x[n] }));
+  const pts = (n) => seriesPoints((tel.rows || []).filter((x) => x[n] != null), n, r.started);
   const st = (r.telemetry_stats && r.telemetry_stats.stats) || {};
   const dv = (r.telemetry_stats && r.telemetry_stats.derived) || {};
   const prev = await findPrev(r);
@@ -1278,6 +1308,7 @@ async function showDetail(runId) {
     </div>
     <div class="chartrow"><canvas id="dChart" height="220"></canvas>
       <select class="csel" id="dChartSel">${Object.keys(CHART_PRESETS).map((k) => `<option>${esc(k)}</option>`).join("")}</select></div>
+    <div class="chartlegend" id="dChartLegend"></div>
     <h4 class="sechead">Results</h4>
     <table class="kvtable">${resultRows(s).map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(String(v))}</td></tr>`).join("") || `<tr><td class="muted">no structured results</td></tr>`}</table>
     <h4 class="sechead">System</h4>
@@ -1318,10 +1349,13 @@ async function showDetail(runId) {
   let dpreset = Object.keys(CHART_PRESETS)[0];
   const drawDetail = () => {
     $("#dChartSel").value = dpreset;
-    drawChart($("#dChart"), (CHART_PRESETS[dpreset] || []).map((k) => {
+    const series = (CHART_PRESETS[dpreset] || []).map((k) => {
       const meta = SERIES[k] || [k, "#4c9aff"];
       return { name: meta[0], color: meta[1], points: pts(k) };
-    }), {});
+    });
+    drawChart($("#dChart"), series, { normalize: true, xElapsed: true });
+    const lg = document.querySelector("#dChartLegend");
+    if (lg) lg.innerHTML = chartLegendHTML(series);
   };
   drawDetail();
   $("#dChartSel").onchange = (e) => { dpreset = e.target.value; drawDetail(); };
