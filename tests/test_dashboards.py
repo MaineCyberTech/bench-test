@@ -2,6 +2,7 @@
 running (including the previous group's last row). Uses the real classes with a
 headless Tk root / a stubbed TUI; skips cleanly if the UI toolkit is missing."""
 import collections
+import os
 import sys
 
 from harness import Checker, BENCH, REPO
@@ -62,6 +63,36 @@ def _tui(c):
     c.check("tui rows: all closed except last",
             all(s == "ok" for _, s in rows[:-1]) and rows[-1][1] == "run", rows)
     c.check("tui rows: cross-group closed", rows[1][1] == "ok" and rows[3][1] == "ok", rows)
+
+    # ---- the GPU bar read the wrong key, so it showed "--" everywhere ----
+    src = open(os.path.join(BENCH, "tui.py"), encoding="utf-8").read()
+    c.check("tui does not look for gpu_util_pct in csv_now",
+            'csv_now.get("gpu_util_pct")' not in src, "")
+    c.check("tui reads the canonical gpu_util key",
+            'csv_now.get("gpu_util")' in src, "")
+    t.csv_now = {"gpu_util": 93.0, "temp_c": 63.0}
+    c.check("a gpu_util value is what the bar consumes",
+            t.csv_now.get("gpu_util") == 93.0, t.csv_now)
+
+    # ---- CPU/RAM sampling must work off Linux too ----
+    # it used to read /proc only, so on Windows the CPU bar, the RAM/load line and
+    # the per-core sparkline were all blank
+    t.sys_cpu, t.sys_cores = 0.0, []
+    t.sys_ram, t.sys_swap, t.sys_load = (0.0, 0.0), (0.0, 0.0), 0.0
+    t._prev_stat, t._prev_win_cpu = None, None
+    if t._sample_system_psutil():
+        c.check("tui samples CPU/RAM via psutil (cross-platform)",
+                t.sys_ram[1] > 0 and t.sys_cores, (t.sys_cpu, t.sys_ram, len(t.sys_cores)))
+    else:
+        c.check("tui samples CPU/RAM via psutil (cross-platform)", False,
+                "psutil unavailable - the venv should have it")
+    if os.name == "nt":
+        t.sys_cpu, t.sys_ram = 0.0, (0.0, 0.0)
+        t._prev_win_cpu = None
+        t._sample_system_win()
+        t._sample_system_win()          # GetSystemTimes needs a previous sample
+        c.check("tui samples CPU/RAM via the Windows API without psutil",
+                t.sys_ram[1] > 0, t.sys_ram)
 
 
 def run():

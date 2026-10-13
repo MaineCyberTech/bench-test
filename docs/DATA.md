@@ -12,7 +12,8 @@ mandatory third-party dependency.
 | **summary** | `benchreport.build_summary_dir()` over the phase JSONs | `gpu_matmul_tflops{fp16,bf16,tf32,fp32,fp64}`, `gpu_soak_tflops`, `cpu_matmul_gflops{fp32,fp64}`, `cpu_soak_gflops`, `ram_soak_gbps`, `disk_*`, `net` (+ `ping_mdev_ms`, `ping_loss_pct`), `nvenc`, `pcie`, `combined`, `fullsoak{verdict}`, `verdicts[]`, per-phase `telemetry` |
 | **system / inventory** | `bench/linux_info.py`, `bench/Get-SystemInfo.ps1` | OS/kernel, CPU, RAM (**DIMM slots**: size/speed/mfg/part), GPU (**uuid, vbios, PCIe bus**, compute users), disks (+ health/firmware), volumes, NICs, monitors, BIOS/board, uptime |
 | **health report** | `bench/Get-EventHealth.ps1` (run by the battery) | WHEA, TDR (`nvlddmkm`), disk/power/thermal events; per-disk reliability counters |
-| **telemetry** (4 Hz rows) | `bench/run_win.py` (Windows), `bench/telemetry_log.py` (Linux) | GPU: util, mem-util, temp, mem-temp, fan, power, power-cap, sm/mem/gr/**video** clocks, VRAM, pstate, enc/dec %, **thermal limit**, **power default/max**, **PCIe gen/width**, **retired pages**, **throttle bitmask**. CPU: util, package/max-core temp, fan RPM, load1, swap, **RAPL package watts**, **avg core MHz**, **PSI io stall**. Disk I/O + net rx/tx MB/s |
+| **telemetry** (4 Hz rows) | `bench/run_win.py` (Windows), `bench/telemetry_log.py` (Linux) | GPU: util, mem-util, temp, mem-temp, fan, power, power-cap, sm/mem/gr/**video** clocks, VRAM (**used + total**), pstate, enc/dec %, **thermal limit**, **power default/max**, **PCIe gen/width**, **retired pages**, **throttle bitmask**, **GPU fan RPM**, **3D/copy engine %**. CPU: util, package/max-core temp, fan RPM, load1, swap, **RAPL/package watts**, **avg core MHz**, **PSI io stall**, **one column per logical core** (`cpu_core1..N`). Disk I/O + net rx/tx MB/s + **storage temperature** |
+| **telemetry on AMD/Intel Windows** | `bench/Sample-Sensors.ps1` (LibreHardwareMonitor) | No `nvidia-smi` exists on AMD/Intel, so the library supplies GPU temp/power/clocks/util/VRAM + load, fan RPM, engine loads, CPU temp/package watts/clock and per-core load. It is the only local source for those columns there. Best-effort by design: **a sensor the library cannot read goes out blank, never a fake zero**, and a 0 reading for temp/power/clock is treated as unreadable. CPU temp/power/clock normally need an **administrator** shell; without it those columns stay blank and the runner says so. The DLL is vendored under `tools/lhm` and shipped in the app bundle, with a mirror + retries if a download is needed |
 | **telemetry stats** | server (`benchd._compute_stats`) | per metric: min/avg/max/**std**/**p50/p95/p99**/n, plus **derived**: energy (J), energy kJ/h, clock residency %, throttled %, thermal headroom, power headroom |
 | **events / logs / artifacts** | reporter + phases | `[group] label` phase trail, console, warn events, report JSON + telemetry CSV |
 
@@ -42,6 +43,10 @@ Both dashboards render the **same** field set from one shared list
   NVENC fps, RAM copy/add/reduce + latency, the fp16/bf16/tf32/fp32 matrix.
 - **GPU headroom/health** at 4 Hz rows: thermal limit, power default/max, video clock,
   PCIe link gen/width, retired pages, throttle/slowdown bitmask.
+- **Windows GPU identity** comes from `nvidia-smi` when present and falls back to WMI
+  (`Win32_VideoController`, skipping the Basic Display Adapter) otherwise - without
+  that fallback an AMD/Intel machine registered with no GPU at all and the fleet
+  view showed a blank card.
 - **Hardware verdicts** from `health.json` (WHEA, TDR, disk I/O errors, wear) and
   the Linux inventory (Xid/MCE/AER lines since boot, EDAC ECC, NVMe SMART) →
   `summary.verdicts[]`, shown as pass/warn/fail in run detail.

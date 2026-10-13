@@ -134,7 +134,20 @@ disk_read_mbs, disk_write_mbs, net_rx_mbs, net_tx_mbs, temp_mem_c, gr_mhz,
 temp_limit_c, power_default_w, power_max_w, video_mhz, pcie_gen, pcie_width,
 retired, throttle, throttle_bits`). The mapping lives in
 `benchreport.CSV_ALIASES`; add new columns there **and** in `telemetry_log.py`
-(Linux) / `run_win.py` (Windows).
+(Linux) / `run_win.py` (Windows). Both samplers also write **one `cpu_coreN` column
+per logical CPU**, appended after the fixed columns; a test asserts each CSV stays
+rectangular, because a short row would shift every column after it.
+
+**AMD/Intel Windows has no `nvidia-smi`**, so `bench/Sample-Sensors.ps1`
+(LibreHardwareMonitor) supplies GPU temp/power/clocks/util/VRAM, fan RPM, engine
+loads, CPU temp/package watts/clock and per-core load. It is best-effort: a sensor
+it cannot read goes out **blank, never a fake zero** (a 0 temp/power/clock is
+treated as unreadable), and CPU temp/power/clock normally need an **administrator**
+shell - without elevation those stay blank and the runner prints why instead of
+failing silently. The DLL is vendored under `tools/lhm` and shipped in the app
+bundle, with a mirror + retries when a download is needed. `run_win.py` maps its
+`key=value` line in `_parse_lhm_line()` (unit-tested, so extending the script is
+safe); a key the runner does not know is ignored rather than fatal.
 
 The dashboards render the same fields from one shared list
 (`benchreport.DASH_FIELDS`) and one hardware line (`benchreport.hardware_line()`),

@@ -198,6 +198,7 @@ class BenchTUI:
         self.sys_swap = (0.0, 0.0)
         self.sys_load = 0.0
         self._prev_stat = None
+        self._prev_win_cpu = None
         self.curve = self._curve_state()
 
         self._apply_preset(1)
@@ -730,6 +731,12 @@ class BenchTUI:
                         os.path.basename(self.tel_path or ""), set()).add(elapsed)
 
     def _sample_system(self):
+        # psutil first: it is the only cross-platform source, and the dashboards
+        # run under the venv that has it. Then /proc (Linux, stdlib-only), then the
+        # Windows API. Without those Windows paths the CPU bar, the RAM/load line
+        # and the per-core sparkline were simply blank on Windows.
+        if self._sample_system_psutil():
+            return
         try:
             with open("/proc/stat") as fh:
                 stats = []
@@ -767,6 +774,73 @@ class BenchTUI:
             pass
         try:
             self.sys_load = os.getloadavg()[0]
+        except Exception:
+            pass
+        self._sample_system_win()
+
+    def _sample_system_psutil(self):
+        """CPU/RAM/swap/load/per-core via psutil. False when it is unavailable."""
+        try:
+            import psutil
+        except Exception:
+            return False
+        try:
+            self.sys_cpu = psutil.cpu_percent(interval=None)
+            cores = psutil.cpu_percent(interval=None, percpu=True)
+            if cores:
+                self.sys_cores = cores
+            vm = psutil.virtual_memory()
+            self.sys_ram = (vm.used / 1024 ** 3, vm.total / 1024 ** 3)
+            sm = psutil.swap_memory()
+            self.sys_swap = (sm.used / 1024 ** 3, sm.total / 1024 ** 3)
+            try:
+                self.sys_load = psutil.getloadavg()[0]
+            except Exception:
+                pass
+            return True
+        except Exception:
+            return False
+
+    def _sample_system_win(self):
+        """CPU/RAM via the Windows API, for a stdlib-only run without psutil."""
+        if os.name != "nt":
+            return
+        try:
+            import ctypes
+            idle = ctypes.c_ulonglong()
+            kern = ctypes.c_ulonglong()
+            user = ctypes.c_ulonglong()
+            if ctypes.windll.kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kern),
+                                                     ctypes.byref(user)):
+                cur = (idle.value, kern.value, user.value)
+                old = self._prev_win_cpu
+                self._prev_win_cpu = cur
+                if old:
+                    di, dk, du = cur[0] - old[0], cur[1] - old[1], cur[2] - old[2]
+                    tot = dk + du          # kernel time already includes idle
+                    if tot > 0:
+                        self.sys_cpu = round(100.0 * (tot - di) / tot, 1)
+        except Exception:
+            pass
+        try:
+            import ctypes
+
+            class _MS(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong),
+                            ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong),
+                            ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong),
+                            ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            st = _MS()
+            st.dwLength = ctypes.sizeof(_MS)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+                self.sys_ram = ((st.ullTotalPhys - st.ullAvailPhys) / 1024 ** 3,
+                                st.ullTotalPhys / 1024 ** 3)
+                self.sys_swap = ((st.ullTotalPageFile - st.ullAvailPageFile) / 1024 ** 3,
+                                 st.ullTotalPageFile / 1024 ** 3)
         except Exception:
             pass
 
@@ -948,7 +1022,7 @@ class BenchTUI:
         fan = self.csv_now.get("fan_pct")
         rpm = self.csv_now.get("gpu_fan_rpm")
         pw = self.csv_now.get("power_w")
-        util = self.csv_now.get("gpu_util_pct")
+        util = self.csv_now.get("gpu_util")
         vram = self.csv_now.get("vram_used_mib")
 
         def room():
@@ -1007,9 +1081,11 @@ class BenchTUI:
                 chunks.append("nvme %.0f°" % self.csv_now["nvme_c"])
             if self.csv_now.get("cpu_fan_rpm"):
                 chunks.append("cpufan %.0frpm" % self.csv_now["cpu_fan_rpm"])
-            if self.csv_now.get("gpu_enc_pct") is not None or self.csv_now.get("gpu_dec_pct") is not None:
-                chunks.append("enc/dec %s/%s%%" % (self.csv_now.get("gpu_enc_pct", "--"),
-                                                   self.csv_now.get("gpu_dec_pct", "--")))
+            enc, dec = self.csv_now.get("gpu_enc_pct"), self.csv_now.get("gpu_dec_pct")
+            if enc is not None or dec is not None:
+                chunks.append("enc/dec %s/%s%%" % (
+                    ("%.0f" % enc) if enc is not None else "--",
+                    ("%.0f" % dec) if dec is not None else "--"))
             self._put(ry, MX + 2, "temps  " + " · ".join(chunks), curses.color_pair(
                 self._severity(max([v for v in (t, self.csv_now.get("cpu_temp_c"),
                                                 self.csv_now.get("nvme_c")) if v is not None] or [0]))))
