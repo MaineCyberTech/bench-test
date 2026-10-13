@@ -50,6 +50,7 @@ from benchreport import (Reporter, PhaseTracker, TelemetryTail,  # noqa: E402
                          toolkit_version, is_live, update_needs_restart,
                          auto_update, venv_python, upload_telemetry_csv, upload_run_files,
                          extra_runner_args)
+import bootstrap  # stdlib-only local env helper (see bench/bootstrap.py)
 
 DEFAULT_GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc",
                   "llm", "fan", "sys", "gfx"]
@@ -129,8 +130,10 @@ class Agent:
     # -- runner ------------------------------------------------------------
     def runner_cmd(self, args):
         if os.name == "nt":
-            return [venv_python(REPO) or sys.executable,
-                    os.path.join(BENCH, "run_win.py")] + args + ["-o", self.out_dir]
+            # bootstrap provisions a cached interpreter + numpy/psutil for machines
+            # without a checkout/.venv (the packaged app has no python otherwise).
+            self._py = bootstrap.python_path(REPO, ensure=True, log=self.log) or sys.executable
+            return [self._py, os.path.join(BENCH, "run_win.py")] + args + ["-o", self.out_dir]
         return ["bash", os.path.join(BENCH, "Run-LinuxBench.sh")] + args + ["-o", self.out_dir]
 
     def run_battery(self, label, profile, extra_args=None):
@@ -138,8 +141,8 @@ class Agent:
         cmd = self.runner_cmd(args)
         self.log("run: %s" % " ".join(cmd))
         env = os.environ.copy()
-        env.setdefault("BENCH_PY", venv_python(REPO) or sys.executable)
-        env["PATH"] = os.path.dirname(sys.executable) + os.pathsep + env.get("PATH", "")
+        env.setdefault("BENCH_PY", getattr(self, "_py", "") or venv_python(REPO) or sys.executable)
+        env["PATH"] = os.path.dirname(env["BENCH_PY"]) + os.pathsep + env.get("PATH", "")
         os.makedirs(self.out_dir, exist_ok=True)
         self.rep.start_run(label, profile, host=self.a.name or platform.node(),
                            platform=self.caps.get("platform"), gpu=self.caps.get("gpu"),

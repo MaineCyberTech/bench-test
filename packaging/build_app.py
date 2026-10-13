@@ -40,7 +40,12 @@ def main():
     os.makedirs(a.out, exist_ok=True)
     for name, script, noconsole in APPS:
         cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
-               "--name", name, "--paths", BENCH, "--hidden-import", "benchreport",
+               "--name", name, "--paths", BENCH,
+               "--hidden-import", "benchreport", "--hidden-import", "bootstrap",
+               # ship the whole toolkit next to the exe so a local battery needs no
+               # checkout; bootstrap.py provisions the interpreter + deps on first run.
+               "--add-data", "%s%sbench" % (BENCH, os.pathsep),
+               "--contents-directory", ".",
                "--distpath", a.out, "--workpath", os.path.join(a.out, "_work"),
                "--specpath", os.path.join(a.out, "_spec"),
                os.path.join(BENCH, script)]

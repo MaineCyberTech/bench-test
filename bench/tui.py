@@ -59,14 +59,28 @@ except Exception:  # reporting is optional
     Reporter = None
 
 # Windows runs the Python battery directly - the .sh runner is Linux-only and
-# starting it there fails with WinError 193 - and it should use the venv
-# interpreter, which holds numpy/psutil/PyTorch.
+# starting it there fails with WinError 193 - and it needs a real interpreter
+# carrying numpy/psutil (and the GPU backend). bootstrap provisions one (cached)
+# without a checkout or system Python; a repo .venv wins if present.
+try:
+    import bootstrap  # stdlib-only local env helper
+except Exception:
+    bootstrap = None
+
 if os.name == "nt":
-    RUNNER = venv_python(REPO) or sys.executable
+    RUNNER = None
     RUNNER_PREFIX = [os.path.join(BENCH, "run_win.py")]
+
+    def runner_command(args):
+        py = (bootstrap.python_path(REPO, ensure=True) if bootstrap else "") \
+            or venv_python(REPO) or sys.executable
+        return [py] + RUNNER_PREFIX + args, py
 else:
     RUNNER = os.path.join(BENCH, "Run-LinuxBench.sh")
     RUNNER_PREFIX = []
+
+    def runner_command(args):
+        return [RUNNER] + args, ""
 
 GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "llm", "fan", "sys", "gfx"]
 
@@ -345,9 +359,12 @@ class BenchTUI:
         self.run_t0 = time.time()
         os.makedirs(self.results_dir, exist_ok=True)
         env = os.environ.copy()
-        env.setdefault("BENCH_PY", venv_python(REPO) or sys.executable)
         try:
-            self.proc = subprocess.Popen([RUNNER] + RUNNER_PREFIX + self._args(), cwd=REPO, env=env,
+            cmd, py = runner_command(self._args())
+            if py:
+                env.setdefault("BENCH_PY", py)
+                env["PATH"] = os.path.dirname(py) + os.pathsep + env.get("PATH", "")
+            self.proc = subprocess.Popen(cmd, cwd=REPO, env=env,
                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                          text=True, bufsize=1, start_new_session=True,
                                          creationflags=(getattr(subprocess, "CREATE_NO_WINDOW", 0)
