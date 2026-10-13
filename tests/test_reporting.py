@@ -746,6 +746,40 @@ def run():
         c.check("the sequential write flushes as it goes, not once at the end",
                 calls["n"] >= 4, calls)
 
+    # ---- the telemetry pipeline must not lose rows silently ----
+    import queue as _q
+
+    class _FakeRep:
+        def __init__(self):
+            self.batches = []
+
+        def telemetry(self, batch):
+            self.batches.append(list(batch))
+
+        def log(self, lines, stream="out"):
+            pass
+
+        def heartbeat(self):
+            pass
+
+        def poll_commands(self):
+            return []
+
+    fp = _FakeRep()
+    pump = ReporterPump(fp)
+    pump.samples = _q.Queue(maxsize=3)
+    for i in range(5):
+        pump.push_sample({"elapsed": i})
+    c.check("a full telemetry queue drops the oldest and counts it",
+            pump.dropped == 2 and pump.produced == 5 and pump.samples.qsize() == 3,
+            pump.stats())
+    pump._drain()
+    c.check("the drain sends every queued row and counts it",
+            pump.sent == 3 and len(fp.batches) == 1 and len(fp.batches[0]) == 3,
+            pump.stats())
+    c.check("stats() reports the pipeline honestly",
+            pump.stats()["queued"] == 0 and pump.stats()["dropped"] == 2, pump.stats())
+
     srv.stop()
     return c.fails
 

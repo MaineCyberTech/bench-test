@@ -680,8 +680,15 @@ class ReporterPump:
         self.on_command = on_command
         self.interval = interval
         self.log = log or (lambda *_a: None)
-        self.samples = queue.Queue()
-        self.logs = queue.Queue()
+        # Bounded: a runner that cannot reach the server must not grow without
+        # limit, but it must not lose rows silently either - the oldest go, and the
+        # count is reported. 1200 rows is five minutes at 4 Hz.
+        self.samples = queue.Queue(maxsize=1200)
+        self.logs = queue.Queue(maxsize=2000)
+        self.produced = 0
+        self.sent = 0
+        self.dropped = 0
+        self.ticks = 0
         self._stop = False
         self._thread = None
 
@@ -696,16 +703,29 @@ class ReporterPump:
         self._stop = True
 
     def push_sample(self, row):
+        """Queue one sample. If the queue is full the OLDEST row goes, and we count
+        it: silently dropping made two thirds of a run's live telemetry disappear
+        with nothing to show for it."""
+        self.produced += 1
         try:
             self.samples.put_nowait(row)
         except Exception:
-            pass
+            try:
+                self.samples.get_nowait()
+                self.samples.put_nowait(row)
+            except Exception:
+                pass
+            self.dropped += 1
 
     def push_log(self, line):
         try:
             self.logs.put_nowait(line)
         except Exception:
-            pass
+            try:
+                self.logs.get_nowait()
+                self.logs.put_nowait(line)
+            except Exception:
+                pass
 
     def _drain(self):
         batch = []
@@ -715,6 +735,7 @@ class ReporterPump:
             except Exception:
                 break
         if batch:
+            self.sent += len(batch)
             self.rep.telemetry(batch)
         lines = []
         while len(lines) < 200:
@@ -725,10 +746,21 @@ class ReporterPump:
         if lines:
             self.rep.log(lines)
 
+    def stats(self):
+        """produced / sent / dropped since the pump started."""
+        return {"produced": self.produced, "sent": self.sent,
+                "dropped": self.dropped, "queued": self.samples.qsize()}
+
     def _loop(self):
         while not self._stop:
             try:
                 self._drain()
+                self.ticks += 1
+                # every ~20s: a run's own console then says whether the pipeline kept
+                # up, instead of a silent loss being found by hand later
+                if self.ticks % 10 == 0 and (self.produced or self.dropped):
+                    self.log("[report] telemetry %d produced, %d sent, %d dropped"
+                             % (self.produced, self.sent, self.dropped))
                 self.rep.heartbeat()
                 for c in self.rep.poll_commands():
                     if self.on_command:
