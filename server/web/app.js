@@ -78,6 +78,13 @@ const FOCUS_BARS = [
   ["cpu_pkg_w", "cpu W", "W", 200], ["ram_used", "ram", "GiB", 64],
   ["load1", "load", "", 16], ["nvme_c", "nvme °C", "°C", 100],
   ["disk_write_mbs", "disk W", "MB/s", 2000], ["net_rx_mbs", "net rx", "MB/s", 1250],
+  // the rest of DASH_FIELDS, so every metric the TUI can show has a bar here
+  ["disk_read_mbs", "disk R", "MB/s", 2000], ["net_tx_mbs", "net tx", "MB/s", 1250],
+  ["gpu_fan_rpm", "gpu rpm", "rpm", 3000], ["cpu_fan_rpm", "cpu fan", "rpm", 3000],
+  ["gpu_enc_pct", "enc %", "%", 100], ["gpu_dec_pct", "dec %", "%", 100],
+  ["temp_mem_c", "vram °C", "°C", 110], ["temp_limit_c", "gpu limit", "°C", 110],
+  ["cpu_max_core_c", "core max", "°C", 100], ["psi_io", "io stall", "%", 100],
+  ["retired", "retired", "", 1],
 ];
 const HOT_BARS = ["temp_c", "cpu_temp_c", "nvme_c", "temp_mem_c"];
 // small sparkline panel under the main chart, filling the telemetry column
@@ -499,6 +506,7 @@ function focusShell(r, live) {
       <div class="h">${esc(r.host)} · ${esc(r.label || "run")}</div>
       <span class="pill ${esc(r.status || "")}">${esc(r.status || "")}</span>
       <span class="muted mono" data-f="elapsed"></span>
+      <span class="muted mono" data-f="phase"></span>
       <span class="muted mono">${esc(sysLine(r))}</span>
       <span class="muted mono" data-f="runner"></span>
       <div style="margin-left:auto" class="ract">
@@ -572,6 +580,13 @@ function paintFocus(el, r, live) {
                          ? "v" + rr.capabilities.toolkit.version : null]
       .filter(Boolean).join(" · ");
   }
+  const ph = el.querySelector("[data-f=phase]");
+  if (ph) {
+    const ps = r.phases || [];
+    const cur = ps.filter((p) => p.status === "running").slice(-1)[0] ||
+                ps.slice(-1)[0];
+    ph.textContent = cur ? `${cur.grp} · ${cur.label || ""}` : "";
+  }
   const v = r.latest || {};
   paintFocusSpecs(el, r);
   paintGauges(el, v);
@@ -633,6 +648,7 @@ function healthBits(v) {
     bits.push("pcie " + fmt(v.pcie_gen, 0) + "×" + fmt(v.pcie_width, 0));
   }
   if (v.video_mhz != null) bits.push("nvenc " + fmt(v.video_mhz, 0));
+  if (v.pstate) bits.push(String(v.pstate));
   if (hot && v.throttle_bits != null) bits.push("bits " + fmt(v.throttle_bits, 0));
   return { text: bits.join(" · "), hot };
 }
