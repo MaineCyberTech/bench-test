@@ -122,6 +122,17 @@ const _histCache = {};              // history cache key -> { ver }
 const _trendsCache = {};            // trends cache key -> { ver }
 let _lastFocus = null;              // element focused before a modal opened
 
+/* USE-P2-001: a command POST only proves it was enqueued — the runner's ack (or
+   the server's timeout reap) is the real outcome and arrives as an SSE `command`
+   event. Track each issued command by id so the UI can show queued -> acked /
+   failed / expired with the error, instead of claiming success on enqueue. (The
+   GET /runners/<id>/commands endpoint only returns still-queued commands and
+   flips them to 'sent', so it cannot surface an ack — the SSE events are the
+   authoritative outcome.) */
+const CMDS = {};                    // command id -> outcome record
+let CMD_ORDER = [];                 // newest first, capped
+const CMD_KEEP = 20;
+
 /* ------------------------------------------------------------------ dom -- */
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
@@ -306,7 +317,10 @@ function connect() {
   });
   es.addEventListener("phase", (e) => onPhase(JSON.parse(e.data)));
   es.addEventListener("telemetry", (e) => onTelemetry(JSON.parse(e.data)));
-  es.addEventListener("command", () => queueRefresh());
+  es.addEventListener("command", (e) => {
+    try { onCommandEvent(JSON.parse(e.data)); } catch (err) { /* ignore malformed */ }
+    queueRefresh();
+  });
   es.addEventListener("log", (e) => onLog(JSON.parse(e.data)));
   es.addEventListener("schedule", () => renderSchedules());
   es.addEventListener("event", () => {});
@@ -433,9 +447,84 @@ function onPhase(p) {
   if (card) queueRefresh(300);
 }
 
+/* ------------------------------------------------------------- commands -- */
+/* USE-P2-001: the outcome of an operator command. The POST response carries the
+   id of a queued command; the SSE `command` event then reports the runner's ack
+   (status "done"/"failed" with a result) or the server's reap (status "failed"
+   with a "no ack" error). Polling GET .../commands is not used because it only
+   returns queued commands and marks them 'sent', so it never shows an ack. */
+function trackCommand(res, runnerId, kind, label) {
+  if (!res || !res.id) return;
+  const c = CMDS[res.id] || (CMDS[res.id] = { id: res.id, runner_id: runnerId, kind: kind,
+    label: "", status: res.status || "queued", error: "", ts: Date.now() / 1000 });
+  if (runnerId) c.runner_id = runnerId;
+  if (kind) c.kind = kind;
+  if (label) c.label = label;
+  if (!CMD_ORDER.includes(res.id)) { CMD_ORDER.unshift(res.id); CMD_ORDER = CMD_ORDER.slice(0, CMD_KEEP); }
+  renderCommands();
+}
+/* The runner acks "done"/"failed"; the server reaps a dropped command as
+   "failed" with a "no ack" error. Fold those into the labels the UI shows. */
+function cmdStatus(c) {
+  const s = String(c.status || "queued");
+  if (s === "done" || s === "ok" || s === "acked") return "acked";
+  if (s === "failed" || s === "error") {
+    return (c.error && /no ack/i.test(c.error)) ? "expired" : "failed";
+  }
+  if (s === "sent") return "sent";
+  return "queued";
+}
+function onCommandEvent(d) {
+  if (!d || !d.id) return;
+  const c = CMDS[d.id] || (CMDS[d.id] = { id: d.id, runner_id: d.runner_id, kind: d.kind,
+    label: "", status: "queued", error: "", ts: Date.now() / 1000 });
+  if (d.runner_id) c.runner_id = d.runner_id;
+  if (d.kind) c.kind = d.kind;
+  if (d.status) c.status = d.status;
+  const err = d.result && (d.result.error || d.result.stderr);
+  if (err) c.error = String(err);
+  if (!CMD_ORDER.includes(d.id)) { CMD_ORDER.unshift(d.id); CMD_ORDER = CMD_ORDER.slice(0, CMD_KEEP); }
+  const st = cmdStatus(c);
+  const label = c.label || c.kind || "command";
+  if (st === "acked") announce("command acked: " + label);
+  else if (st === "failed" || st === "expired") {
+    announce("command " + st + ": " + label + (c.error ? " — " + c.error : ""));
+  }
+  renderCommands();
+}
+function renderCommands() {
+  const el = $("#commands");
+  if (!el) return;
+  const cnt = $("#cmdCount");
+  if (!CMD_ORDER.length) {
+    el.innerHTML = `<div class="card muted">No commands issued yet.</div>`;
+    if (cnt) cnt.textContent = "";
+    return;
+  }
+  if (cnt) cnt.textContent = CMD_ORDER.length + " recent";
+  el.innerHTML = CMD_ORDER.map((id) => {
+    const c = CMDS[id];
+    if (!c) return "";
+    const rr = STATE.runners.find((x) => x.id === c.runner_id);
+    const who = rr ? (rr.label || rr.name) : String(c.runner_id || "").slice(0, 8);
+    const st = cmdStatus(c);
+    const pill = st === "acked" ? "done"
+      : (st === "failed" || st === "expired") ? "failed"
+        : st === "queued" ? "running" : "stopped";
+    return `<div class="cmdrow">
+      <span class="pill ${pill}">${esc(st)}</span>
+      <span class="ck">${esc(c.kind || "command")}</span>
+      <span class="muted">${esc(who)}</span>
+      ${c.label ? `<span class="muted">${esc(c.label)}</span>` : ""}
+      <span class="muted mono">${ago(c.ts)}</span>
+      ${c.error ? `<span class="cerr" title="${esc(c.error)}">${esc(c.error)}</span>` : ""}
+    </div>`;
+  }).join("");
+}
+
 /* -------------------------------------------------------------- render -- */
 function renderAll() {
-  renderTop(); renderRunners(); renderActive();
+  renderTop(); renderRunners(); renderActive(); renderCommands();
   renderCompareOptions(); renderSchedules(); renderFocus();
   // PERF-P1-002: the heavy views (a page of run rows, an unbounded trends scan)
   // are only fetched while their tab is actually on screen.
@@ -767,9 +856,12 @@ function focusShell(r, live) {
       <div class="fgrid two">
         <div class="fcard"><h4>Phases</h4><div class="phases" data-f="phases"></div></div>
         <div class="fcard"><h4>Console</h4>
-          ${live ? `<form class="term" data-exec="${esc(r.runner_id)}">
+          <!-- USE-P2-004: exec/shell are accepted for an idle runner too (benchd
+               _issue_command has no live-run gate), so the terminal stays available
+               after a run ends; the ack tracker surfaces the command's outcome. -->
+          <form class="term" data-exec="${esc(r.runner_id)}">
             <input placeholder="run a command on this runner…" autocomplete="off">
-            <button class="accent" type="submit">run</button></form>` : ""}
+            <button class="accent" type="submit">run</button></form>
           <pre class="console mono" data-f="console"></pre>
         </div>
       </div>
@@ -1453,6 +1545,39 @@ function drawRunChart(card, runId) {
 }
 
 /* ------------------------------------------------------------ actions --- */
+/* USE-P2-002: the start form used to accept blank/zero/negative durations and
+   sizes silently — they were coerced with `+value` to NaN or 0 and sent. Validate
+   required + numeric + > 0, show an inline error, and keep submit disabled until
+   the form is valid. */
+const START_NUM_FIELDS = [
+  ["#mGpu", "GPU soak"], ["#mComb", "combined soak"], ["#mFull", "full soak"],
+  ["#mGfx", "graphics soak"], ["#mGpuSize", "GPU size"], ["#mCpuSize", "CPU size"],
+  ["#mRamSize", "RAM size"], ["#mCpuSoak", "CPU soak"], ["#mRamSoak", "RAM soak"],
+  ["#mDiskSec", "disk seconds"], ["#mDiskSize", "disk size"],
+  ["#mSteady", "steady GB"], ["#mPasses", "passes"],
+];
+function startFormErrors() {
+  const errs = [];
+  const need = (sel, label) => {
+    const el = $(sel);
+    if (!el) return;
+    const raw = String(el.value == null ? "" : el.value).trim();
+    const v = Number(raw);
+    if (raw === "" || !isFinite(v)) errs.push(label + " is required and must be a number");
+    else if (v <= 0) errs.push(label + " must be greater than 0");
+  };
+  START_NUM_FIELDS.forEach(([sel, label]) => need(sel, label));
+  if ($("#mStable") && $("#mStable").checked) need("#mStableHold", "stable hold");
+  return errs;
+}
+function validateStartForm() {
+  const errs = startFormErrors();
+  const box = $("#mErr");
+  if (box) box.textContent = errs.join(" · ");
+  const go = $("#mGo");
+  if (go) go.disabled = errs.length > 0;
+  return errs.length === 0;
+}
 async function startRun(runnerId) {
   const runner = STATE.runners.find((r) => r.id === runnerId) || {};
   const sup = (runner.capabilities && runner.capabilities.groups) || GROUPS;
@@ -1493,6 +1618,7 @@ async function startRun(runnerId) {
       <input id="mStableHold" type="number" value="60" style="width:70px"> s after plateau
       <label>gfx engine</label>
       <select id="mGfxEngine"><option>furmark</option><option>valley</option></select></div>
+    <div class="formrow"><span class="err" id="mErr" role="alert"></span></div>
     <div class="formrow" style="justify-content:flex-end">
       <button class="ghost" id="mCancel">cancel</button>
       <button class="accent" id="mGo">start</button></div>`);
@@ -1518,11 +1644,20 @@ async function startRun(runnerId) {
       info.textContent = "runs " + (want.filter((g) => sup.includes(g)).join(", ") || "nothing") +
         (un.length ? " · not on this runner: " + un.join(", ") : "");
     }
+    validateStartForm();          // a preset rewrites every value; re-check it
   };
   $("#mPreset").onchange = applyPreset;
   applyPreset();
+  // USE-P2-002: re-validate on every edit so submit stays disabled until valid
+  $$("#mGroups input, #mPreset, #mStable, " + START_NUM_FIELDS.map(([sel]) => sel).join(", "))
+    .forEach((el) => {
+      el.addEventListener("input", validateStartForm);
+      el.addEventListener("change", validateStartForm);
+    });
+  validateStartForm();
   $("#mCancel").onclick = closeModal;
   $("#mGo").onclick = async () => {
+    if (!validateStartForm()) return;
     const skip = $$("#mGroups input:not(:disabled)").filter((i) => !i.checked).map((i) => i.value);
     // send the COMPLETE group map too: a runner may already have a different
     // preset selected locally, and `skip` alone would be applied relative to it
@@ -1547,7 +1682,8 @@ async function startRun(runnerId) {
     };
     closeModal();
     try {
-      await api("/runners/" + runnerId + "/commands", "POST", { kind: "start", payload });
+      const res = await api("/runners/" + runnerId + "/commands", "POST", { kind: "start", payload });
+      trackCommand(res, runnerId, "start", payload.label);
       toast("run queued: " + payload.label);
       refresh();
     } catch (e) { toast("start failed: " + e.message, "err"); }
@@ -1555,7 +1691,8 @@ async function startRun(runnerId) {
 }
 async function cmd(runnerId, kind, payload) {
   try {
-    await api("/runners/" + runnerId + "/commands", "POST", { kind, payload: payload || {} });
+    const res = await api("/runners/" + runnerId + "/commands", "POST", { kind, payload: payload || {} });
+    trackCommand(res, runnerId, kind, "");
     toast(kind + " sent");
     refresh();
   } catch (e) { toast(kind + " failed: " + e.message, "err"); }
@@ -1574,12 +1711,12 @@ async function powerRunner(id, kind) {
   const extra = busy ? "\n\nA run is in progress and will be stopped first." : "";
   if (!confirm(verb + " " + name + "?" + extra + "\n\nThis powers off the machine.")) return;
   try {
-    await api("/runners/" + id + "/commands", "POST", { kind, payload: {} });
+    const res = await api("/runners/" + id + "/commands", "POST", { kind, payload: {} });
+    trackCommand(res, id, kind, name);
     toast(verb.toLowerCase() + " sent to " + name);
     refresh();
   } catch (e) { toast(kind + " failed: " + e.message, "err"); }
 }
-
 /* update a runner in place (live USB) instead of walking over to reflash it */
 function runnerUpdate(runnerId) {
   const r = STATE.runners.find((x) => x.id === runnerId) || {};
@@ -1620,7 +1757,8 @@ function runnerUpdate(runnerId) {
       <button class="ghost" onclick="closeModal()">close</button></div>`);
   const send = async (kind, payload) => {
     try {
-      await api("/runners/" + runnerId + "/commands", "POST", { kind, payload });
+      const res = await api("/runners/" + runnerId + "/commands", "POST", { kind, payload });
+      trackCommand(res, runnerId, kind, name);
       toast(kind + " queued for " + name + " (watch the runner's console)");
       refresh();
     } catch (e) { toast(kind + " failed: " + e.message, "err"); }
@@ -2088,8 +2226,9 @@ document.addEventListener("submit", async (e) => {
   if (!cmd) return;
   input.value = "";
   try {
-    await api("/runners/" + form.dataset.exec + "/commands", "POST",
+    const res = await api("/runners/" + form.dataset.exec + "/commands", "POST",
               { kind: "exec", payload: { cmd } });
+    trackCommand(res, form.dataset.exec, "exec", cmd);
     toast("sent to runner: " + cmd);
   } catch (err) { toast("exec failed: " + err, "err"); }
 });

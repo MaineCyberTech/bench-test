@@ -185,6 +185,13 @@ tbody tr:hover{background:#1a2029}
 .toast.show{opacity:1;transform:none}
 .toast.err{border-left-color:var(--bad)}
 
+/* command outcomes (USE-P2-001) and inline form errors (USE-P2-002) */
+.cmdrow{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--border);
+  font-size:12px;flex-wrap:wrap}
+.cmdrow .ck{font-family:var(--mono);color:var(--text)}
+.cmdrow .cerr{color:var(--bad);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:420px}
+.formrow .err{color:var(--bad);font-size:12px}
+
 /* ---- revamp: fleet view, badges, sortable tables, chart tooltips ---- */
 .banner{display:none;background:#3a2530;color:var(--bad);
   padding:8px calc(22px + env(safe-area-inset-right)) 8px calc(22px + env(safe-area-inset-left));font-size:13px;
