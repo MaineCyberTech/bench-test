@@ -780,6 +780,43 @@ def run():
     c.check("stats() reports the pipeline honestly",
             pump.stats()["queued"] == 0 and pump.stats()["dropped"] == 2, pump.stats())
 
+    # ---- a phase that reports its own elapsed time is believed ----
+    class _Rec:
+        def __init__(self):
+            self.phases = []
+
+        def phase(self, seq, group, label, status="running", t0=None, t1=None, detail=None):
+            self.phases.append((group, label, status, t0, t1))
+
+    rec = _Rec()
+    tr = PhaseTracker(rec)
+    tr.feed("[gpu] soak")
+    time.sleep(0.2)
+    tr.feed('RESULT_JSON:{"phase": "soak", "seconds": 622.0}')
+    tr.feed("[gpu] streams")
+    closed = [p for p in rec.phases if p[2] != "running"]
+    dur = (closed[0][4] - closed[0][3]) if closed and closed[0][3] else None
+    c.check("a phase that reports its own elapsed time is believed",
+            dur is not None and abs(dur - 622.0) < 0.01, (closed, dur))
+
+    rec2 = _Rec()
+    tr2 = PhaseTracker(rec2)
+    t_start = time.time()
+    tr2.feed("[gpu] matmul")
+    time.sleep(0.15)
+    tr2.feed("[gpu] membw")
+    closed2 = [p for p in rec2.phases if p[2] != "running"]
+    c.check("a phase with no own clock still closes on the wall clock",
+            closed2 and closed2[0][4] - t_start >= 0.1, (closed2, t_start))
+
+    rec3 = _Rec()
+    tr3 = PhaseTracker(rec3)
+    tr3.feed("[gpu] soak")
+    tr3.feed("RESULT_JSON:not json at all")
+    tr3.feed("[gpu] streams")
+    c.check("a malformed RESULT_JSON does not break the tracker",
+            any(p[2] != "running" for p in rec3.phases), rec3.phases)
+
     srv.stop()
     return c.fails
 

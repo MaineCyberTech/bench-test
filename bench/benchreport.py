@@ -630,6 +630,8 @@ class PhaseTracker:
         self.seq = 0
         self.open = []  # list of {seq, group, label}
         self.failed = False
+        self.own_seconds = None      # the last phase's own elapsed time, if it said
+        self.last_open_t0 = None     # when the newest phase opened
 
     def _fatal(self, line):
         return any(m in line for m in FATAL_MARKERS)
@@ -637,6 +639,17 @@ class PhaseTracker:
     def feed(self, line):
         if self._fatal(line):
             self.failed = True
+        # A phase's own elapsed time, when it reports one: RESULT_JSON carries
+        # "seconds" for most phases, and the gap between log lines is only a proxy -
+        # a soak's warmup is not the previous phase's work.
+        if line.startswith("RESULT_JSON:"):
+            try:
+                j = json.loads(line.split(":", 1)[1])
+                if isinstance(j, dict) and isinstance(j.get("seconds"), (int, float)):
+                    self.own_seconds = float(j["seconds"])
+            except Exception:
+                pass
+            return None
         if not (line.startswith("[") and "]" in line):
             return None
         head = line[1:line.index("]")]
@@ -649,6 +662,7 @@ class PhaseTracker:
             return None
         self._close_all()
         self.seq += 1
+        self.last_open_t0 = time.time()
         ph = {"seq": self.seq, "group": head, "label": rest}
         self.open.append(ph)
         if self.reporter:
@@ -657,11 +671,20 @@ class PhaseTracker:
 
     def _close_all(self):
         status = "failed" if self.failed else "done"
-        for ph in self.open:
+        for i, ph in enumerate(self.open):
             if self.reporter:
-                self.reporter.phase(ph["seq"], ph["group"], ph["label"], status, t1=time.time())
+                # The newest phase is the one whose result just arrived; if it brought
+                # its own elapsed time, use that instead of the line gap.
+                own = self.own_seconds if i == len(self.open) - 1 else None
+                if own and self.last_open_t0:
+                    self.reporter.phase(ph["seq"], ph["group"], ph["label"], status,
+                                        t0=self.last_open_t0, t1=self.last_open_t0 + own)
+                else:
+                    self.reporter.phase(ph["seq"], ph["group"], ph["label"], status,
+                                        t1=time.time())
         self.open = []
         self.failed = False
+        self.own_seconds = None
 
     def close(self):
         self._close_all()
