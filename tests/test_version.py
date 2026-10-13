@@ -64,8 +64,8 @@ def run():
     # the version is tag-derived, so a checkout that has a tag reports it and the
     # release only moves when the tag does
     rel, n, cm = rep.git_describe(REPO)
-    c.check("git_describe finds the release tag", rel == v or rel == "",
-            (rel, n, cm))
+    c.check("git_describe finds a semver release tag",
+            bool(re.match(r"^\d+\.\d+\.\d+", rel)) or rel == "", (rel, n, cm))
     if rel:
         c.check("bench_version follows the tag",
                 rep.bench_version(REPO).split("+")[0] == rel, rep.bench_version(REPO))

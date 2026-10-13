@@ -12,7 +12,7 @@ const TUNE_DEFAULT = { cpu_soak: 120, ram_soak: 120, disk_seconds: 15, gpu_size:
   cpu_size: 4096, ram_size_mb: 1024, passes: 2, steady_gb: 10, stable: 0, stable_hold: 60,
   gfx_engine: "furmark" };
 const PRESETS = {
-  "Quick check (short soaks)": { groups: gset("gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "sys", "gfx"), spin: { gpu: 60, combined: 60, fullsoak: 60, gfx: 30 } },
+  "Quick check (short soaks)": { groups: gset("gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "sys", "gfx"), spin: { gpu: 60, combined: 60, fullsoak: 60, gfx: 30 }, tune: { ...TUNE_DEFAULT, cpu_soak: 60, ram_soak: 30, disk_seconds: 15, gpu_size: 4096, cpu_size: 2048, ram_size_mb: 512, passes: 1, steady_gb: 2 } },
   "Stabilized full soak (15 min)": { groups: gset("gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "fan", "sys", "gfx"), spin: { gpu: 180, combined: 45, fullsoak: 90, gfx: 30 }, tune: { ...TUNE_DEFAULT, cpu_soak: 45, ram_soak: 30, disk_seconds: 30, gpu_size: 4096, cpu_size: 2048, ram_size_mb: 512, passes: 1, steady_gb: 2, stable: 1, stable_hold: 60, gfx_engine: "furmark" } },
   "System info + 60s soak (all)": { groups: gset("sys", "fullsoak"), spin: { ...DEF_SPIN, fullsoak: 60 } },
   "Full run (defaults)": { groups: gset(...ALL_GROUPS), spin: { ...DEF_SPIN } },

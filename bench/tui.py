@@ -83,10 +83,16 @@ _TUNE = {"cpu_soak": 45, "ram_soak": 30, "disk_seconds": 30, "gpu_size": 4096,
          "cpu_size": 2048, "ram_size_mb": 512, "passes": 1, "steady_gb": 2,
          "stable": 1, "stable_hold": 60, "gfx_engine": "furmark"}
 
+# "Quick check" has to be quick: with no tune it inherits the runner's long
+# defaults (cpu 120s, ram 120s, 10 GiB steady write, gpu matrix 12288).
+_QUICK_TUNE = {"cpu_soak": 60, "ram_soak": 30, "disk_seconds": 15, "gpu_size": 4096,
+               "cpu_size": 2048, "ram_size_mb": 512, "passes": 1, "steady_gb": 2}
+
 PRESETS = [
     ("Quick check (short soaks)", {"groups": _g("gpu", "cpu", "ram", "disk", "combined", "fullsoak",
                                                 "net", "nvenc", "sys", "gfx"),
-                                   "dur": {"gpu": "60", "combined": "60", "fullsoak": "60", "gfx": "30"}}),
+                                   "dur": {"gpu": "60", "combined": "60", "fullsoak": "60", "gfx": "30"},
+                                   "tune": dict(_QUICK_TUNE)}),
     ("Stabilized full soak (15 min)", {"groups": _g("gpu", "cpu", "ram", "disk", "combined", "fullsoak",
                                                     "net", "nvenc", "fan", "sys", "gfx"),
                                        "dur": {"gpu": "180", "combined": "45", "fullsoak": "90", "gfx": "30"},

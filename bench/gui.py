@@ -102,11 +102,18 @@ _TUNE = {"cpu_soak": 45, "ram_soak": 30, "disk_seconds": 30, "gpu_size": 4096,
          "cpu_size": 2048, "ram_size_mb": 512, "passes": 1, "steady_gb": 2,
          "stable": 1, "stable_hold": 60, "gfx_engine": "furmark"}
 
+# "Quick check" has to be quick: with no tune it inherits the runner's long
+# defaults (cpu 120s, ram 120s, 10 GiB steady write, gpu matrix 12288) and ran
+# ~14 min on the live stick.
+_QUICK_TUNE = {"cpu_soak": 60, "ram_soak": 30, "disk_seconds": 15, "gpu_size": 4096,
+               "cpu_size": 2048, "ram_size_mb": 512, "passes": 1, "steady_gb": 2}
+
 PRESETS = {
     "Select a preset...": None,
     "Quick check (short soaks)": {"groups": _g("gpu", "cpu", "ram", "disk", "combined", "fullsoak",
                                                "net", "nvenc", "sys", "gfx"),
-                                  "spin": {"gpu": 60, "combined": 60, "fullsoak": 60, "gfx": 30}},
+                                  "spin": {"gpu": 60, "combined": 60, "fullsoak": 60, "gfx": 30},
+                                  "tune": _QUICK_TUNE},
     "Stabilized full soak (15 min)": {"groups": _g("gpu", "cpu", "ram", "disk", "combined", "fullsoak",
                                                    "net", "nvenc", "fan", "sys", "gfx"),
                                       "spin": {"gpu": 180, "combined": 45, "fullsoak": 90, "gfx": 30},
