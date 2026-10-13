@@ -53,7 +53,7 @@ jobs:
     runs-on: ${{ fromJSON(inputs.runner_labels || '["ubuntu-latest"]') }}
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Read version
         id: ver
@@ -113,7 +113,7 @@ jobs:
 
       - name: Attach to release
         if: ${{ inputs.upload_release == '' || inputs.upload_release }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: iso-${{ inputs.gpu || 'nvidia-legacy' }}-${{ github.run_number }}
           name: "ISO ${{ inputs.gpu || 'nvidia-legacy' }} v${{ steps.ver.outputs.version }} #${{ github.run_number }}"
