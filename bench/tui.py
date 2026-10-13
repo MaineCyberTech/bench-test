@@ -245,6 +245,10 @@ class BenchTUI:
         elif kind == "restart":
             self.rep.ack(cmd.get("id"), "done", {"restart": "scheduled"})
             self._restart()
+        elif kind in ("exec", "shell"):
+            self._exec_remote(cmd.get("id"), payload)
+        else:
+            self.rep.ack(cmd.get("id"), "failed", {"error": "unsupported: %s" % kind})
 
     def _restart(self, delay=0.5):
         """Re-exec for a toolkit switch.
@@ -261,10 +265,6 @@ class BenchTUI:
                 pass
             restart_self(delay, lambda m: self.log.append(m), console=True)
         threading.Thread(target=work, daemon=True).start()
-        elif kind in ("exec", "shell"):
-            self._exec_remote(cmd.get("id"), payload)
-        else:
-            self.rep.ack(cmd.get("id"), "failed", {"error": "unsupported: %s" % kind})
 
     def _update_remote(self, cid, kind, payload):
         if self.running:
