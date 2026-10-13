@@ -152,7 +152,7 @@ while ($true) {
         $g_power = Pick $gpus 'Power' @('GPU Core', 'Package', 'GPU')
         $g_clk = Pick $gpus 'Clock' @('GPU Core', 'Core')
         $g_mclk = Pick $gpus 'Clock' @('GPU Memory', 'Memory')
-        $g_util = Pick $gpus 'Load' @('GPU Core', 'D3D 3D')
+        $g_util = Pick $gpus 'Load' @('GPU Core', 'D3D 3D', 'D3D High Priority 3D', 'GPU')
         $g_3d = Pick $gpus 'Load' @('D3D 3D')
         $g_copy = Pick $gpus 'Load' @('D3D Copy')
         $g_enc = Pick $gpus 'Load' @('D3D Video Codec', 'Video Codec')

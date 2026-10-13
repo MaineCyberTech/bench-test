@@ -192,6 +192,37 @@ def run():
             [(i + 1, len(r)) for i, r in enumerate(_rows) if len(r) != len(_rows[0])][:4])
     c.check("run_win writes per-core columns",
             len([h for h in _rows[0] if h.startswith("cpu_core")]) >= 1, _rows[0][-4:])
+
+    # the AMD "GPU Core" load sensor is intermittent (blank in ~half the rows on a
+    # Ryzen APU), so the AMD branch must fall back to the D3D engine counter rather
+    # than writing a blank gpu_util
+    _amd_out = os.path.join(tmpdir(), "amd-branch.telemetry.csv")
+    _real_gpu_row = _rw._gpu_row
+    _real_lhm = dict(_rw._LHM)
+    _real_eng = dict(_rw._GPU_ENGINE)
+    try:
+        _rw._gpu_row = lambda: None                      # no nvidia-smi answer
+        _rw._LHM.clear()
+        _rw._LHM.update({"gpu_temp": 58.0, "gpu_power": 26.0, "mem_util": 75.6,
+                         "vram_used": 387.0, "gpu_util": None})
+        _rw._GPU_ENGINE.update({"3d": 42.0, "copy": 1.0})
+        _stop2 = _th.Event()
+        _th.Thread(target=_rw.sampler, args=(_amd_out, _stop2, 0.25, 0.5), daemon=True).start()
+        _t.sleep(2)
+        _stop2.set()
+        _t.sleep(0.5)
+    finally:
+        _rw._gpu_row = _real_gpu_row
+        _rw._LHM.clear()
+        _rw._LHM.update(_real_lhm)
+        _rw._GPU_ENGINE.update(_real_eng)
+    _arows = [r for r in _csv.reader(open(_amd_out, newline="")) if r]
+    _ai = _arows[0].index("gpu_util_pct")
+    _avals = [r[_ai] for r in _arows[1:]]
+    c.check("the AMD branch falls back to the engine counter for gpu_util",
+            bool(_avals) and all(v == "42.0" for v in _avals), set(_avals))
+    c.check("the AMD branch still keeps the LHM values it does have",
+            _arows[1][_arows[0].index("mem_util_pct")] == "75.6", _arows[1][:6])
     _lout = os.path.join(tmpdir(), "align-linux.telemetry.csv")
     _sp.run([sys.executable, os.path.join(BENCH, "telemetry_log.py"), "--out", _lout,
              "--interval", "0.25", "--duration", "2"],

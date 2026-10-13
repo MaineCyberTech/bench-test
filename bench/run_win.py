@@ -379,7 +379,13 @@ def sampler(csv_path, stop_evt, interval=0.25, gpu_interval=0.5):
                 # no nvidia-smi (AMD/Intel GPU): LibreHardwareMonitor values.
                 # util, mem_util, temp, temp_mem, fan, power, power_limit, sm, mem, gr,
                 # vram_mib, pstate, enc, dec
-                row += [lhm.get("gpu_util"), lhm.get("mem_util"), lhm.get("gpu_temp"), None,
+                # the AMD "GPU Core" load sensor is intermittent (blank in ~half the
+                # rows on a Ryzen APU), so fall back to the D3D engine counter, which
+                # gpu_engine_thread collects anyway
+                util = lhm.get("gpu_util")
+                if util is None:
+                    util = _GPU_ENGINE["3d"]
+                row += [util, lhm.get("mem_util"), lhm.get("gpu_temp"), None,
                         lhm.get("gpu_fan_pct"), lhm.get("gpu_power"), None,
                         lhm.get("gpu_clk"), lhm.get("mem_clk"), lhm.get("gpu_clk"),
                         lhm.get("vram_used"), None, lhm.get("gpu_enc"), lhm.get("gpu_dec")]
