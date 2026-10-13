@@ -105,7 +105,7 @@ const REFRESH_MS = 1200;
 const POLL_MS = 5000;
 const BACKOFF_MAX_MS = 60000;
 
-let TOKEN = new URLSearchParams(location.search).get("token") || localStorage.getItem("benchd_token") || "";
+let TOKEN = readToken();
 let STATE = { runners: [], active: [], recent: [], metrics: [] };
 let TEL = {};               // run_id -> [sample dicts]
 let LOGS = {};              // run_id -> [line strings]
@@ -170,6 +170,55 @@ function announce(msg) {
   setTimeout(() => { el.textContent = msg; }, 20);
 }
 
+/* ------------------------------------------------- completion notify --- */
+/* USE-P3-002: a long run can finish while the operator is looking at another
+   tab, so announce it. Use the Notification API only once the operator has
+   granted permission (the request is fired from the "notify" button, never on
+   load), and always flash the tab title as a no-permission fallback. */
+const BASE_TITLE = document.title;
+let _titleTimer = null;
+function flashTitle(msg) {
+  if (_titleTimer) { clearInterval(_titleTimer); _titleTimer = null; }
+  document.title = msg;
+  let n = 0;
+  _titleTimer = setInterval(() => {
+    n++;
+    document.title = (n % 2) ? BASE_TITLE : msg;
+    if (n >= 8) { clearInterval(_titleTimer); _titleTimer = null; document.title = BASE_TITLE; }
+  }, 1200);
+}
+function notifyDone(r) {
+  const body = (r.host || "runner") + " · " + (r.label || "run") + " · "
+    + (r.status || "finished") + " · " + runDur(r);
+  if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+    try { new Notification("bench-test run finished", { body, tag: "benchd-run-" + r.id }); }
+    catch (e) { /* some browsers require a service worker; the title flash still fires */ }
+  }
+  flashTitle("✓ " + body);
+}
+// Explicit user action only: this is the sole caller of requestPermission.
+function enableNotifications() {
+  if (typeof Notification === "undefined") return toast("this browser has no notification support", "err");
+  if (Notification.permission === "granted") return toast("completion notifications are on");
+  if (Notification.permission === "denied") return toast("notifications are blocked in the browser", "err");
+  Notification.requestPermission().then((p) => {
+    toast(p === "granted" ? "completion notifications on" : "notifications not enabled");
+  }).catch(() => {});
+}
+// Fire once when a run that was active on the previous refresh is gone. The first
+// refresh only seeds the set, so runs that finished before the page loaded stay quiet.
+let _activeSeen = null;
+function checkCompletions() {
+  const now = new Set(STATE.active.map((a) => a.id));
+  if (_activeSeen === null) { _activeSeen = now; return; }
+  for (const id of _activeSeen) {
+    if (now.has(id)) continue;
+    const r = STATE.recent.find((x) => x.id === id);
+    if (r) notifyDone(r);
+  }
+  _activeSeen = now;
+}
+
 /* ------------------------------------------------------------------ api -- */
 async function api(path, method = "GET", body, opt = {}) {
   const o = { method, headers: { Authorization: "Bearer " + TOKEN } };
@@ -187,16 +236,57 @@ async function api(path, method = "GET", body, opt = {}) {
 }
 
 /* -------------------------------------------------------------- token --- */
+/* PRIV-P3-001 / SECRET-P3-001: the operator token is a secret, so it must not
+   linger where it can leak. Read a ?token= from the URL exactly once and strip it
+   from the address bar (history/referrer leak), default to sessionStorage (cleared
+   when the tab closes), and only persist to localStorage when the operator ticks
+   "remember on this device". */
+const REMEMBER_KEY = "benchd_remember";
+function rememberOn() {
+  try { return localStorage.getItem(REMEMBER_KEY) === "1"; } catch (e) { return false; }
+}
+function readToken() {
+  const fromUrl = new URLSearchParams(location.search).get("token");
+  if (fromUrl) {
+    try { history.replaceState(null, "", location.pathname + location.hash); } catch (e) { /* ignore */ }
+    // keep it for this session only, unless the operator already opted into
+    // remembering on this device
+    try {
+      if (rememberOn()) localStorage.setItem("benchd_token", fromUrl);
+      else sessionStorage.setItem("benchd_token", fromUrl);
+    } catch (e) { /* ignore */ }
+    return fromUrl;
+  }
+  try {
+    return sessionStorage.getItem("benchd_token") || localStorage.getItem("benchd_token") || "";
+  } catch (e) { return ""; }
+}
+function storeToken() {
+  try {
+    if (rememberOn()) {
+      localStorage.setItem("benchd_token", TOKEN);
+    } else {
+      localStorage.removeItem("benchd_token");
+      sessionStorage.setItem("benchd_token", TOKEN);
+    }
+  } catch (e) { /* storage may be blocked; the token still works for this page */ }
+}
 function askToken() {
   openModal(`<h3>Access token</h3>
     <p class="muted">This control plane requires a bearer token.</p>
     <div class="formrow"><input id="tokInput" style="flex:1" placeholder="paste token"
       value="${esc(TOKEN)}"/></div>
+    <div class="formrow"><label class="chk"><input type="checkbox" id="tokRemember"
+      ${rememberOn() ? "checked" : ""}/> remember on this device</label></div>
     <div class="formrow" style="justify-content:flex-end">
       <button class="accent" id="tokSave">save</button></div>`);
   $("#tokSave").onclick = () => {
     TOKEN = $("#tokInput").value.trim();
-    localStorage.setItem("benchd_token", TOKEN);
+    try {
+      if ($("#tokRemember").checked) localStorage.setItem(REMEMBER_KEY, "1");
+      else localStorage.removeItem(REMEMBER_KEY);
+    } catch (e) { /* ignore */ }
+    storeToken();
     closeModal(); connect(); refresh();
   };
 }
@@ -282,6 +372,7 @@ async function refresh(force) {
     const s = await api("/state");
     STATE = s;
     _failCount = 0;
+    checkCompletions();
     HOSTS = (s.hosts && s.hosts.length) ? s.hosts
       : [...new Set(STATE.recent.map((r) => r.host).filter(Boolean))].sort();
     for (const a of STATE.active) {
@@ -1047,11 +1138,23 @@ async function renderTrends(force) {
 function labelFor(m) { const f = STATE.metrics.find((x) => x[0] === m); return f ? f[1] : m; }
 
 /* ------------------------------------------------------------ compare --- */
+let _cmpShown = false;
+function renderCompareEmpty() {
+  const el = $("#cmpResult");
+  if (!el) return;
+  const finished = STATE.recent.filter((r) => r.status !== "running");
+  el.innerHTML = `<div class="card empty">${finished.length < 2
+    ? "Not enough finished runs to compare — at least two are needed."
+    : "Choose two different runs and press “compare”."}</div>`;
+}
 function renderCompareOptions() {
   const finished = STATE.recent.filter((r) => r.status !== "running");
   const opts = finished.slice(0, 60).map((r) =>
     `<option value="${esc(r.id)}">${esc(r.host)} · ${esc(r.label || "")} · ${ts(r.started)}</option>`).join("");
   const a = $("#cmpA"), b = $("#cmpB");
+  const btn = $("#cmpRun");
+  if (btn) btn.disabled = finished.length < 2;   // nothing to compare with one run
+  if (!_cmpShown) renderCompareEmpty();          // keep the empty state in sync
   if (a.dataset.filled === String(finished.length)) return;
   a.innerHTML = opts; b.innerHTML = opts;
   if (finished.length > 1) { a.selectedIndex = 1; b.selectedIndex = 0; }
@@ -1060,6 +1163,7 @@ function renderCompareOptions() {
 async function runCompare() {
   const A = $("#cmpA").value, B = $("#cmpB").value;
   if (!A || !B) return;
+  if (A === B) { toast("pick two different runs to compare", "err"); return; }
   const [ra, rb] = await Promise.all([api("/runs/" + A), api("/runs/" + B)]);
   const keys = [["gpu_soak_tflops", "GPU soak (TFLOPS)", 1], ["cpu_soak_gflops", "CPU soak (GFLOPS)", 0],
     ["ram_soak_gbps", "RAM soak (GB/s)", 1], ["disk_seqwrite_mbps", "Disk seq write (MB/s)", 0],
@@ -1071,6 +1175,7 @@ async function runCompare() {
     return `<tr><td>${esc(label)}</td><td class="mono">${fmt(a, dec)}</td><td class="mono">${fmt(b, dec)}</td>
       <td class="mono delta ${cls}">${d == null ? "—" : (d > 0 ? "+" : "") + d.toFixed(1) + "%"}</td></tr>`;
   };
+  _cmpShown = true;
   $("#cmpResult").innerHTML = `
     <div class="card"><h3>${esc(ra.host)} · ${esc(ra.label || "")}</h3>
       <div class="muted">${ts(ra.started)} · ${esc(ra.gpu || "")}</div></div>
@@ -1786,6 +1891,8 @@ function newSchedule() {
   };
 }
 async function deleteSchedule(id) {
+  const s = SCHEDULES.find((x) => x.id === id);
+  if (!confirm("Delete schedule “" + ((s && s.label) || id) + "”? This cannot be undone.")) return;
   try { await api("/schedules/" + id, "DELETE"); renderSchedules(); }
   catch (e) { toast("delete failed: " + e.message, "err"); }
 }
@@ -1938,6 +2045,7 @@ document.addEventListener("keydown", (e) => {
 });
 
 $("#tokenBtn").onclick = askToken;
+$("#notifyBtn").onclick = enableNotifications;
 $("#schedNew").onclick = newSchedule;
 $("#histRefresh").onclick = renderHistory;
 $("#histHost").onchange = renderHistory;

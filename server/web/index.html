@@ -2,7 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- W19/UX-P3-001: this control plane is dark-only (a control-room theme); there is
+     no light variant, so declare the colour scheme explicitly instead of letting the
+     UA guess. -->
+<meta name="color-scheme" content="dark">
 <title>bench-test control plane</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -19,6 +23,7 @@
   <div class="conn">
     <span class="dot" id="connDot"></span>
     <span id="connText">connecting…</span>
+    <button class="ghost" id="notifyBtn" title="Notify me when a run finishes">notify</button>
     <button class="ghost" id="tokenBtn" title="Set access token">token</button>
   </div>
 </header>
