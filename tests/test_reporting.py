@@ -780,6 +780,43 @@ def run():
     c.check("stats() reports the pipeline honestly",
             pump.stats()["queued"] == 0 and pump.stats()["dropped"] == 2, pump.stats())
 
+    # telemetry drains every tick; heartbeat + commands every other tick
+    class _Cadence:
+        def __init__(self):
+            self.drains, self.beats, self.polls = 0, 0, 0
+
+        def telemetry(self, batch):
+            self.drains += 1
+
+        def log(self, lines, stream="out"):
+            pass
+
+        def heartbeat(self):
+            self.beats += 1
+
+        def poll_commands(self):
+            self.polls += 1
+            return []
+
+    cad = _Cadence()
+    p3 = ReporterPump(cad, interval=0.05)
+    calls = {"drain": 0}
+    real_drain = p3._drain
+
+    def counting_drain():
+        calls["drain"] += 1
+        real_drain()
+
+    p3._drain = counting_drain
+    c.check("the pump ticks telemetry at 1s by default (source default)",
+            ReporterPump(_FakeRep()).interval == 1.0, ReporterPump(_FakeRep()).interval)
+    p3.start()
+    time.sleep(0.55)
+    p3.stop()
+    c.check("telemetry drains on every tick, the heartbeat every other tick",
+            calls["drain"] > cad.beats and cad.polls == cad.beats,
+            (calls["drain"], cad.beats, cad.polls))
+
     # ---- a phase that reports its own elapsed time is believed ----
     class _Rec:
         def __init__(self):

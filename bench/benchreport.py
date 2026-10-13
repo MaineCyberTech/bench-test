@@ -697,7 +697,10 @@ class ReporterPump:
     unreachable the queue simply drains into no-ops.
     """
 
-    def __init__(self, reporter, on_command=None, interval=2.0, log=None):
+    def __init__(self, reporter, on_command=None, interval=1.0, log=None):
+        # interval is the TELEMETRY tick. The heartbeat and the command poll run every
+        # other tick (2s by default), which is all the server's 15s offline window needs.
+
         import queue
         self.rep = reporter
         self.on_command = on_command
@@ -777,21 +780,24 @@ class ReporterPump:
     def _loop(self):
         while not self._stop:
             try:
+                # Telemetry and logs drain on every tick (1s), so the live view is not
+                # tied to the heartbeat's slower clock.
                 self._drain()
                 self.ticks += 1
                 # every ~20s: a run's own console then says whether the pipeline kept
                 # up, instead of a silent loss being found by hand later
-                if self.ticks % 10 == 0 and (self.produced or self.dropped):
+                if self.ticks % 20 == 0 and (self.produced or self.dropped):
                     self.log("[report] telemetry %d produced, %d sent, %d dropped"
                              % (self.produced, self.sent, self.dropped))
-                self.rep.heartbeat()
-                for c in self.rep.poll_commands():
-                    if self.on_command:
-                        try:
-                            self.on_command(c)
-                        except Exception as e:
-                            self.log("[report] command failed: %s" % e)
-                            self.rep.ack(c.get("id"), "failed", {"error": str(e)})
+                if self.ticks % 2 == 0:
+                    self.rep.heartbeat()
+                    for c in self.rep.poll_commands():
+                        if self.on_command:
+                            try:
+                                self.on_command(c)
+                            except Exception as e:
+                                self.log("[report] command failed: %s" % e)
+                                self.rep.ack(c.get("id"), "failed", {"error": str(e)})
             except Exception as e:
                 self.log("[report] pump error: %s" % e)
             time.sleep(self.interval)
