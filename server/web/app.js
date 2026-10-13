@@ -97,6 +97,13 @@ const FOCUS_MINI = [
 
 let SHOW_OFFLINE = localStorage.getItem("benchd_show_offline") === "1";
 let SORT = { key: "started", dir: -1 };
+// PERF-P1-002: the list view only needs a small page, the heavy views (run rows,
+// trends) are only fetched while their tab is on screen, polling pauses while the
+// tab is hidden, and repeated failures back off exponentially up to a cap.
+const HIST_LIMIT = 50;
+const REFRESH_MS = 1200;
+const POLL_MS = 5000;
+const BACKOFF_MAX_MS = 60000;
 
 let TOKEN = new URLSearchParams(location.search).get("token") || localStorage.getItem("benchd_token") || "";
 // the token is a bearer secret: drop it from the address bar once it is in memory
@@ -116,6 +123,13 @@ let SCHEDULES = [];
 let SKEW = 0;               // server_time - browser clock, so elapsed/ago match the server
 let DETAIL_REDRAW = null;   // redraw hook for the open run-detail modal's chart
 let es = null;
+let _pollPaused = document.hidden;  // pause polling while the tab is hidden
+let _refreshPending = false;        // a fetch was skipped while hidden
+let _failCount = 0;                 // consecutive refresh failures (backoff)
+const _etags = {};                  // path -> last ETag (conditional GET)
+const _histCache = {};              // history cache key -> { ver }
+const _trendsCache = {};            // trends cache key -> { ver }
+let _lastFocus = null;              // element focused before a modal opened
 
 /* ------------------------------------------------------------------ dom -- */
 const $ = (s, r = document) => r.querySelector(s);
@@ -166,14 +180,28 @@ function toast(msg, kind) {
   t.textContent = msg;
   clearTimeout(window._toast); window._toast = setTimeout(() => { t.className = "toast"; }, 4000);
 }
+// Push a short message to the visually-hidden aria-live region so assistive tech
+// hears the live SSE updates it cannot otherwise see.
+function announce(msg) {
+  const el = $("#liveRegion");
+  if (!el) return;
+  el.textContent = "";                       // reset so a repeated message re-announces
+  setTimeout(() => { el.textContent = msg; }, 20);
+}
 
 /* ------------------------------------------------------------------ api -- */
-async function api(path, method = "GET", body) {
-  const opt = { method, headers: { Authorization: "Bearer " + TOKEN } };
-  if (body) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
-  const r = await fetch("/api/v1" + path, opt);
+async function api(path, method = "GET", body, opt = {}) {
+  const o = { method, headers: { Authorization: "Bearer " + TOKEN } };
+  if (body) { o.headers["Content-Type"] = "application/json"; o.body = JSON.stringify(body); }
+  // Conditional GET: the server may answer 304 when nothing changed. benchd sends
+  // no ETag yet, so the cheap state version probe below is the effective path.
+  if (method === "GET" && opt.conditional && _etags[path]) o.headers["If-None-Match"] = _etags[path];
+  const r = await fetch("/api/v1" + path, o);
   if (r.status === 401) { askToken(); throw new Error("unauthorized"); }
+  if (r.status === 304) return { __notModified: true };
   if (!r.ok) throw new Error("HTTP " + r.status);
+  const et = r.headers.get("ETag");
+  if (et) _etags[path] = et;
   return r.json();
 }
 
@@ -207,8 +235,12 @@ function connect() {
   };
   es.onerror = () => setConn(false);
   es.addEventListener("snapshot", () => { setConn(true); refresh(); });
-  es.addEventListener("runner", () => queueRefresh());
-  es.addEventListener("run", () => queueRefresh());
+  es.addEventListener("runner", () => { announce("runner update"); queueRefresh(); });
+  es.addEventListener("run", (e) => {
+    try { const d = JSON.parse(e.data); announce(d && d.deleted ? "run deleted" : "run update"); }
+    catch (err) { announce("run update"); }
+    queueRefresh();
+  });
   es.addEventListener("phase", (e) => onPhase(JSON.parse(e.data)));
   es.addEventListener("telemetry", (e) => onTelemetry(JSON.parse(e.data)));
   es.addEventListener("command", () => queueRefresh());
@@ -255,15 +287,29 @@ function _restoreScroll(st) {
   requestAnimationFrame(apply);  // again after the browser re-lays out
 }
 let _refreshTimer = null;
+// exponential, capped retry delay after repeated failures
+function backoffDelay(base) {
+  return _failCount ? Math.min(BACKOFF_MAX_MS, base * Math.pow(2, _failCount)) : base;
+}
 function queueRefresh(delay) {
   if (_refreshTimer) return;
-  _refreshTimer = setTimeout(() => { _refreshTimer = null; refresh(); }, delay || 1200);
+  const d = delay != null ? delay : backoffDelay(REFRESH_MS);
+  _refreshTimer = setTimeout(() => { _refreshTimer = null; refresh(); }, d);
 }
-async function refresh() {
+// Cheap probe of everything the heavy list/trends views read: if it is unchanged
+// there is nothing to refetch, so the request is skipped entirely.
+function stateVersion() {
+  const recent = STATE.recent.map((r) => r.id + ":" + (r.status || "") + ":" + (r.ended || 0)).join(",");
+  const active = STATE.active.map((a) => a.id + ":" + ((a.phases || []).length)).join(",");
+  return recent + "|" + active;
+}
+async function refresh(force) {
+  if (_pollPaused && !force) { _refreshPending = true; return; }
   try {
     const s = await api("/state");
     STATE = s;
     if (s.server_time != null) SKEW = s.server_time - Date.now() / 1000;
+    _failCount = 0;
     HOSTS = (s.hosts && s.hosts.length) ? s.hosts
       : [...new Set(STATE.recent.map((r) => r.host).filter(Boolean))].sort();
     for (const a of STATE.active) {
@@ -282,7 +328,10 @@ async function refresh() {
     const st = _scrollState();
     renderAll();
     _restoreScroll(st);
-  } catch (e) { /* offline */ }
+  } catch (e) {
+    _failCount++;                       // offline: retry later, backing off each time
+    queueRefresh(backoffDelay(POLL_MS));
+  }
 }
 
 function ensureTel(id) {
@@ -345,6 +394,7 @@ function onTelemetry(d) {
 
 function onPhase(p) {
   const card = document.querySelector(`[data-active="${p.run_id}"]`);
+  if (p && p.grp) announce("phase " + p.grp + (p.label ? ": " + p.label : ""));
   if (card) queueRefresh(300);
 }
 
@@ -355,14 +405,15 @@ function paneActive(name) {
 }
 function renderAll() {
   renderTop(); renderRunners(); renderActive();
-  // only the visible pane is rendered (and fetched) on a refresh; clicking a tab
-  // renders its pane (see the tab handler)
-  if (paneActive("history")) renderHistory();
-  if (paneActive("trends")) renderTrends();
-  if (paneActive("compare")) renderCompareOptions();
-  if (paneActive("fleet")) renderFleet();
-  if (paneActive("schedules")) renderSchedules();
-  renderFocus();
+  renderCompareOptions(); renderSchedules(); renderFocus();
+  // PERF-P1-002: the heavy views (a page of run rows, an unbounded trends scan)
+  // are only fetched while their tab is actually on screen.
+  const hp = $("#tab-history");
+  if (hp && hp.classList.contains("active")) renderHistory();
+  const tp = $("#tab-trends");
+  if (tp && tp.classList.contains("active")) renderTrends();
+  const fp = $("#tab-fleet");
+  if (fp && fp.classList.contains("active")) renderFleet();
 }
 
 function machineKey(r) { return r.machine_id || ("name:" + (r.name || "")); }
@@ -463,9 +514,10 @@ function runnerCard(r) {
   ].join("");
   const dev = [caps.gpu || "no GPU", caps.cpu, caps.ram_gib ? caps.ram_gib + " GiB" : "",
                caps.driver ? "driver " + caps.driver : ""].filter(Boolean).join(" · ");
-  return `<div class="runner ${r.online ? "" : "off"} ${r.status === "busy" ? "busy" : ""}" data-runner="${esc(r.id)}" tabindex="0">
-      <div class="rhead">
-        <span class="statusp ${cls}" role="img" aria-label="status: ${cls}"></span>
+  return `<div class="runner ${r.online ? "" : "off"} ${r.status === "busy" ? "busy" : ""}" data-runner="${esc(r.id)}">
+      <div class="rhead" tabindex="0" role="button"
+           aria-label="Open live view for ${esc(r.label || r.name)}">
+        <span class="statusp ${cls}"></span>
         <div style="flex:1;min-width:0"><div class="rname">${esc(r.label || r.name)}</div></div>
       </div>
       <div class="rmeta row">${badges}</div>
@@ -927,10 +979,16 @@ function sortArrow(key) {
   if (SORT.key !== key) return "";
   return `<span class="arw">${SORT.dir < 0 ? "▼" : "▲"}</span>`;
 }
-async function renderHistory() {
+async function renderHistory(force) {
+  const host = $("#histHost").value;
+  const key = host + "|" + ($("#histSearch").value || "") + "|" + $("#histStatus").value
+    + "|" + SORT.key + SORT.dir;
+  const ver = stateVersion();
+  if (!force && _histCache[key] && _histCache[key].ver === ver) return;
   try {
-    const host = $("#histHost").value;
-    const d = await api("/runs?limit=300" + (host ? "&host=" + encodeURIComponent(host) : ""));
+    const d = await api("/runs?limit=" + HIST_LIMIT + (host ? "&host=" + encodeURIComponent(host) : ""),
+                        "GET", null, { conditional: true });
+    if (d && d.__notModified) return;
     const q = ($("#histSearch").value || "").toLowerCase();
     const st = $("#histStatus").value;
     let rows = d.runs.filter((r) => !q || JSON.stringify(r).toLowerCase().includes(q));
@@ -989,6 +1047,7 @@ async function renderHistory() {
         <td class="num">${fmt(peak, 0)}</td></tr>`;
     }).join("") || `<tr><td colspan="11" class="empty">No matching runs.</td></tr>`;
     fillSelect("#histHost", HOSTS, "all hosts");
+    _histCache[key] = { ver };
   } catch (e) { /* ignore */ }
 }
 
@@ -1059,7 +1118,7 @@ async function renderFleet() {
 }
 
 /* ------------------------------------------------------------- trends --- */
-async function renderTrends() {
+async function renderTrends(force) {
   const msel = $("#trendMetric");
   if (!msel.options.length && STATE.metrics.length) {
     msel.innerHTML = STATE.metrics.map(([k, l]) => `<option value="${esc(k)}">${esc(l)}</option>`).join("");
@@ -1072,8 +1131,13 @@ async function renderTrends() {
   const m1 = msel.value, m2 = $("#trendMetric2").value;
   if (!m1) return;
   const metrics = [m1, m2].filter(Boolean);
+  const key = host + "|" + metrics.join(",");
+  const ver = stateVersion();
+  if (!force && _trendsCache[key] && _trendsCache[key].ver === ver) return;
   try {
-    const d = await api("/trends?host=" + encodeURIComponent(host) + metrics.map((m) => "&metric=" + encodeURIComponent(m)).join(""));
+    const d = await api("/trends?host=" + encodeURIComponent(host) + metrics.map((m) => "&metric=" + encodeURIComponent(m)).join(""),
+                        "GET", null, { conditional: true });
+    if (d && d.__notModified) return;
     const colors = ["#4c9aff", "#46c98d", "#e5b567"];
     const series = metrics.map((m, i) => ({
       name: labelFor(m), color: colors[i % colors.length],
@@ -1088,6 +1152,7 @@ async function renderTrends() {
       const extra = q.n ? ` · med ${fmt(q.p50, 1)} · p95 ${fmt(q.p95, 1)} · max ${fmt(q.max, 1)}` : "";
       return `<span><i class="sw" style="background:${s.color}"></i>${esc(s.name)} · ${s.points.length} pts${extra}</span>`;
     }).join("");
+    _trendsCache[key] = { ver };
   } catch (e) { /* ignore */ }
 }
 function labelFor(m) { const f = STATE.metrics.find((x) => x[0] === m); return f ? f[1] : m; }
@@ -1143,6 +1208,17 @@ async function runCompare() {
  * opt.xTime    -> x is unix seconds (clock labels)
  * opt.xElapsed -> x is seconds into the run (m:ss labels)
  */
+/* Text alternative for a canvas chart: name, latest and range per series. */
+function chartAltText(series, opt) {
+  const parts = (series || []).filter((s) => s && s.points && s.points.length).map((s) => {
+    const ys = s.points.map((p) => p.y);
+    return s.name + ": last " + fmt(ys[ys.length - 1], 1)
+      + ", range " + fmt(Math.min.apply(null, ys), 1) + " to " + fmt(Math.max.apply(null, ys), 1);
+  });
+  const kind = opt && opt.xTime ? "trend" : "telemetry";
+  return parts.length ? kind + " chart. " + parts.join("; ") + "." : kind + " chart, no data yet.";
+}
+
 function drawChart(cv, series, opt = {}) {
   const dpr = window.devicePixelRatio || 1;
   const h = +(cv.dataset.baseH || (cv.dataset.baseH = cv.getAttribute("height") || 180));
@@ -1157,6 +1233,9 @@ function drawChart(cv, series, opt = {}) {
   const norm = !!opt.normalize;
   const compact = !!opt.compact;
   const use = (series || []).filter((s) => s && s.points && s.points.length >= 2);
+  // the canvas is unreadable to assistive tech: expose the same numbers as text
+  cv.setAttribute("role", "img");
+  cv.setAttribute("aria-label", chartAltText(series, opt));
   use.forEach((s) => {
     const ys = s.points.map((p) => p.y);
     s.min = Math.min.apply(null, ys);
@@ -1955,7 +2034,12 @@ document.addEventListener("click", (e) => {
     return;
   }
   if (t.dataset.tab) {
-    $$("#tabs button").forEach((b) => b.classList.toggle("active", b === t));
+    $$("#tabs button").forEach((b) => {
+      const on = b === t;
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-selected", on ? "true" : "false");
+      b.setAttribute("tabindex", on ? "0" : "-1");
+    });
     $$(".tabpane").forEach((p) => p.classList.toggle("active", p.id === "tab-" + t.dataset.tab));
     if (t.dataset.tab === "history") renderHistory();
     if (t.dataset.tab === "trends") renderTrends();
@@ -2043,8 +2127,14 @@ window.addEventListener("resize", () => {
    a blank page. The modal is also guarded so a wrong token cannot rebuild it while
    the operator is typing. */
 connect();
-refresh();
+refresh(true);
+// Pause polling while the tab is hidden, and refresh once when it returns.
+document.addEventListener("visibilitychange", () => {
+  _pollPaused = document.hidden;
+  if (!_pollPaused) { _refreshPending = false; refresh(true); }
+});
 setInterval(() => {
+  if (_pollPaused) return;
   if (STATE.active.length) { const st = _scrollState(); renderActive(); _restoreScroll(st); }
   if (FOCUS) renderFocus();
 }, 5000);

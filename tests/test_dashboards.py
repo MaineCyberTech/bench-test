@@ -195,6 +195,7 @@ def _web(c):
     """
     js = open(os.path.join(REPO, "server", "web", "app.js"), encoding="utf-8").read()
     css = open(os.path.join(REPO, "server", "web", "style.css"), encoding="utf-8").read()
+    html = open(os.path.join(REPO, "server", "web", "index.html"), encoding="utf-8").read()
     c.check("the live view builds a tab per runner",
             "function focusTabsInner" in js and "data-rtab=" in js, "")
     c.check("a tab prefers the runner's live run over its last one",
