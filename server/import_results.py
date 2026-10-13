@@ -33,7 +33,7 @@ from benchreport import (CSV_ALIASES as _ALIASES, _merge_into,  # noqa: E402
                          _hardware_verdicts)
 
 SAMPLE_FIELDS = ["elapsed", "temp_c", "fan_pct", "power_w", "gpu_util",
-                 "gpu_fan_rpm", "cpu_util", "ram_used", "sm_mhz", "mem_used"]
+                 "gpu_fan_rpm", "cpu_util", "ram_used", "sm_mhz"]
 CSV_ALIASES = _ALIASES
 INFRA = re.compile(r"\.(info|sysinfo|sensors|pcie|health|env)\.json$")
 

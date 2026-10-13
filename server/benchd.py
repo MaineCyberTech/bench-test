@@ -55,7 +55,7 @@ DEFAULT_DB = os.path.join(HERE, "data", "benchd.sqlite")
 MAX_BODY = 24 * 1024 * 1024
 
 SAMPLE_FIELDS = ["elapsed", "temp_c", "fan_pct", "power_w", "gpu_util",
-                 "gpu_fan_rpm", "cpu_util", "ram_used", "sm_mhz", "mem_used"]
+                 "gpu_fan_rpm", "cpu_util", "ram_used", "sm_mhz"]
 
 # Fields whose domain really is 0..100. nvidia-smi intermittently reports a
 # nonsense fan speed (a live stick run recorded fan_pct 413 and 137 in one window),
@@ -111,7 +111,7 @@ CREATE TABLE IF NOT EXISTS phases (
 CREATE TABLE IF NOT EXISTS telemetry (
   run_id TEXT, ts REAL, elapsed REAL, temp_c REAL, fan_pct REAL, power_w REAL,
   gpu_util REAL, gpu_fan_rpm REAL, cpu_util REAL, ram_used REAL,
-  sm_mhz REAL, mem_used REAL, extra TEXT
+  sm_mhz REAL, extra TEXT
 );
 CREATE TABLE IF NOT EXISTS logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, ts REAL, stream TEXT, line TEXT
@@ -917,16 +917,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def _telemetry_csv(self, run_id):
         rows = self.store.q("SELECT ts,elapsed,temp_c,fan_pct,power_w,gpu_util,gpu_fan_rpm,"
-                            "cpu_util,ram_used,sm_mhz,mem_used FROM telemetry "
+                            "cpu_util,ram_used,sm_mhz FROM telemetry "
                             "WHERE run_id=? ORDER BY ts", (run_id,))
         buf = io.StringIO()
         w = csv.writer(buf)
         w.writerow(["ts", "elapsed_s", "temp_c", "fan_pct", "power_w", "gpu_util_pct",
-                    "gpu_fan_rpm", "cpu_util_pct", "ram_used_gib", "sm_mhz", "mem_used_gib"])
+                    "gpu_fan_rpm", "cpu_util_pct", "ram_used_gib", "sm_mhz"])
         for r in rows:
             w.writerow([r[k] for k in ("ts", "elapsed", "temp_c", "fan_pct", "power_w",
                                        "gpu_util", "gpu_fan_rpm", "cpu_util", "ram_used",
-                                       "sm_mhz", "mem_used")])
+                                       "sm_mhz")])
         return self._send(200, raw=buf.getvalue().encode(), ctype="text/csv",
                           headers={"Content-Disposition":
                                    'attachment; filename="%s-telemetry.csv"' % safe_filename(run_id)})
@@ -1128,8 +1128,8 @@ class Handler(BaseHTTPRequestHandler):
             with S.lock:
                 S.conn.executemany(
                     "INSERT INTO telemetry(run_id,ts,elapsed,temp_c,fan_pct,power_w,gpu_util,"
-                    "gpu_fan_rpm,cpu_util,ram_used,sm_mhz,mem_used,extra) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+                    "gpu_fan_rpm,cpu_util,ram_used,sm_mhz,extra) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", rows)
                 S.conn.commit()
             if named:
                 # publish the WHOLE batch: a runner posts telemetry in chunks, and

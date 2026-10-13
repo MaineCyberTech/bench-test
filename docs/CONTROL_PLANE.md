@@ -142,7 +142,7 @@ the remote terminal (`exec`/`shell`), and fail `update`/`power_limit`/`restart`
 (it acks them as unsupported rather than pretending).
 
 Telemetry sample order (10 floats): `elapsed, temp_c, fan_pct, power_w, gpu_util,
-gpu_fan_rpm, cpu_util, ram_used, sm_mhz, mem_used`.
+gpu_fan_rpm, cpu_util, ram_used, sm_mhz` (plus `vram_used_mib` / `vram_total_mib`).
 
 ### Command payloads
 

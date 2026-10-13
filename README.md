@@ -54,7 +54,7 @@ name it too (`ISO <gpu> v1.11.3 #<run>`).
 
 4 Hz rows per run (nvidia-smi cached at 2 Hz), written to `*.telemetry.csv` and streamed to the control plane.
 Canonical fields: `elapsed, temp_c, fan_pct, power_w, gpu_util, gpu_fan_rpm,
-cpu_util, ram_used, sm_mhz, mem_used`, plus extras: `mem_util, mem_mhz,
+cpu_util, ram_used, sm_mhz`, plus extras: `mem_util, mem_mhz,
 vram_used_mib, cpu_temp_c, cpu_max_core_c, cpu_fan_rpm, load1, swap_used_gib,
 nvme_c, gpu_enc_pct, gpu_dec_pct, pstate, power_limit_w, temp_mem_c, gr_mhz,
 temp_limit_c, power_default_w, power_max_w, video_mhz, pcie_gen, pcie_width,
@@ -158,7 +158,9 @@ repo `.venv` or `$BENCH_REPO` still takes precedence when present. See
 CI also **bakes the control-plane config** into each bundle — the
 `BENCH_AGENT_CONF` secret, the same one the live USB writes to
 `/etc/bench-agent.conf` — so a downloaded app **auto-registers** with no flags
-(the GUI/TUI/agent read `<toolkit>/bench-agent.conf`, ahead of `~/.config`). The
+(the GUI/TUI/agent read `<toolkit>/bench-agent.conf` as the last fallback, so a
+`./bench-agent.conf`, `~/.config/bench-agent.conf` or `/etc/bench-agent.conf` on
+the machine still points it at a different control plane). The
 releases are public, so that token is world-readable: use a limited, rotatable
 one.
 

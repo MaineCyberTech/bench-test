@@ -3,7 +3,8 @@
 
 Accepts the same flags as Run-LinuxBench.sh, runs the Windows battery
 (bench/Run-WorkstationBench.ps1), re-emits its phases as "[group] ..." lines the
-dashboards parse, and writes a 1 Hz telemetry CSV (<host>-win-<stamp>.telemetry.csv).
+dashboards parse, and writes a telemetry CSV (<host>-win-<stamp>.telemetry.csv)
+at 4 Hz by default (`--interval`; nvidia-smi is cached at 2 Hz, sensors at 1 Hz).
 
     python bench/run_win.py [-o DIR] [--gpu-soak S] [--combined-seconds S]
         [--fullsoak-seconds S] [--gfx-seconds S] [--skip-gpu] ... [--valley-bin DIR]
@@ -113,7 +114,7 @@ def _flag(s):
 
 
 def cpu_temp_thread(stop_evt):
-    """Best-effort Windows CPU temp via ACPI (root/wmi), off the 1 Hz path."""
+    """Best-effort Windows CPU temp via ACPI (root/wmi), off the row path."""
     if os.name != "nt":
         return
     ps = ("(Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature "
@@ -224,7 +225,7 @@ def lhm_thread(stop_evt):
 
     nvidia-smi carries the GPU telemetry on NVIDIA; on AMD/Intel the library is
     the only local source for GPU temp/power/clocks/VRAM. Best-effort and off the
-    1 Hz path (a value the library cannot read stays blank)."""
+    row path (a value the library cannot read stays blank)."""
     if os.name != "nt":
         return
     script = os.path.join(BENCH, "Sample-Sensors.ps1")

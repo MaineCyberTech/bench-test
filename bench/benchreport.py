@@ -48,7 +48,7 @@ def supported_groups():
     return [g for g in GROUPS if g != "llm"]
 
 SAMPLE_FIELDS = ["elapsed", "temp_c", "fan_pct", "power_w", "gpu_util",
-                 "gpu_fan_rpm", "cpu_util", "ram_used", "sm_mhz", "mem_used"]
+                 "gpu_fan_rpm", "cpu_util", "ram_used", "sm_mhz"]
 
 # columns the telemetry CSV may expose -> our canonical field names
 CSV_ALIASES = {
@@ -61,7 +61,6 @@ CSV_ALIASES = {
     "cpu_util_pct": "cpu_util", "cpu_util": "cpu_util",
     "ram_used_gib": "ram_used", "ram_used": "ram_used",
     "sm_mhz": "sm_mhz", "sm_clock_mhz": "sm_mhz",
-    "mem_used_gib": "mem_used", "vram_used_gib": "mem_used",
     # extras streamed to the server for richer charts
     "mem_util_pct": "mem_util", "mem_util": "mem_util",
     "mem_mhz": "mem_mhz",
