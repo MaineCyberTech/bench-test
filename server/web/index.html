@@ -24,17 +24,17 @@
 </header>
 <div class="banner" id="banner">control plane unreachable — retrying…</div>
 
-<nav class="tabs" id="tabs">
-  <button data-tab="live" class="active">Live</button>
-  <button data-tab="history">History</button>
-  <button data-tab="trends">Trends</button>
-  <button data-tab="compare">Compare</button>
-  <button data-tab="fleet">Fleet</button>
-  <button data-tab="schedules">Schedules</button>
+<nav class="tabs" id="tabs" role="tablist" aria-label="Dashboard sections">
+  <button data-tab="live" id="tabbtn-live" role="tab" aria-selected="true" aria-controls="tab-live" tabindex="0" class="active">Live</button>
+  <button data-tab="history" id="tabbtn-history" role="tab" aria-selected="false" aria-controls="tab-history" tabindex="-1">History</button>
+  <button data-tab="trends" id="tabbtn-trends" role="tab" aria-selected="false" aria-controls="tab-trends" tabindex="-1">Trends</button>
+  <button data-tab="compare" id="tabbtn-compare" role="tab" aria-selected="false" aria-controls="tab-compare" tabindex="-1">Compare</button>
+  <button data-tab="fleet" id="tabbtn-fleet" role="tab" aria-selected="false" aria-controls="tab-fleet" tabindex="-1">Fleet</button>
+  <button data-tab="schedules" id="tabbtn-schedules" role="tab" aria-selected="false" aria-controls="tab-schedules" tabindex="-1">Schedules</button>
 </nav>
 
 <main>
-  <section id="tab-live" class="tabpane active">
+  <section id="tab-live" class="tabpane active" role="tabpanel" aria-labelledby="tabbtn-live">
     <div class="section-head">
       <h2>Runners</h2>
       <span class="muted" id="runnerCount"></span>
@@ -47,7 +47,7 @@
     <div id="activeRuns"></div>
   </section>
 
-  <section id="tab-history" class="tabpane">
+  <section id="tab-history" class="tabpane" role="tabpanel" aria-labelledby="tabbtn-history">
     <div class="section-head">
       <h2>Run history</h2>
       <div class="filters">
@@ -65,23 +65,23 @@
     <div class="card tablecard">
       <table id="histTable">
         <thead><tr>
-          <th class="sortable" data-sort="host">host</th><th>system</th>
-          <th class="sortable" data-sort="preset">preset</th>
-          <th class="sortable" data-sort="label">label</th>
-          <th class="sortable" data-sort="started">started</th>
-          <th class="sortable num" data-sort="dur">duration</th>
-          <th class="sortable" data-sort="status">status</th>
-          <th class="sortable num" data-sort="gpu">GPU soak TF</th>
-          <th class="sortable num" data-sort="cpu">CPU soak GF</th>
-          <th class="sortable num" data-sort="ram">RAM GB/s</th>
-          <th class="sortable num" data-sort="peak">peak °C</th>
+          <th class="sortable" data-sort="host" tabindex="0" aria-sort="none" title="Sort by host">host</th><th>system</th>
+          <th class="sortable" data-sort="preset" tabindex="0" aria-sort="none" title="Sort by preset">preset</th>
+          <th class="sortable" data-sort="label" tabindex="0" aria-sort="none" title="Sort by label">label</th>
+          <th class="sortable" data-sort="started" tabindex="0" aria-sort="descending" title="Sort by started">started</th>
+          <th class="sortable num" data-sort="dur" tabindex="0" aria-sort="none" title="Sort by duration">duration</th>
+          <th class="sortable" data-sort="status" tabindex="0" aria-sort="none" title="Sort by status">status</th>
+          <th class="sortable num" data-sort="gpu" tabindex="0" aria-sort="none" title="Sort by GPU soak">GPU soak TF</th>
+          <th class="sortable num" data-sort="cpu" tabindex="0" aria-sort="none" title="Sort by CPU soak">CPU soak GF</th>
+          <th class="sortable num" data-sort="ram" tabindex="0" aria-sort="none" title="Sort by RAM">RAM GB/s</th>
+          <th class="sortable num" data-sort="peak" tabindex="0" aria-sort="none" title="Sort by peak temp">peak °C</th>
         </tr></thead>
         <tbody></tbody>
       </table>
     </div>
   </section>
 
-  <section id="tab-trends" class="tabpane">
+  <section id="tab-trends" class="tabpane" role="tabpanel" aria-labelledby="tabbtn-trends">
     <div class="section-head">
       <h2>Trends</h2>
       <div class="filters">
@@ -94,7 +94,7 @@
     <div class="legend" id="trendLegend"></div>
   </section>
 
-  <section id="tab-compare" class="tabpane">
+  <section id="tab-compare" class="tabpane" role="tabpanel" aria-labelledby="tabbtn-compare">
     <div class="section-head"><h2>Compare runs</h2></div>
     <div class="filters">
       <select id="cmpA"></select>
@@ -104,7 +104,7 @@
     <div class="grid2" id="cmpResult"></div>
   </section>
 
-  <section id="tab-fleet" class="tabpane">
+  <section id="tab-fleet" class="tabpane" role="tabpanel" aria-labelledby="tabbtn-fleet">
     <div class="section-head">
       <h2>By machine</h2>
       <span class="muted" id="fleetCount"></span>
@@ -129,7 +129,7 @@
     </div>
   </section>
 
-  <section id="tab-schedules" class="tabpane">
+  <section id="tab-schedules" class="tabpane" role="tabpanel" aria-labelledby="tabbtn-schedules">
     <div class="section-head">
       <h2>Schedules</h2>
       <div class="filters"><button class="accent" id="schedNew">new schedule</button></div>
@@ -143,8 +143,9 @@
   </section>
 </main>
 
-<div class="modal" id="modal"><div class="modalbox" id="modalbox"></div></div>
+<div class="modal" id="modal" role="dialog" aria-modal="true" aria-label="Dialog"><div class="modalbox" id="modalbox"></div></div>
 <div id="focus" class="focuspane"></div>
+<div id="liveRegion" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
 <script src="app.js"></script>
 </body>
 </html>

@@ -105,6 +105,7 @@ def _web(c):
     """
     js = open(os.path.join(REPO, "server", "web", "app.js"), encoding="utf-8").read()
     css = open(os.path.join(REPO, "server", "web", "style.css"), encoding="utf-8").read()
+    html = open(os.path.join(REPO, "server", "web", "index.html"), encoding="utf-8").read()
     c.check("the live view builds a tab per runner",
             "function focusTabsInner" in js and "data-rtab=" in js, "")
     c.check("a tab prefers the runner's live run over its last one",
@@ -130,6 +131,46 @@ def _web(c):
     _web_tune = re.search(r"const TUNE_DEFAULT = \{(.*?)\};", js, re.S)
     c.check("TUNE_DEFAULT carries stable_hold (so the payload must gate it)",
             bool(_web_tune) and "stable_hold" in _web_tune.group(1), "")
+
+    # ---- W11: performance (PERF-P1-002) ----
+    c.check("the list view asks for a small page, not 300 rows",
+            "const HIST_LIMIT = 50" in js and "limit=300" not in js, "")
+    c.check("the heavy views are only fetched while their tab is on screen",
+            'PERF-P1-002' in js and "renderHistory();" in js and "renderTrends();" in js
+            and 'classList.contains("active")' in js, "")
+    c.check("polling pauses while the tab is hidden and resumes on show",
+            "visibilitychange" in js and "document.hidden" in js and "_pollPaused" in js, "")
+    c.check("a fetch is skipped when nothing changed (ETag / cheap version probe)",
+            "If-None-Match" in js and 'headers.get("ETag")' in js and "function stateVersion" in js, "")
+    c.check("repeated errors back off exponentially, capped",
+            "BACKOFF_MAX_MS" in js and "function backoffDelay" in js and "Math.pow(2" in js, "")
+
+    # ---- W11: responsive layout (MOB-P2-001..004) ----
+    c.check("the primary tab bar wraps or scrolls on phones",
+            "flex-wrap:wrap" in css and "overflow-x:auto" in css and "flex-wrap:nowrap" in css, "")
+    c.check("fixed multi-column grids collapse on phones",
+            "@media (max-width:640px)" in css and "grid-template-columns:1fr" in css, "")
+    c.check("interactive controls get >= 44px touch targets",
+            "min-height:44px" in css, "")
+    c.check("header and filter bars wrap instead of clipping",
+            ".topbar{flex-wrap:wrap" in css.replace(" ", "")
+            and ".filters{" in css.replace(" ", "") and "flex-wrap:wrap" in css, "")
+
+    # ---- W11: keyboard and assistive tech (UX-P2-001..004) ----
+    c.check("the modal is a dialog with a focus trap and focus restore",
+            'setAttribute("role", "dialog")' in js and 'aria-modal' in js
+            and 'e.key !== "Tab"' in js and "_lastFocus" in js, "")
+    c.check("the tab strip exposes ARIA roles and state",
+            'role="tablist"' in html and 'role="tab"' in html
+            and 'aria-selected' in html and 'aria-controls' in html, "")
+    c.check("live SSE updates are announced",
+            'aria-live' in html and "function announce" in js and 'announce(' in js, "")
+    c.check("canvas charts expose an accessible alternative",
+            'setAttribute("role", "img")' in js and 'setAttribute("aria-label"' in js
+            and "function chartAltText" in js, "")
+    c.check("cards, headers and rows are keyboard reachable and activatable",
+            'tabindex="0"' in js and 'tabindex="0" aria-sort' in html
+            and 'closest("th.sortable,[data-detail],[data-runner],[data-rtab]")' in js, "")
 
 
 def run():

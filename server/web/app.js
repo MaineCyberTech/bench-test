@@ -97,6 +97,13 @@ const FOCUS_MINI = [
 
 let SHOW_OFFLINE = localStorage.getItem("benchd_show_offline") === "1";
 let SORT = { key: "started", dir: -1 };
+// PERF-P1-002: the list view only needs a small page, the heavy views (run rows,
+// trends) are only fetched while their tab is on screen, polling pauses while the
+// tab is hidden, and repeated failures back off exponentially up to a cap.
+const HIST_LIMIT = 50;
+const REFRESH_MS = 1200;
+const POLL_MS = 5000;
+const BACKOFF_MAX_MS = 60000;
 
 let TOKEN = new URLSearchParams(location.search).get("token") || localStorage.getItem("benchd_token") || "";
 let STATE = { runners: [], active: [], recent: [], metrics: [] };
@@ -107,6 +114,13 @@ let FOCUS = null;           // run_id shown in the full-pane live view
 let HOSTS = [];
 let SCHEDULES = [];
 let es = null;
+let _pollPaused = document.hidden;  // pause polling while the tab is hidden
+let _refreshPending = false;        // a fetch was skipped while hidden
+let _failCount = 0;                 // consecutive refresh failures (backoff)
+const _etags = {};                  // path -> last ETag (conditional GET)
+const _histCache = {};              // history cache key -> { ver }
+const _trendsCache = {};            // trends cache key -> { ver }
+let _lastFocus = null;              // element focused before a modal opened
 
 /* ------------------------------------------------------------------ dom -- */
 const $ = (s, r = document) => r.querySelector(s);
@@ -147,14 +161,28 @@ function toast(msg, kind) {
   t.textContent = msg;
   clearTimeout(window._toast); window._toast = setTimeout(() => { t.className = "toast"; }, 4000);
 }
+// Push a short message to the visually-hidden aria-live region so assistive tech
+// hears the live SSE updates it cannot otherwise see.
+function announce(msg) {
+  const el = $("#liveRegion");
+  if (!el) return;
+  el.textContent = "";                       // reset so a repeated message re-announces
+  setTimeout(() => { el.textContent = msg; }, 20);
+}
 
 /* ------------------------------------------------------------------ api -- */
-async function api(path, method = "GET", body) {
-  const opt = { method, headers: { Authorization: "Bearer " + TOKEN } };
-  if (body) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
-  const r = await fetch("/api/v1" + path, opt);
+async function api(path, method = "GET", body, opt = {}) {
+  const o = { method, headers: { Authorization: "Bearer " + TOKEN } };
+  if (body) { o.headers["Content-Type"] = "application/json"; o.body = JSON.stringify(body); }
+  // Conditional GET: the server may answer 304 when nothing changed. benchd sends
+  // no ETag yet, so the cheap state version probe below is the effective path.
+  if (method === "GET" && opt.conditional && _etags[path]) o.headers["If-None-Match"] = _etags[path];
+  const r = await fetch("/api/v1" + path, o);
   if (r.status === 401) { askToken(); throw new Error("unauthorized"); }
+  if (r.status === 304) return { __notModified: true };
   if (!r.ok) throw new Error("HTTP " + r.status);
+  const et = r.headers.get("ETag");
+  if (et) _etags[path] = et;
   return r.json();
 }
 
@@ -180,8 +208,12 @@ function connect() {
   es.onopen = () => setConn(true);
   es.onerror = () => setConn(false);
   es.addEventListener("snapshot", () => { setConn(true); refresh(); });
-  es.addEventListener("runner", () => queueRefresh());
-  es.addEventListener("run", () => queueRefresh());
+  es.addEventListener("runner", () => { announce("runner update"); queueRefresh(); });
+  es.addEventListener("run", (e) => {
+    try { const d = JSON.parse(e.data); announce(d && d.deleted ? "run deleted" : "run update"); }
+    catch (err) { announce("run update"); }
+    queueRefresh();
+  });
   es.addEventListener("phase", (e) => onPhase(JSON.parse(e.data)));
   es.addEventListener("telemetry", (e) => onTelemetry(JSON.parse(e.data)));
   es.addEventListener("command", () => queueRefresh());
@@ -228,14 +260,28 @@ function _restoreScroll(st) {
   requestAnimationFrame(apply);  // again after the browser re-lays out
 }
 let _refreshTimer = null;
+// exponential, capped retry delay after repeated failures
+function backoffDelay(base) {
+  return _failCount ? Math.min(BACKOFF_MAX_MS, base * Math.pow(2, _failCount)) : base;
+}
 function queueRefresh(delay) {
   if (_refreshTimer) return;
-  _refreshTimer = setTimeout(() => { _refreshTimer = null; refresh(); }, delay || 1200);
+  const d = delay != null ? delay : backoffDelay(REFRESH_MS);
+  _refreshTimer = setTimeout(() => { _refreshTimer = null; refresh(); }, d);
 }
-async function refresh() {
+// Cheap probe of everything the heavy list/trends views read: if it is unchanged
+// there is nothing to refetch, so the request is skipped entirely.
+function stateVersion() {
+  const recent = STATE.recent.map((r) => r.id + ":" + (r.status || "") + ":" + (r.ended || 0)).join(",");
+  const active = STATE.active.map((a) => a.id + ":" + ((a.phases || []).length)).join(",");
+  return recent + "|" + active;
+}
+async function refresh(force) {
+  if (_pollPaused && !force) { _refreshPending = true; return; }
   try {
     const s = await api("/state");
     STATE = s;
+    _failCount = 0;
     HOSTS = (s.hosts && s.hosts.length) ? s.hosts
       : [...new Set(STATE.recent.map((r) => r.host).filter(Boolean))].sort();
     for (const a of STATE.active) {
@@ -245,7 +291,10 @@ async function refresh() {
     const st = _scrollState();
     renderAll();
     _restoreScroll(st);
-  } catch (e) { /* offline */ }
+  } catch (e) {
+    _failCount++;                       // offline: retry later, backing off each time
+    queueRefresh(backoffDelay(POLL_MS));
+  }
 }
 
 function ensureTel(id) {
@@ -289,13 +338,20 @@ function onTelemetry(d) {
 
 function onPhase(p) {
   const card = document.querySelector(`[data-active="${p.run_id}"]`);
+  if (p && p.grp) announce("phase " + p.grp + (p.label ? ": " + p.label : ""));
   if (card) queueRefresh(300);
 }
 
 /* -------------------------------------------------------------- render -- */
 function renderAll() {
-  renderTop(); renderRunners(); renderActive(); renderHistory(); renderTrends();
+  renderTop(); renderRunners(); renderActive();
   renderCompareOptions(); renderSchedules(); renderFocus();
+  // PERF-P1-002: the heavy views (a page of run rows, an unbounded trends scan)
+  // are only fetched while their tab is actually on screen.
+  const hp = $("#tab-history");
+  if (hp && hp.classList.contains("active")) renderHistory();
+  const tp = $("#tab-trends");
+  if (tp && tp.classList.contains("active")) renderTrends();
   const fp = $("#tab-fleet");
   if (fp && fp.classList.contains("active")) renderFleet();
 }
@@ -390,7 +446,8 @@ function runnerCard(r) {
   const dev = [caps.gpu || "no GPU", caps.cpu, caps.ram_gib ? caps.ram_gib + " GiB" : "",
                caps.driver ? "driver " + caps.driver : ""].filter(Boolean).join(" · ");
   return `<div class="runner ${r.online ? "" : "off"} ${r.status === "busy" ? "busy" : ""}" data-runner="${esc(r.id)}">
-      <div class="rhead">
+      <div class="rhead" tabindex="0" role="button"
+           aria-label="Open live view for ${esc(r.label || r.name)}">
         <span class="statusp ${cls}"></span>
         <div style="flex:1;min-width:0"><div class="rname">${esc(r.label || r.name)}</div></div>
       </div>
@@ -836,10 +893,16 @@ function sortArrow(key) {
   if (SORT.key !== key) return "";
   return `<span class="arw">${SORT.dir < 0 ? "▼" : "▲"}</span>`;
 }
-async function renderHistory() {
+async function renderHistory(force) {
+  const host = $("#histHost").value;
+  const key = host + "|" + ($("#histSearch").value || "") + "|" + $("#histStatus").value
+    + "|" + SORT.key + SORT.dir;
+  const ver = stateVersion();
+  if (!force && _histCache[key] && _histCache[key].ver === ver) return;
   try {
-    const host = $("#histHost").value;
-    const d = await api("/runs?limit=300" + (host ? "&host=" + encodeURIComponent(host) : ""));
+    const d = await api("/runs?limit=" + HIST_LIMIT + (host ? "&host=" + encodeURIComponent(host) : ""),
+                        "GET", null, { conditional: true });
+    if (d && d.__notModified) return;
     const q = ($("#histSearch").value || "").toLowerCase();
     const st = $("#histStatus").value;
     let rows = d.runs.filter((r) => !q || JSON.stringify(r).toLowerCase().includes(q));
@@ -861,6 +924,8 @@ async function renderHistory() {
     $("#histCount").textContent = `${rows.length} run${rows.length === 1 ? "" : "s"}`;
     $$("#histTable th.sortable").forEach((th) => {
       th.innerHTML = th.textContent.replace(/[▲▼]\s*$/, "").trim() + sortArrow(th.dataset.sort);
+      th.setAttribute("aria-sort", SORT.key === th.dataset.sort
+        ? (SORT.dir < 0 ? "descending" : "ascending") : "none");
     });
     const tb = $("#histTable tbody");
     tb.innerHTML = rows.map((r) => {
@@ -877,7 +942,7 @@ async function renderHistory() {
             + `${dd > 0 ? "▲" : "▼"}${Math.abs(dd).toFixed(0)}%</span>`;
         }
       }
-      return `<tr data-detail="${esc(r.id)}">
+      return `<tr data-detail="${esc(r.id)}" tabindex="0">
         <td>${esc(r.host)}</td>
         <td class="syscol" title="${esc(sysLine(r))}">${esc(sysLine(r))}</td>
         <td>${esc(r.preset || "—")}</td>
@@ -891,6 +956,7 @@ async function renderHistory() {
         <td class="num">${fmt(peak, 0)}</td></tr>`;
     }).join("") || `<tr><td colspan="11" class="empty">No matching runs.</td></tr>`;
     fillSelect("#histHost", HOSTS, "all hosts");
+    _histCache[key] = { ver };
   } catch (e) { /* ignore */ }
 }
 
@@ -925,7 +991,7 @@ async function renderFleet() {
   $("#fleetHosts tbody").innerHTML = Object.entries(byHost).sort().map(([h, rs]) => {
     const a = agg(rs), L = latest(rs), tk = tkState(rs);
     const stale = tk === "update available";
-    return `<tr data-detail="${esc(L.id)}">
+    return `<tr data-detail="${esc(L.id)}" tabindex="0">
       <td>${esc(h)}</td><td class="num">${rs.length}</td>
       <td class="muted">${ago(L.started)}</td>
       <td class="num">${fmt(a.gpu)}</td><td class="num">${fmt(a.cpu, 0)}</td>
@@ -943,7 +1009,7 @@ async function renderFleet() {
 }
 
 /* ------------------------------------------------------------- trends --- */
-async function renderTrends() {
+async function renderTrends(force) {
   const msel = $("#trendMetric");
   if (!msel.options.length && STATE.metrics.length) {
     msel.innerHTML = STATE.metrics.map(([k, l]) => `<option value="${esc(k)}">${esc(l)}</option>`).join("");
@@ -956,8 +1022,13 @@ async function renderTrends() {
   const m1 = msel.value, m2 = $("#trendMetric2").value;
   if (!m1) return;
   const metrics = [m1, m2].filter(Boolean);
+  const key = host + "|" + metrics.join(",");
+  const ver = stateVersion();
+  if (!force && _trendsCache[key] && _trendsCache[key].ver === ver) return;
   try {
-    const d = await api("/trends?host=" + encodeURIComponent(host) + metrics.map((m) => "&metric=" + encodeURIComponent(m)).join(""));
+    const d = await api("/trends?host=" + encodeURIComponent(host) + metrics.map((m) => "&metric=" + encodeURIComponent(m)).join(""),
+                        "GET", null, { conditional: true });
+    if (d && d.__notModified) return;
     const colors = ["#4c9aff", "#46c98d", "#e5b567"];
     const series = metrics.map((m, i) => ({
       name: labelFor(m), color: colors[i % colors.length],
@@ -970,6 +1041,7 @@ async function renderTrends() {
       const extra = q.n ? ` · med ${fmt(q.p50, 1)} · p95 ${fmt(q.p95, 1)} · max ${fmt(q.max, 1)}` : "";
       return `<span><i class="sw" style="background:${s.color}"></i>${esc(s.name)} · ${s.points.length} pts${extra}</span>`;
     }).join("");
+    _trendsCache[key] = { ver };
   } catch (e) { /* ignore */ }
 }
 function labelFor(m) { const f = STATE.metrics.find((x) => x[0] === m); return f ? f[1] : m; }
@@ -1019,6 +1091,17 @@ async function runCompare() {
  * opt.xTime    -> x is unix seconds (clock labels)
  * opt.xElapsed -> x is seconds into the run (m:ss labels)
  */
+/* Text alternative for a canvas chart: name, latest and range per series. */
+function chartAltText(series, opt) {
+  const parts = (series || []).filter((s) => s && s.points && s.points.length).map((s) => {
+    const ys = s.points.map((p) => p.y);
+    return s.name + ": last " + fmt(ys[ys.length - 1], 1)
+      + ", range " + fmt(Math.min.apply(null, ys), 1) + " to " + fmt(Math.max.apply(null, ys), 1);
+  });
+  const kind = opt && opt.xTime ? "trend" : "telemetry";
+  return parts.length ? kind + " chart. " + parts.join("; ") + "." : kind + " chart, no data yet.";
+}
+
 function drawChart(cv, series, opt = {}) {
   const dpr = window.devicePixelRatio || 1;
   const h = +cv.getAttribute("height") || 180;   // fixed CSS height (never compound)
@@ -1033,6 +1116,9 @@ function drawChart(cv, series, opt = {}) {
   const norm = !!opt.normalize;
   const compact = !!opt.compact;
   const use = (series || []).filter((s) => s && s.points && s.points.length >= 2);
+  // the canvas is unreadable to assistive tech: expose the same numbers as text
+  cv.setAttribute("role", "img");
+  cv.setAttribute("aria-label", chartAltText(series, opt));
   use.forEach((s) => {
     const ys = s.points.map((p) => p.y);
     s.min = Math.min.apply(null, ys);
@@ -1706,12 +1792,29 @@ async function deleteSchedule(id) {
 
 /* -------------------------------------------------------------- modal --- */
 function openModal(html) {
-  $("#modalbox").innerHTML = html;
-  $("#modal").classList.add("show");
-  const f = $("#modalbox input, #modalbox select");
-  if (f) setTimeout(() => { try { f.focus(); } catch (e) { /* ignore */ } }, 0);
+  _lastFocus = document.activeElement;         // restore on close
+  const box = $("#modalbox");
+  box.innerHTML = html;
+  const modal = $("#modal");
+  modal.classList.add("show");
+  modal.setAttribute("role", "dialog");
+  modal.setAttribute("aria-modal", "true");
+  const h = box.querySelector("h3");
+  if (h) { h.id = "modalTitle"; modal.setAttribute("aria-labelledby", "modalTitle"); }
+  box.setAttribute("tabindex", "-1");
+  const f = box.querySelector("input, select, button, textarea, a[href]");
+  setTimeout(() => { try { (f || box).focus(); } catch (e) { /* ignore */ } }, 0);
 }
-function closeModal() { $("#modal").classList.remove("show"); }
+function closeModal() {
+  const modal = $("#modal");
+  modal.classList.remove("show");
+  modal.removeAttribute("aria-modal");
+  $("#modalbox").innerHTML = "";
+  if (_lastFocus && document.contains(_lastFocus) && _lastFocus.focus) {
+    try { _lastFocus.focus(); } catch (e) { /* ignore */ }
+  }
+  _lastFocus = null;
+}
 window.closeModal = closeModal;
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") { if ($("#modal").classList.contains("show")) closeModal(); return; }
@@ -1719,6 +1822,23 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     $$("#tabs button").find((b) => b.dataset.tab === "history")?.click();
     const s = $("#histSearch"); if (s) s.focus();
+  }
+});
+// trap focus inside the dialog while it is open
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Tab") return;
+  const modal = $("#modal");
+  if (!modal.classList.contains("show")) return;
+  const box = $("#modalbox");
+  const f = $$('#modalbox a[href],#modalbox button,#modalbox input,#modalbox select,'
+    + '#modalbox textarea,#modalbox [tabindex]:not([tabindex="-1"])')
+    .filter((el) => !el.disabled && el.offsetParent !== null);
+  if (!f.length) { e.preventDefault(); box.focus(); return; }
+  const first = f[0], last = f[f.length - 1];
+  if (e.shiftKey && (document.activeElement === first || document.activeElement === box)) {
+    e.preventDefault(); last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault(); first.focus();
   }
 });
 $("#modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
@@ -1763,7 +1883,12 @@ document.addEventListener("click", (e) => {
     return;
   }
   if (t.dataset.tab) {
-    $$("#tabs button").forEach((b) => b.classList.toggle("active", b === t));
+    $$("#tabs button").forEach((b) => {
+      const on = b === t;
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-selected", on ? "true" : "false");
+      b.setAttribute("tabindex", on ? "0" : "-1");
+    });
     $$(".tabpane").forEach((p) => p.classList.toggle("active", p.id === "tab-" + t.dataset.tab));
     if (t.dataset.tab === "history") renderHistory();
     if (t.dataset.tab === "trends") renderTrends();
@@ -1787,6 +1912,29 @@ document.addEventListener("click", (e) => {
     const a = STATE.active.find((x) => x.id === FOCUS) || STATE.recent.find((x) => x.id === FOCUS);
     if (a) return cmd(a.runner_id, "update");
   }
+});
+
+// Keyboard access to the tab strip (roving tabindex) and to cards / rows /
+// sortable headers that were click-only before.
+document.addEventListener("keydown", (e) => {
+  const tab = e.target.closest && e.target.closest('#tabs [role="tab"]');
+  if (tab) {
+    const tabs = $$('#tabs [role="tab"]');
+    const i = tabs.indexOf(tab);
+    let j = null;
+    if (e.key === "ArrowRight") j = (i + 1) % tabs.length;
+    else if (e.key === "ArrowLeft") j = (i - 1 + tabs.length) % tabs.length;
+    else if (e.key === "Home") j = 0;
+    else if (e.key === "End") j = tabs.length - 1;
+    if (j != null) { e.preventDefault(); tabs[j].focus(); tabs[j].click(); }
+    return;
+  }
+  if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
+  if (/^(BUTTON|INPUT|SELECT|TEXTAREA|A)$/.test(e.target.tagName)) return;
+  const el = e.target.closest && e.target.closest("th.sortable,[data-detail],[data-runner],[data-rtab]");
+  if (!el) return;
+  e.preventDefault();
+  el.click();
 });
 
 $("#tokenBtn").onclick = askToken;
@@ -1830,9 +1978,15 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && FOCUS) c
    a blank page. The modal is also guarded so a wrong token cannot rebuild it while
    the operator is typing. */
 connect();
-refresh();
+refresh(true);
+// Pause polling while the tab is hidden, and refresh once when it returns.
+document.addEventListener("visibilitychange", () => {
+  _pollPaused = document.hidden;
+  if (!_pollPaused) { _refreshPending = false; refresh(true); }
+});
 setInterval(() => {
+  if (_pollPaused) return;
   if (STATE.active.length) { const st = _scrollState(); renderActive(); _restoreScroll(st); }
   if (FOCUS) renderFocus();
-}, 5000);
-setInterval(() => { if (FOCUS) reloadTel(FOCUS); }, 15000);
+}, POLL_MS);
+setInterval(() => { if (!_pollPaused && FOCUS) reloadTel(FOCUS); }, 15000);
