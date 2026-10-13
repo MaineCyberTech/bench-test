@@ -1619,8 +1619,25 @@ class Handler(BaseHTTPRequestHandler):
             # live-USB boot whose config did not persist) does not mint a
             # duplicate — while the live USB's tty1 / ttyS0 dashboards stay
             # distinct (they must, or a command would run on both).
-            existing = S.one("SELECT * FROM runners WHERE machine_id=? AND kind=? "
-                             "AND COALESCE(instance,'')=?", (mid, kind, inst))
+            #
+            # SEC-P1-002 / CHAIN-P1-001: adoption must never hand a runner's
+            # api_key to a caller that cannot prove it owns the row. Ownership is
+            # proved by the body's api_key or the request bearer matching the row
+            # (the same proof the explicit-runner_id path requires above); an
+            # operator is trusted. Without proof we only adopt a row that is
+            # *offline* (stale last_seen) and we rotate its key, so a live runner
+            # can never be taken over and an offline one recovers with a new key.
+            cand = S.one("SELECT * FROM runners WHERE machine_id=? AND kind=? "
+                         "AND COALESCE(instance,'')=?", (mid, kind, inst))
+            if cand:
+                proof = key or self._bearer()
+                if proof and secrets.compare_digest(str(proof), str(cand["api_key"])):
+                    existing = cand
+                elif self._is_operator():
+                    existing = cand
+                elif not online(cand["last_seen"]):
+                    existing = dict(cand)
+                    existing["api_key"] = secrets.token_urlsafe(32)
         if existing:
             rid = existing["id"]
             key = existing["api_key"]

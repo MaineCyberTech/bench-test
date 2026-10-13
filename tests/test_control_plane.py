@@ -71,6 +71,28 @@ def run():
     c.check("the owner can re-register and keeps its key",
             again.get("runner_id") == victim.get("runner_id")
             and again.get("api_key") == victim.get("api_key"), again)
+
+    # SEC-P1-002: machine_id adoption must not hand an ACTIVE runner's key to a
+    # caller that cannot prove ownership. Registration accepts any valid runner
+    # bearer, so replaying a victim's machine_id used to return its api_key.
+    st, msteal = cl.call("POST", "/api/v1/register",
+                         {"name": "attacker", "os": "Linux", "kind": "agent",
+                          "machine_id": "dmi-victim"}, token=attacker.get("api_key"))
+    c.check("a runner cannot claim another runner's machine_id and get its key",
+            msteal.get("api_key") != victim.get("api_key")
+            and msteal.get("runner_id") != victim.get("runner_id"), msteal)
+    # ...while an OFFLINE row is still reclaimed (a live-USB boot whose config did
+    # not persist), rotated so the old credential cannot be replayed either.
+    st, dead = cl.call("POST", "/api/v1/register",
+                       {"name": "dead", "os": "Linux", "kind": "agent", "machine_id": "dmi-dead"})
+    B.Handler.store.ex("UPDATE runners SET last_seen=? WHERE id=?",
+                       (B.now() - 3600, dead.get("runner_id")))
+    st, revived = cl.call("POST", "/api/v1/register",
+                          {"name": "dead", "os": "Linux", "kind": "agent",
+                           "machine_id": "dmi-dead"}, token=attacker.get("api_key"))
+    c.check("an offline row is reclaimed with a rotated key",
+            revived.get("runner_id") == dead.get("runner_id")
+            and revived.get("api_key") != dead.get("api_key"), (dead, revived))
     st, m3 = cl.call("POST", "/api/v1/register",
                      {"name": "box", "os": "Linux", "kind": "gui", "machine_id": "dmi-abc123"})
     c.check("machine_id is scoped per kind", m3.get("runner_id") != m1.get("runner_id"), m3)
