@@ -82,7 +82,7 @@ TELEMETRY="$BASE.telemetry.csv"
 JSONL="$(mktemp)"
 mkdir -p "$LOGDIR"
 TELE_PID=""
-trap 'rm -f "$JSONL"; [ -n "$TELE_PID" ] && kill "$TELE_PID" 2>/dev/null' EXIT
+trap 'cp -f "$JSONL" "$LOGDIR/records.jsonl" 2>/dev/null; rm -f "$JSONL"; [ -n "$TELE_PID" ] && kill "$TELE_PID" 2>/dev/null' EXIT
 
 echo "[env] python: $($PY -c 'import sys; print(sys.version.split()[0])')  out: $BASE.json|.md"
 echo "[telemetry] $PY $BENCH/telemetry_log.py --out $TELEMETRY --interval 0.25"
