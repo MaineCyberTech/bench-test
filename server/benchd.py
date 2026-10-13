@@ -142,12 +142,17 @@ CREATE INDEX IF NOT EXISTS idx_logs_run ON logs(run_id, id);
 CREATE INDEX IF NOT EXISTS idx_sched_next ON schedules(enabled, next_run);
 """
 
+# Every table that references a run by run_id. Deleting a run clears all of them
+# in one transaction, so nothing is left orphaned and readable by run id.
+RUN_DEPENDENT_TABLES = ("phases", "telemetry", "logs", "events", "artifacts", "commands")
+
 
 # --------------------------------------------------------------------- store --
 class Store:
     def __init__(self, path):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         self.lock = threading.RLock()
+        self.path = path
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         with self.lock:
@@ -190,6 +195,24 @@ class Store:
     def one(self, sql, args=()):
         rows = self.q(sql, args)
         return rows[0] if rows else None
+
+    def delete_run(self, run_id):
+        """Delete a run and every row that belongs to it, in one transaction.
+
+        Previously each table was cleared with its own committed statement; the
+        set is now atomic, so a deleted run can never leave telemetry/logs/events/
+        artifacts/phases/commands behind to be read back by run id.
+        """
+        with self.lock:
+            try:
+                for t in RUN_DEPENDENT_TABLES:
+                    self.conn.execute("DELETE FROM %s WHERE run_id=?" % t, (run_id,))
+                cur = self.conn.execute("DELETE FROM runs WHERE id=?", (run_id,))
+                self.conn.commit()
+                return cur.rowcount
+            except Exception:
+                self.conn.rollback()
+                raise
 
 
 # ----------------------------------------------------------------------- bus --
@@ -625,6 +648,21 @@ class Handler(BaseHTTPRequestHandler):
     def _err(self, code, msg):
         self._send(code, {"error": msg})
 
+    def _capacity(self):
+        """Row counts + on-disk size, so unbounded growth is visible in /health."""
+        S = self.store
+        rows = {}
+        for t in ("runs", "telemetry", "logs", "events", "artifacts"):
+            rows[t] = S.one("SELECT COUNT(*) c FROM %s" % t)["c"]
+        db_bytes = 0
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                db_bytes += os.path.getsize((S.path or "") + suffix)
+            except OSError:
+                pass
+        return {"rows": rows, "db_bytes": db_bytes,
+                "retention_days": RETENTION_DAYS}
+
     def _body(self):
         try:
             n = int(self.headers.get("Content-Length") or 0)
@@ -715,6 +753,7 @@ class Handler(BaseHTTPRequestHandler):
                                     "version": server_version(),
                                     "protocol": PROTOCOL,
                                     "latest": latest_git(),
+                                    "capacity": self._capacity(),
                                     "runners": len(self.store.q("SELECT id FROM runners"))})
         if path.startswith("/api/"):
             if path == "/api/v1/stream":
@@ -749,9 +788,7 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/v1/runs/([^/]+)$", path)
         if m:
             rid = m.group(1)
-            for t in ("phases", "telemetry", "events", "artifacts", "logs"):
-                self.store.ex("DELETE FROM %s WHERE run_id=?" % t, (rid,))
-            self.store.ex("DELETE FROM runs WHERE id=?", (rid,))
+            self.store.delete_run(rid)
             self.bus.publish({"event": "run", "data": {"id": rid, "deleted": True}})
             return self._send(200, {"ok": True})
         m = re.match(r"^/api/v1/runners/([^/]+)$", path)
@@ -1525,6 +1562,7 @@ def main():
                     help="run with no BENCHD_TOKEN (lab/dev only: anyone on the "
                          "network can register and control runners)")
     a = ap.parse_args()
+
 
     token = find_token(a.token)
     if token is None and not (a.allow_anonymous
