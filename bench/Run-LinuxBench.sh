@@ -37,6 +37,16 @@ if [ -z "${HSA_OVERRIDE_GFX_VERSION:-}" ] && command -v rocminfo >/dev/null 2>&1
         echo "[gpu] ROCm: $_gfx iGPU -> HSA_OVERRIDE_GFX_VERSION=$HSA_OVERRIDE_GFX_VERSION"
 fi
 
+# Hybrid live image: the CUDA PyTorch build is baked to /opt/bench-pypackages and
+# the system carries ROCm PyTorch. Select the CUDA tree only on an NVIDIA host so
+# it shadows ROCm there while AMD keeps the system build. (Harmless on the single
+# -vendor images: /opt/bench-pypackages is absent on amd, already on the .pth for
+# nvidia.) A user PYTHONPATH that already names it wins.
+if [ -d /opt/bench-pypackages ] && command -v nvidia-smi >/dev/null 2>&1 \
+        && case ":${PYTHONPATH:-}:" in *":/opt/bench-pypackages:"*) false ;; *) true ;; esac; then
+    export PYTHONPATH="/opt/bench-pypackages${PYTHONPATH:+:$PYTHONPATH}"
+fi
+
 OUT="$ROOT/results"
 GPU_SOAK=600; CPU_SOAK=120; RAM_SOAK=120
 COMBINED_SECONDS=300; FULLSOAK_SECONDS=300; GFX_SECONDS=60; FAN_SECONDS=90

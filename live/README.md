@@ -107,6 +107,7 @@ python bench/live_update.py iso-write /mnt/benchdata/iso/bench-live-nvidia-legac
 | `nvidia` | Turing → RTX 50 (`nvidia-open` 610) | PyTorch CUDA | default for modern NVIDIA |
 | `nvidia-legacy` | Maxwell/Pascal/Volta (+ Turing..Ada) via 580 branch | PyTorch CUDA | uses the omarchy repo; the DKMS module is compiled into the ISO at build time (a boot service rebuilds it if needed) |
 | `amd` | GCN+ for graphics (Mesa/RADV) | PyTorch ROCm | ROCm compute only on supported cards (RDNA+); older cards still run graphics/telemetry and skip compute |
+| `hybrid` | AMD (Mesa/RADV) **and** modern NVIDIA (Turing → RTX 50, `nvidia-open`) | ROCm **or** CUDA, picked at run time | one stick for both; `Run-LinuxBench.sh` puts the baked CUDA torch on `PYTHONPATH` only when `nvidia-smi` is present, else the system ROCm torch. Legacy NVIDIA (Maxwell..Volta) still needs its own variant |
 
 APU iGPUs (Phoenix `gfx1103` e.g. Radeon 780M/880M, Strix `gfx1150/1151`) are not
 in ROCm's supported list; `Run-LinuxBench.sh` detects them via `rocminfo` and sets

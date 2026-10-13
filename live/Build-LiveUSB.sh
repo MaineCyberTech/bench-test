@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Build a bench-test live ISO with archiso and optionally write it to a USB device.
 #
-# Usage: sudo ./live/Build-LiveUSB.sh --gpu nvidia|nvidia-legacy|amd [--out DIR] [--comp xz|zstd] [--write /dev/sdX]
+# Usage: sudo ./live/Build-LiveUSB.sh --gpu nvidia|nvidia-legacy|amd|hybrid [--out DIR] [--comp xz|zstd] [--write /dev/sdX]
 #
 #   --gpu nvidia         Turing+ (RTX 20/30/40/50) with nvidia-open (610)
 #   --gpu nvidia-legacy  Maxwell/Pascal/Volta (and up) with the 580 branch (omarchy repo)
 #   --gpu amd            AMD with Mesa/RADV graphics + ROCm PyTorch
+#   --gpu hybrid         AMD + modern NVIDIA on one stick: Mesa/RADV + ROCm torch,
+#                        nvidia-open + baked CUDA torch selected at run time
 #   --out DIR            ISO output directory (default live/out)
 #   --write /dev/sdX     after building, dd the ISO to the device and create a
 #                        BENCHDATA partition in the free space (DESTRUCTIVE)
@@ -35,8 +37,8 @@ done
 
 if [ -z "$ISO_ONLY" ]; then
     case "$GPU" in
-        nvidia|nvidia-legacy|amd) ;;
-        *) echo "error: --gpu nvidia|nvidia-legacy|amd is required" >&2; exit 1 ;;
+        nvidia|nvidia-legacy|amd|hybrid) ;;
+        *) echo "error: --gpu nvidia|nvidia-legacy|amd|hybrid is required" >&2; exit 1 ;;
     esac
 fi
 [ -n "$OUT" ] || OUT="$REPO/live/out-$GPU"
@@ -95,8 +97,15 @@ if [ "$GPU" != "amd" ] && "$REPO/.venv/bin/python" -c 'import torch' >/dev/null 
     mkdir -p "$PP" "$PROFILE/airootfs/usr/lib/python3.14/site-packages"
     rsync -a --exclude '__pycache__' --exclude 'pip*' --exclude 'setuptools*' \
         "$REPO/.venv/lib/python3.14/site-packages/" "$PP/"
-    printf '%s\n' "/opt/bench-pypackages" \
-        > "$PROFILE/airootfs/usr/lib/python3.14/site-packages/zz-bench-torch.pth"
+    if [ "$GPU" = "hybrid" ]; then
+        # hybrid: the CUDA build shares the stick with the system ROCm PyTorch, so
+        # no static .pth - the launcher (Run-LinuxBench.sh) puts this tree on
+        # PYTHONPATH only on NVIDIA, leaving ROCm for AMD.
+        echo "[build] hybrid: CUDA PyTorch baked to /opt/bench-pypackages (launcher-selected)"
+    else
+        printf '%s\n' "/opt/bench-pypackages" \
+            > "$PROFILE/airootfs/usr/lib/python3.14/site-packages/zz-bench-torch.pth"
+    fi
 elif [ "$GPU" != "amd" ]; then
     echo "[build] WARNING: no toolkit venv with torch - falling back to python-pytorch-cuda (NOT Maxwell-compatible)"
     echo "python-pytorch-cuda" >> "$PROFILE/packages.x86_64"
