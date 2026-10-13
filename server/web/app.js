@@ -340,7 +340,10 @@ function runnerInfo(r) {
                  v.power_w != null ? fmt(v.power_w, 0) + " W" : null,
                  v.cpu_util != null ? fmt(v.cpu_util, 0) + "% cpu" : null]
       .filter(Boolean).join(" · ");
-    if (now) rows.push(["now", `<span class="mono">${esc(now)}</span>`]);
+    if (now) {
+      rows.push(["current run", `${esc(live.label || "run")} · ${dur(Date.now() / 1000 - (live.started || 0))} elapsed`
+        + `<div class="muted mono">${esc(now)}</div>`]);
+    }
   }
   const last = lastRunOf(r.id);
   if (last) {
@@ -351,7 +354,7 @@ function runnerInfo(r) {
     if (s.gfx && s.gfx.score != null) bits.push("gfx " + fmt(s.gfx.score, 0));
     if (s.ram_soak_gbps != null) bits.push(fmt(s.ram_soak_gbps, 1) + " GB/s ram");
     rows.push(["last run", `${esc(last.label || "run")} · ${esc(last.status || "")} · `
-      + `${ago(last.ended || last.started)}${bits.length ? `<div class="muted mono">${bits.join(" · ")}</div>` : ""}`]);
+      + `${ago(last.ended || last.started)} · ${runDur(last)}${bits.length ? `<div class="muted mono">${bits.join(" · ")}</div>` : ""}`]);
   } else {
     rows.push(["last run", "none yet"]);
   }

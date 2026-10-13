@@ -95,10 +95,37 @@ def _tui(c):
                 t.sys_ram[1] > 0, t.sys_ram)
 
 
+def _web(c):
+    """The web live view: runner tabs, and panels that show both runs.
+
+    Source-level, because the suite has no browser. The behaviour was verified by
+    hand against three live runs (tabs for all three runners, switching changes the
+    pane, panels show CURRENT RUN + LAST RUN, no console errors).
+    """
+    js = open(os.path.join(REPO, "server", "web", "app.js"), encoding="utf-8").read()
+    css = open(os.path.join(REPO, "server", "web", "style.css"), encoding="utf-8").read()
+    c.check("the live view builds a tab per runner",
+            "function focusTabsInner" in js and "data-rtab=" in js, "")
+    c.check("a tab prefers the runner's live run over its last one",
+            "function runnerRun" in js and "STATE.active.find((a) => a.runner_id === rid)" in js, "")
+    c.check("a finished run is not called the last run while one is running",
+            'a.status !== "running"' in js, "")
+    c.check("the runner panel shows the current run", 'rows.push(["current run"' in js, "")
+    c.check("the runner panel shows the last run too", 'rows.push(["last run"' in js, "")
+    c.check("the last run row carries its headline metrics",
+            all(k in js for k in ("gpu_soak_tflops", "cpu_soak_gflops", "ram_soak_gbps", "gfx")), "")
+    c.check("clicking a runner panel opens its live view",
+            "t.dataset.runner &&" in js and "runnerRun(t.dataset.runner)" in js, "")
+    c.check("panel controls keep their own behaviour",
+            'e.target.closest("button,input,select,textarea,a,form,label")' in js, "")
+    c.check("the tabs and info block are styled", ".rtabs" in css and ".rinfo" in css, "")
+
+
 def run():
     c = Checker("dashboards")
     _gui(c)
     _tui(c)
+    _web(c)
     return c.fails
 
 
