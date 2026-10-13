@@ -9,12 +9,16 @@
 # Values never contain spaces (a name is sanitised to underscores), because the
 # runner splits the line on whitespace.
 #
-# Usage: .\Sample-Sensors.ps1 [-IntervalMs 1000] [-Lines N] [-LibDir <dir>]
+# Usage: .\Sample-Sensors.ps1 [-IntervalMs 1000] [-Lines N] [-LibDir <dir>] [-ParentPid <pid>]
 #   (Lines 0 = run until killed; the runner stops it.)
+#   -ParentPid: exit as soon as that process is gone, so a runner killed abruptly
+#   (e.g. the dashboard window closed mid-run) cannot leave this sampler holding
+#   the LibreHardwareMonitor dll and the toolkit folder.
 param(
     [int]$IntervalMs = 1000,
     [int]$Lines = 0,
-    [string]$LibDir = "$PSScriptRoot\..\tools\lhm"
+    [string]$LibDir = "$PSScriptRoot\..\tools\lhm",
+    [int]$ParentPid = 0
 )
 $ErrorActionPreference = 'Continue'
 
@@ -136,6 +140,7 @@ function Fmt($v, $dec, $zeroBlank = $false) {
 
 $n = 0
 while ($true) {
+    if ($ParentPid -gt 0 -and -not (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue)) { break }
     try {
         Update-All
         $gpus = Sensors-Of 'Gpu*'

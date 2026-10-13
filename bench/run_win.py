@@ -232,7 +232,8 @@ def lhm_thread(stop_evt):
         return
     try:
         p = subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                              "-File", script, "-IntervalMs", "1000"],
+                              "-File", script, "-IntervalMs", "1000",
+                              "-ParentPid", str(os.getpid())],
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
                              bufsize=1, creationflags=subprocess.CREATE_NO_WINDOW)
     except Exception:
