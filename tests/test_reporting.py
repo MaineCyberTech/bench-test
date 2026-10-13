@@ -586,6 +586,97 @@ def run():
         src = open(os.path.join(BENCH, f), encoding="utf-8").read()
         c.check("%s scopes the summary to its own run" % f, "since=self.run_t0" in src, f)
 
+    # ---- a RAM integrity result is a verdict, not a number ----
+    # It was measured and dropped: the summary had the soak bandwidth but nothing that
+    # said whether the memory actually verified.
+    rd = tmpdir()
+    with open(os.path.join(rd, "host-ram.json"), "w") as fh:
+        json.dump({"host": "h", "phases": [
+            {"group": "ram", "phase": "integrity",
+             "result": {"phase": "integrity", "bad_elements": 0, "chunks": 4,
+                        "passes": 2, "planned_chunks": 4, "planned_passes": 2}},
+        ]}, fh)
+    ri = (build_summary_dir(rd) or {}).get("ram_integrity") or {}
+    c.check("the summary carries the RAM integrity result",
+            ri.get("chunks") == 4 and ri.get("passes") == 2 and ri.get("bad_elements") == 0,
+            ri)
+    rd2 = tmpdir()
+    with open(os.path.join(rd2, "host-ram.json"), "w") as fh:
+        json.dump({"host": "h", "phases": [
+            {"group": "ram", "phase": "integrity",
+             "result": {"phase": "integrity", "bad_elements": 0, "chunks": 2, "passes": 0,
+                        "planned_chunks": 8, "planned_passes": 2,
+                        "short": "MemoryError: filled 2 of 8 chunks over 0 of 2 passes"}},
+        ]}, fh)
+    ri2 = (build_summary_dir(rd2) or {}).get("ram_integrity") or {}
+    c.check("a run cut short says so in the summary instead of reading as verified",
+            ri2.get("chunks") == 2 and ri2.get("passes") == 0 and ri2.get("short"), ri2)
+
+    # ---- the RAM integrity phase must report what it filled, not what it planned ----
+    # A MemoryError broke out of the loop and the record still carried the plan.
+    try:
+        import ram_bench as rb
+    except Exception as e:                      # numpy is not needed by the suite
+        print("  SKIP the RAM integrity record check (%s)" % e)
+    else:
+        real_empty, real_jline = rb.np.empty, rb.jline
+        calls = {"n": 0}
+        recs = []
+
+        def boom(*a, **k):
+            calls["n"] += 1
+            if calls["n"] > 3:
+                raise MemoryError("simulated")
+            return real_empty(*a, **k)
+
+        class _Args:
+            fill_pct = 100
+            passes = 2
+
+        rb.np.empty = boom
+        rb.jline = recs.append
+        try:
+            rb.phase_integrity(_Args())
+        finally:
+            rb.np.empty, rb.jline = real_empty, real_jline
+        rec = recs[-1]
+        c.check("a MemoryError records the chunks it actually filled",
+                rec["chunks"] == 3 and rec["passes"] == 0 and rec["planned_chunks"] > 3,
+                rec)
+        c.check("and it says the run was cut short", bool(rec.get("short")), rec)
+
+    # ---- the closing fsync of the random-IO phases is durability, not speed ----
+    # It sat inside the timed block, so an 8-second run carried its own flush in the
+    # denominator and reported fewer IOPS than it did.
+    try:
+        import disk_bench as dbm
+    except Exception as e:
+        print("  SKIP the random-IO timing check (%s)" % e)
+    else:
+        class _A:
+            seconds = 1.0
+            size_mb = 8
+            path = tmpdir()
+
+        dbm.ensure_file(_A())                   # so only the closing fsync is slow
+        real_fsync = os.fsync
+
+        def slow_fsync(fd):
+            time.sleep(0.35)
+            return real_fsync(fd)
+
+        os.fsync = slow_fsync
+        t0 = time.time()
+        try:
+            ops, reads, writes, dt = dbm.rand_loop(_A(), 50)
+        finally:
+            os.fsync = real_fsync
+        wall = time.time() - t0
+        c.check("random IO runs for its full window and does work",
+                dt >= _A.seconds - 0.05 and ops > 0, (dt, ops))
+        c.check("the closing fsync is outside the measured time",
+                wall - dt >= 0.3, (round(wall, 3), round(dt, 3)))
+
     srv.stop()
     return c.fails
 

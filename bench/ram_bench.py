@@ -137,6 +137,8 @@ def phase_integrity(a):
     passes = a.passes
     mismatched = 0
     bad_elems = 0
+    done_chunks = 0          # what actually happened, not what was planned
+    done_passes = 0
     for p in range(passes):
         arrs = []
         try:
@@ -148,15 +150,24 @@ def phase_integrity(a):
                 v = np.int32(C) if p % 2 == 0 else np.int32(C ^ p)
                 if int((t != v).sum()) != 0:
                     bad_elems += int((t != v).sum())
+            done_passes += 1
         except MemoryError:
-            print("integrity: MemoryError at pass %d (allocated %d chunks)" % (p, len(arrs)))
+            print("integrity: MemoryError at pass %d (allocated %d of %d chunks)"
+                  % (p, len(arrs), n_chunks))
             break
         finally:
+            done_chunks = max(done_chunks, len(arrs))
             del arrs
-    out = {"phase": "integrity", "giB": round(n_chunks * chunk_bytes / 1024 ** 3, 1),
-           "chunks": n_chunks, "passes": passes, "bad_elements": bad_elems}
-    print("ram integrity filled=%.1fGiB chunks=%d passes=%d bad=%d" % (
-        out["giB"], n_chunks, passes, bad_elems))
+    out = {"phase": "integrity",
+           "giB": round(done_chunks * chunk_bytes / 1024 ** 3, 1),
+           "chunks": done_chunks, "passes": done_passes,
+           "planned_chunks": n_chunks, "planned_passes": passes,
+           "bad_elements": bad_elems}
+    if done_chunks < n_chunks or done_passes < passes:
+        out["short"] = ("MemoryError: filled %d of %d chunks over %d of %d passes"
+                        % (done_chunks, n_chunks, done_passes, passes))
+    print("ram integrity filled=%.1fGiB chunks=%d/%d passes=%d/%d bad=%d" % (
+        out["giB"], done_chunks, n_chunks, done_passes, passes, bad_elems))
     jline(out)
 
 

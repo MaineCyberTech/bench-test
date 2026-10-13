@@ -2308,6 +2308,13 @@ def build_summary(report_path):
                 out["ram_soak_gbps"] = r.get("gbps")
         elif phase == "seqwrite" and r.get("mbps") is not None:
             out["disk_seqwrite_mbps"] = r.get("mbps")
+        elif phase == "integrity" and r.get("bad_elements") is not None:
+              # a verdict, not a number: a mismatch or a run cut short by a
+              # MemoryError must not read as "verified"
+              out["ram_integrity"] = {"bad_elements": r.get("bad_elements"),
+                                      "chunks": r.get("chunks"),
+                                      "passes": r.get("passes"),
+                                      "short": r.get("short")}
         elif phase == "bench" and r.get("download_mbps") is not None:
             out["net"] = r
         elif phase in ("stress", "fullsoak") and isinstance(r.get("verdict"), dict):
@@ -2424,6 +2431,13 @@ def _merge_into(s, j):
                 setd("ram_soak_gbps", r["gbps"])
         elif phase == "seqwrite":
             setd("disk_seqwrite_mbps", r.get("mbps"))
+        elif phase == "integrity" and r.get("bad_elements") is not None:
+              # a verdict, not a number: a mismatch or a run cut short by a
+              # MemoryError must not read as "verified"
+              setd("ram_integrity", {"bad_elements": r.get("bad_elements"),
+                                     "chunks": r.get("chunks"),
+                                     "passes": r.get("passes"),
+                                     "short": r.get("short")})
         # -- results that were measured but previously dropped ------------------
         elif phase == "pcie" and r.get("h2d_gbps") is not None:
             setd("pcie", {"h2d_gbps": r.get("h2d_gbps"), "d2h_gbps": r.get("d2h_gbps")})

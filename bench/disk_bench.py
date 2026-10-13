@@ -122,8 +122,9 @@ def rand_loop(a, read_pct):
             else:
                 fh.write(randbytes(IO)); writes += 1
             ops += 1
+        # stop the clock before the closing flush: it is durability, not speed
+        dt = time.time() - t0
         fh.flush(); os.fsync(fh.fileno())
-    dt = time.time() - t0
     return ops, reads, writes, dt
 
 
