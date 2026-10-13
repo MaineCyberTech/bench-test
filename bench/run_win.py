@@ -172,7 +172,7 @@ def _fnum(s):
         return None
     try:
         v = float(s)
-        return v if v > 0 else None          # LHM reports 0 when it cannot read
+        return v          # the sampler blanks an unreadable temp/power/clock
     except ValueError:
         return None
 
@@ -252,6 +252,8 @@ def lhm_thread(stop_evt):
                 print("[win] sensor note: not elevated - CPU temp/power/clock sensors "
                       "normally need an administrator shell", flush=True)
                 _LHM["elevation_warned"] = True
+            if upd.get("error"):
+                continue          # an error line must not wipe the last good values
             with _LHM_LOCK:
                 _LHM.update(upd)
     except Exception:
@@ -461,9 +463,11 @@ def main():
                      daemon=True).start()
     threading.Thread(target=cpu_temp_thread, args=(stop_evt,), daemon=True).start()
     threading.Thread(target=gpu_engine_thread, args=(stop_evt,), daemon=True).start()
-    if os.name == "nt" and not shutil.which("nvidia-smi"):
-        # AMD/Intel GPU on Windows: LibreHardwareMonitor supplies the GPU columns
-        # (temperature/power/clocks/VRAM) that nvidia-smi would otherwise carry.
+    if os.name == "nt":
+        # AMD/Intel: the library supplies the GPU columns nvidia-smi would
+        # otherwise carry. NVIDIA: nvidia-smi keeps the GPU columns and the
+        # library fills what it has no answer for (VRAM total, CPU package
+        # watts/clock, storage temperature, per-core load).
         threading.Thread(target=lhm_thread, args=(stop_evt,), daemon=True).start()
 
     ps = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", BATTERY,

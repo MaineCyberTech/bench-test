@@ -3,6 +3,7 @@
 Everything runs against a local stub server: no network, no real block devices,
 and nothing destructive (iso_write is only exercised through its guards).
 """
+import glob
 import hashlib
 import http.server
 import io
@@ -525,6 +526,21 @@ def run():
             '"--hidden-import", "benchreport"' not in _bsrc, "")
     c.check("the build ships the sensor library so a bundle needs no download",
             "have_lhm" in _bsrc and '"%s%stools"' in _bsrc, "")
+
+    # ---- Valley screenshots: keep one, not five ----
+    # Unigine writes a full-res PNG per frame; they were 91% of the results dir
+    sd = tmpdir()
+    for i in range(4):
+        p = os.path.join(sd, "valley-host-2026010%d-000000-f%02d.png" % (i + 1, i))
+        with open(p, "wb") as fh:
+            fh.write(b"png")
+        os.utime(p, (time.time() + i, time.time() + i))       # distinct mtimes
+    n = br.prune_screenshots(sd)
+    left = sorted(glob.glob(os.path.join(sd, "valley-*.png")))
+    c.check("pruning keeps exactly one screenshot", n == 3 and len(left) == 1, (n, left))
+    c.check("pruning keeps the newest one",
+            os.path.basename(left[0]).endswith("f03.png") if left else False, left)
+    c.check("pruning an empty dir is a no-op", br.prune_screenshots(tmpdir()) == 0, "")
     _spec2 = _ilu.spec_from_file_location("pkg_build",
                                           os.path.join(REPO, "packaging", "build_app.py"))
     _bm = _ilu.module_from_spec(_spec2)

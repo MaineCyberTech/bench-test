@@ -2649,6 +2649,32 @@ def build_summary_dir(results_dir, window_h=8, since=None):
     return out
 
 
+def prune_screenshots(results_dir, keep=1, log=None):
+    """Keep only the newest `keep` Valley frames in a run's results dir.
+
+    Unigine Valley writes a full-resolution PNG per frame (five were typical, ~5 MB
+    each), which made screenshots 91% of the results directory - 662 MB of 727 MB
+    across 43 runs, and the same pattern on the live stick's small USB. One frame
+    is enough for the run's gfx record to have an image; the score is in the report.
+    """
+    log = log or (lambda _m: None)
+    try:
+        shots = sorted(glob.glob(os.path.join(results_dir, "valley-*.png")),
+                       key=os.path.getmtime)
+    except OSError:
+        return 0
+    removed = 0
+    for p in shots[:-keep] if keep else shots:
+        try:
+            os.remove(p)
+            removed += 1
+        except OSError:
+            pass
+    if removed:
+        log("[report] pruned %d Valley screenshot(s), kept %d" % (removed, keep))
+    return removed
+
+
 def upload_run_files(rep, results_dir, log=None, limit=60, max_bytes=512 * 1024):
     """Attach the run's own report files, per-phase logs and gfx screenshot.
 
@@ -2658,6 +2684,7 @@ def upload_run_files(rep, results_dir, log=None, limit=60, max_bytes=512 * 1024)
     artifacts next to the telemetry CSV.
     """
     log = log or (lambda _m: None)
+    prune_screenshots(results_dir, log=log)
     if rep is None or not getattr(rep, "run_id", None):
         return 0
     keep = []
