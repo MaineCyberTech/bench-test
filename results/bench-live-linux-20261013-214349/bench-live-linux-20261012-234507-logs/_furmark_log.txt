@@ -1,0 +1,37 @@
+(00:05:00)	FurMark 2.10.2.0 (build: Oct 22 2025@13:57:17)
+(00:05:00)	(c)2007-2025 Geeks3D
+(00:05:00)	homepage: https://www.geeks3d.com/furmark/
+(00:05:00)	discord server : https://geeks3d.com/discord/
+(00:05:00)	FurMark (GeeXLab engine) initialization...
+(00:05:00)	command line: ./furmark --demo furmark-gl --width 1920 --height 1080 --benchmark --duration-ms 60000 --no-score-box --vsync 0 --log-gpu-data --gpu-monitor-print --export-dir /mnt/benchdata/results/bench-live-linux-20261012-234507-logs/furmark --hw-polling-interval 1000 
+(00:05:00)	FurMark home directory: /mnt/benchdata/tools/FurMark_linux64/
+(00:05:00)	[stb] STB image loader. Supported formats: *.JPEG, *.PNG, *.TGA, *.BMP, *.PSD, *.GIF, *.HDR, *.PIC
+(00:05:00)	[tinyexr] EXR image loader.
+(00:05:00)	[lib3ds] Lib3ds loader (core plugin).
+(00:05:00)	[ObjLoaderV1] OBJ 3D loader (core plugin).
+(00:05:00)	[ObjLoaderV2] OBJ loader based on Tiny OBJ Loader (core plugin).
+(00:05:00)	[STL] STL (StereoLithography) 3D loader (core plugin).
+(00:05:00)	[glTF] glTF 3D loader (core plugin).
+(00:05:00)	[SQLite3] SQLite3 version 3.50.4
+(00:05:00)	GraphX Core 0.60.1.0 (codename: Dirac) initialization ok.
+(00:05:00)	Linux information:
+(00:05:00)	- sysname: Linux
+(00:05:00)	- release: 7.2.9-arch1-1
+(00:05:00)	- version: #1 SMP PREEMPT_DYNAMIC Sat, 03 Oct 2026 11:43:28 +0000
+(00:05:00)	- machine: x86_64
+(00:05:00)	HW platform type: PC
+(00:05:00)	SW platform type: Linux 7.2.9-arch1-1 64-bit
+(00:05:00)	[GpuMonitor] Linux x86_64 - CPU name: Intel(R) Core(TM) i7-3770 CPU @ 3.40GHz, CPU speed: 3713MHz, RAM: 15951MB
+(00:05:00)	[GpuMonitor] Operating system detected: Linux 7.2.9-arch1-1 64-bit
+(00:05:00)	[GpuMonitor] NVIDIA CUDA library detected.
+(00:05:00)	[GpuMonitor]   - ROP counter (from driver): 64
+(00:05:00)	[GpuMonitor] Num GPUs detected: 1
+(00:05:00)	[GpuMonitor] > GPU0
+(00:05:00)	[GpuMonitor]   - name: NVIDIA GeForce GTX 1080
+(00:05:00)	[GpuMonitor]   - PCI codes: 0x10DE-0x1B80
+(00:05:00)	[GpuMonitor]   - Bus ID: 1
+(00:05:00)	[GpuMonitor]   - core temperature: 31 degC
+(00:05:00)	FurMark (GeeXLab engine) started ok.
+(00:05:00)	GPU 0 (NVIDIA GeForce GTX 1080) core clock: 1607.0 MHz, temp: 31.0 degC , usage: 0.0 %, power: 39955 W
+(00:05:00)	Display size: width=640, height=480
+(00:05:00)	Display size in mm: width=217, height=163

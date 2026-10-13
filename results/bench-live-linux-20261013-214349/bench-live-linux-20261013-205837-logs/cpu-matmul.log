@@ -1,0 +1,3 @@
+matmul fp32 N=4096 iters=12 GFLOPS=152.6
+matmul fp64 N=4096 iters=6 GFLOPS=75.9
+RESULT_JSON:{"phase": "matmul", "n": 4096, "results": {"fp32": {"iters": 12, "seconds": 10.81, "gflops": 152.6}, "fp64": {"iters": 6, "seconds": 10.86, "gflops": 75.9}}}

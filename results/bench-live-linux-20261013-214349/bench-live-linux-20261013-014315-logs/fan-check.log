@@ -1,0 +1,2 @@
+fan check: ok (temp 44.0 -> 75.0 °C, fan 34.0 -> 76.0 %, rpm max 3037.0)
+RESULT_JSON:{"cmd": "check", "seconds": 90, "vendor": "nvidia", "temp_start": 44.0, "temp_max": 75.0, "fan_start_pct": 34.0, "fan_max_pct": 76.0, "fan_max_rpm": 3037.0, "verdict": "ok"}

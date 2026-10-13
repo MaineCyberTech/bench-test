@@ -1,0 +1,197 @@
+{
+  "host": "bench-live",
+  "timestamp": "2026-10-13T21:43:49+00:00",
+  "platform": "Linux-7.2.9-arch1-1-x86_64-with-glibc2.44",
+  "env": {
+    "python": "/usr/bin/python3",
+    "torch": "2.14.1+cu126",
+    "torch_cuda": "12.6",
+    "cuda_available": true,
+    "git_commit": "",
+    "git_dirty": false
+  },
+  "fan_curve": "35:26 45:34 55:44 60:52 68:64 75:76 82:90 88:100",
+  "telemetry": {
+    "file": "bench-live-linux-20261013-214349.telemetry.csv",
+    "samples": 282,
+    "duration_s": 70.5,
+    "temp_c": [
+      23.0,
+      52.7,
+      68.0
+    ],
+    "fan_pct": [
+      26.0,
+      42.5,
+      82.0
+    ],
+    "power_w": [
+      151.7,
+      201.64
+    ]
+  },
+  "log_dir": "/mnt/benchdata/results/bench-live-linux-20261013-214349-logs",
+  "phases": [
+    {
+      "group": "sys",
+      "phase": "info",
+      "result": {
+        "phase": "info",
+        "distro": "Arch Linux",
+        "kernel": "7.2.9-arch1-1",
+        "arch": "x86_64",
+        "cpu": {
+          "model": "Intel(R) Core(TM) i7-3770 CPU @ 3.40GHz",
+          "logical_cpus": 8,
+          "max_mhz_observed": 3914
+        },
+        "memory_gib": 15.6,
+        "gpu": {
+          "name": "NVIDIA GeForce GTX 1080",
+          "driver": "580.178.04",
+          "vram": "8192 MiB",
+          "pcie_link_gen": "1",
+          "pcie_link_width": "16",
+          "uuid": "GPU-1011ed60-5946-c902-f948-f17c44ffdfd1",
+          "vbios": "86.04.17.00.01",
+          "pci_bus": "00000000:01:00.0",
+          "temp_limit_c": "[N/A]",
+          "power_default_w": "180.00 W",
+          "power_max_w": "217.00 W"
+        },
+        "storage": [
+          "loop0 4.9G loop 0",
+          "sda 931.5G disk 0 SanDisk SSD PLUS 1000GB",
+          "sdb 29.8G disk 1 SanDisk SSD U100 32GB"
+        ],
+        "network_ifaces": [
+          {
+            "name": "enp5s0",
+            "state": "up",
+            "speed_mbps": "1000"
+          }
+        ],
+        "booted": "2026-10-13 17:55:13",
+        "errors_since_boot": 8,
+        "hardware_errors": [
+          "Oct 13 17:55:43 bench-live kernel: acpi PNP0A08:00: _OSC: OS requested [PCIeHotplug SHPCHotplug PME AER PCIeCapability LTR DPC]",
+          "Oct 13 17:55:43 bench-live kernel: acpi PNP0A08:00: _OSC: platform willing to grant [PCIeHotplug SHPCHotplug PME AER PCIeCapability LTR DPC]",
+          "Oct 13 17:55:43 bench-live kernel: r8169 0000:05:00.0 eth0: RTL8168evl/8111evl, c8:60:00:a0:43:ee, XID 2c9, IRQ 38"
+        ],
+        "disk_health": {
+          "/dev/sda": {
+            "model": null,
+            "fw": null,
+            "temp_c": 16,
+            "used_pct": null,
+            "media_errors": null,
+            "reallocated": 0,
+            "pending": null,
+            "power_on_hours": 915,
+            "health": true
+          },
+          "/dev/sdb": {
+            "model": null,
+            "fw": null,
+            "temp_c": null,
+            "used_pct": null,
+            "media_errors": null,
+            "reallocated": 0,
+            "pending": null,
+            "power_on_hours": 48,
+            "health": true
+          }
+        },
+        "ecc": {}
+      }
+    },
+    {
+      "group": "fullsoak",
+      "phase": "stress",
+      "result": {
+        "seconds": 60,
+        "gpu": {
+          "phase": "soak",
+          "backend": "cuda",
+          "seconds": 60.4,
+          "matmuls": 82,
+          "convs": 82,
+          "size": 10240,
+          "matmul_tflops": 2.9,
+          "total_tflops": 3.1,
+          "peak_vram_gib": 1.0,
+          "until_stable": false,
+          "stable": false,
+          "stable_at_s": null,
+          "stable_hold_s": 60.0,
+          "telemetry": {
+            "samples": 29,
+            "temp_c": [
+              42.0,
+              57.8,
+              67.0
+            ],
+            "fan_pct": [
+              26.0,
+              44.4,
+              61.0
+            ],
+            "power_w": [
+              176.6,
+              203.34
+            ],
+            "sm_mhz": [
+              1842
+            ]
+          }
+        },
+        "cpu": {
+          "phase": "soak",
+          "seconds": 60.0,
+          "iters": 293,
+          "size": 2048,
+          "gflops": 83.8
+        },
+        "ram": {
+          "phase": "soak",
+          "seconds": 60.1,
+          "iters": 82,
+          "gbps": 7.3,
+          "errors": 0,
+          "gib_per_array": 1.0
+        },
+        "disk": null,
+        "telemetry": {
+          "samples": 29,
+          "temp_c": [
+            42.0,
+            57.8,
+            67.0
+          ],
+          "fan_pct": [
+            26.0,
+            44.4,
+            61.0
+          ],
+          "power_w": [
+            176.6,
+            203.34
+          ],
+          "sm_mhz": [
+            1842
+          ]
+        },
+        "verdict": {
+          "clean": true,
+          "exits": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "xid_lines": 0
+        }
+      }
+    }
+  ]
+}
