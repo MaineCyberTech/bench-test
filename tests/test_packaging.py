@@ -164,6 +164,20 @@ def run():
     else:
         print("  SKIP the Run-LinuxBench guard behaviour check (no bash here)")
 
+    # ---- the serial dashboard: matches the baud form, needs the device ----
+    # ConditionKernelCommandLine has no prefix form (verified against systemd 257:
+    # `console:ttyS0` and `console=ttyS0*` both evaluate false) and the exact form
+    # misses `console=ttyS0,115200`, so the drop-in uses the bare word plus the device.
+    with open(os.path.join(REPO, "live", "airootfs", "etc", "systemd", "system",
+                           "bench-tui@ttyS0.service.d", "10-serial.conf"),
+              encoding="utf-8") as fh:
+        drop = fh.read()
+    c.check("the serial dashboard starts for console=ttyS0,115200 too",
+            "ConditionKernelCommandLine=console\n" in drop
+            and "ConditionKernelCommandLine=console=ttyS0" not in drop, "")
+    c.check("and it requires a serial device to exist",
+            "ConditionPathExists=/dev/ttyS0" in drop, "")
+
     return c.fails
 
 

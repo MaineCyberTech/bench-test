@@ -238,7 +238,8 @@ pct exec 108 -- systemctl mask tmp.mount run-lock.mount dev-mqueue.mount
   `name (instance) #uid`. The live USB runs a TUI on tty1 *and* ttyS0 (the
   template unit sets `BENCH_AGENT_INSTANCE=%i`), so they appear as
   `bench-live (tty1)` / `bench-live (ttyS0)` rather than two identical rows; the
-  ttyS0 unit only starts with `console=ttyS0` on the cmdline. One-shot
+  ttyS0 unit only starts with a `console=` on the cmdline and a serial
+  device present (`console=ttyS0,115200` counts). One-shot
   `--self-test` runners are flagged *ephemeral* and dropped once they stop
   heartbeating.
 - `update` runs `git pull --ff-only` on the runner and reports the new commit;

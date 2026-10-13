@@ -54,7 +54,9 @@ its instance (`tty1` / `ttyS0`) as `BENCH_AGENT_INSTANCE` — that becomes the
 runner's instance label on the control plane, so a stick that also serves a
 serial console shows up as `bench-live (tty1)` / `bench-live (ttyS0)` instead of
 two identical rows. The **ttyS0** instance only starts when the kernel is booted
-with `console=ttyS0` (a drop-in adds `ConditionKernelCommandLine=console=ttyS0`),
+with a `console=` on the cmdline **and** a serial device present (the drop-in
+checks `ConditionKernelCommandLine=console` - which also matches
+`console=ttyS0,115200` - plus `ConditionPathExists=/dev/ttyS0`),
 so a normal boot runs a single dashboard.
 
 ### GPU fan curves
