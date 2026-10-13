@@ -295,7 +295,11 @@ if [ "$DO_GFX" = 1 ]; then
             GM_OUT="$(timeout $((GFX_SECONDS + 120)) glmark2 $GL_SCENES 2>&1)"; GMRC=$?
             printf '%s\n' "$GM_OUT" > "$LOGDIR/gfx-glmark2.log"
             printf '%s\n' "$GM_OUT" | grep -E "glmark2 Score|FPS:" | tail -3 | sed 's/^/    /'
-            GSCORE="$(printf '%s\n' "$GM_OUT" | grep -oE "glmark2 Score: [0-9]+" | tail -1 | grep -oE "[0-9]+")"
+            # the last numeric token, whitespace-stripped: grep -oE emits one line
+            # PER MATCH, so two matches became "2\n31596" inside the JSON record and
+            # split it across lines (which killed the whole summary)
+            GSCORE="$(printf '%s\n' "$GM_OUT" | grep -oE "glmark2 Score: [0-9]+" | tail -1 \
+                      | grep -oE "[0-9]+" | tail -1 | tr -d '[:space:]')"
             printf '{"group":"gfx","phase":"glmark2","result":{"score":%s,"furmark_rc":%s,"scenes":8,"per_scene_s":%s,"exit":%s}}\n' "${GSCORE:-0}" "$GFRC" "$GLD" "$GMRC" >> "$JSONL"
         fi
         # last resort: EGL/GLES off-screen, which needs no X output/CRTC (the
@@ -305,7 +309,8 @@ if [ "$DO_GFX" = 1 ]; then
             GME_OUT="$(DISPLAY= timeout 90 glmark2-es2 --off-screen 2>&1)"; GMERC=$?
             printf '%s\n' "$GME_OUT" > "$LOGDIR/gfx-glmark2-es2.log"
             printf '%s\n' "$GME_OUT" | grep -E "glmark2 Score|FPS:" | tail -3 | sed 's/^/    /'
-            GESCORE="$(printf '%s\n' "$GME_OUT" | grep -oE "glmark2 Score: [0-9]+" | tail -1 | grep -oE "[0-9]+")"
+            GESCORE="$(printf '%s\n' "$GME_OUT" | grep -oE "glmark2 Score: [0-9]+" | tail -1 \
+                       | grep -oE "[0-9]+" | tail -1 | tr -d '[:space:]')"
             printf '{"group":"gfx","phase":"glmark2-es2","result":{"score":%s,"exit":%s,"furmark_rc":%s}}\n' "${GESCORE:-0}" "$GMERC" "$GFRC" >> "$JSONL"
         fi
         cp "$(dirname "$FM")/_furmark_log.txt" "$LOGDIR/" 2>/dev/null || true
