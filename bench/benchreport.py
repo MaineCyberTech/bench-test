@@ -34,19 +34,81 @@ import urllib.error
 import urllib.request
 import uuid
 
-GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc",
-          "llm", "fan", "sys", "gfx"]
+# ---------------------------------------------------------------- registry --
+# ONE source of truth for the benchmark groups/phases (EVOL-P2-001). Every
+# Python consumer derives its list from here instead of repeating a literal:
+#
+#   benchreport.GROUPS        -> group_keys() (canonical order)
+#   agent.DEFAULT_GROUPS      -> group_keys()
+#   tui.GROUPS                -> group_keys()
+#   gui.GROUPS / gui._ALL_G   -> group_keys() + group_labels()
+#   supported_groups()        -> registry filtered by platform + battery
+#
+# The web app (server/web/app.js) cannot import Python, so it keeps a copy of the
+# keys; tests/test_registry.py pins that copy to this registry.
+#
+# Adding a phase (recipe):
+#   1. Append an entry to PHASES with a unique ``key``, a human ``label``, the
+#      ``platform`` it runs on ("all" | "linux" | "win") and ``battery=True``
+#      when the runner emits ``[key] ...`` phase lines for it. A grouping that
+#      only exists for the dashboards uses ``battery=False`` and is never
+#      advertised as a runner capability.
+#   2. Implement the phase in the runner (bench/Run-LinuxBench.sh and/or
+#      bench/run_win.py + Run-WorkstationBench.ps1) so it prints ``[key] label``
+#      and accepts ``--skip-<key>``.
+#   3. Add the key to GROUPS/ALL_GROUPS in server/web/app.js, same order.
+#   4. Run ``python tests/run_all.py``: test_registry enforces registry parity
+#      (registry -> capabilities -> dashboard/presets -> web), and test_presets
+#      guards that no existing preset changed.
+PHASES = [
+    {"key": "gpu", "label": "GPU compute + soak", "platform": "all", "battery": True},
+    {"key": "cpu", "label": "CPU", "platform": "all", "battery": True},
+    {"key": "ram", "label": "RAM", "platform": "all", "battery": True},
+    {"key": "disk", "label": "Disk", "platform": "all", "battery": True},
+    {"key": "combined", "label": "Combined GPU+CPU", "platform": "all", "battery": True},
+    {"key": "fullsoak", "label": "Full-system soak", "platform": "all", "battery": True},
+    {"key": "net", "label": "Network", "platform": "all", "battery": True},
+    {"key": "nvenc", "label": "Video encode", "platform": "all", "battery": True},
+    {"key": "llm", "label": "LLM inference", "platform": "win", "battery": True},
+    {"key": "fan", "label": "Fan response", "platform": "linux", "battery": True},
+    {"key": "sys", "label": "Inventory", "platform": "all", "battery": True},
+    {"key": "gfx", "label": "Graphics (FurMark)", "platform": "all", "battery": True},
+]
 
 
-def supported_groups():
+def group_keys(registry=None):
+    """Group keys in registry order (the canonical ``GROUPS`` list)."""
+    return [e["key"] for e in (PHASES if registry is None else registry)]
+
+
+def group_labels(registry=None):
+    """``{key: label}`` for the dashboard toggles, from the registry."""
+    return {e["key"]: e["label"] for e in (PHASES if registry is None else registry)}
+
+
+def _platform_supported(entry):
+    """True when this OS runs the group (registry ``platform`` metadata)."""
+    p = entry.get("platform", "all")
+    if p == "all":
+        return True
+    return (p == "linux") != (os.name == "nt")
+
+
+def supported_groups(registry=None):
     """The groups this platform's battery actually implements.
 
-    `fan` is Linux-only and `llm` is Windows-only; runners advertise this so the
+    Registry-driven: the battery phases whose ``platform`` is this OS. `fan` is
+    Linux-only and `llm` is Windows-only; runners advertise this so the
     dashboards can disable a toggle that would be a silent no-op.
     """
-    if os.name == "nt":
-        return [g for g in GROUPS if g != "fan"]
-    return [g for g in GROUPS if g != "llm"]
+    reg = PHASES if registry is None else registry
+    return [e["key"] for e in reg if e.get("battery", True) and _platform_supported(e)]
+
+
+# Backwards-compatible alias: the full registry order, independent of platform.
+GROUPS = group_keys()
+# Labels for the GUI toggles (kept next to the registry so they cannot drift).
+GROUP_LABELS = group_labels()
 
 SAMPLE_FIELDS = ["elapsed", "temp_c", "fan_pct", "power_w", "gpu_util",
                  "gpu_fan_rpm", "cpu_util", "ram_used", "sm_mhz"]

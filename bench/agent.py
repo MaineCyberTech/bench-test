@@ -45,7 +45,7 @@ sys.path.insert(0, BENCH)
 from benchreport import (Reporter, PhaseTracker, TelemetryTail,  # noqa: E402
                          build_summary, build_summary_dir, telemetry_summary, read_runs_index,
                          load_identity, run_exec, system_info, read_inventory, load_conf,
-                         power_action, supported_groups,
+                         power_action, supported_groups, group_keys,
                          update_toolkit, iso_fetch, iso_write, iso_write_slot,
                          self_update, restart_self,
                          toolkit_version, is_live, update_needs_restart,
@@ -53,8 +53,8 @@ from benchreport import (Reporter, PhaseTracker, TelemetryTail,  # noqa: E402
                          extra_runner_args, version_string, drop_stray_script_arg)
 import bootstrap  # stdlib-only local env helper (see bench/bootstrap.py)
 
-DEFAULT_GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc",
-                  "llm", "fan", "sys", "gfx"]
+# Derived from the benchreport registry (EVOL-P2-001), not a second copy.
+DEFAULT_GROUPS = list(group_keys())
 
 
 def run_hidden(cmd, **kw):
