@@ -141,7 +141,9 @@ tbody tr:hover{background:#1a2029}
 /* live console / terminal / richer detail */
 .syscol{color:var(--muted);font-size:12px;max-width:280px;overflow:hidden;text-overflow:ellipsis}
 .chartrow{position:relative}
-.csel{position:absolute;top:4px;right:8px;font-size:11px;padding:3px 6px}
+.csel{font-size:11px;padding:3px 6px}
+/* the chart picker sits above the canvas, not over its top-right corner */
+.charthead{display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-bottom:4px}
 .consolewrap{margin-top:10px;border-top:1px solid var(--border);padding-top:8px}
 .chead{display:flex;align-items:center;gap:10px;margin-bottom:6px}
 .term{margin-left:auto;display:flex;gap:6px}

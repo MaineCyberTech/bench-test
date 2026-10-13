@@ -458,9 +458,11 @@ function runCardHTML(a) {
         ${GAUGES.map(([k, label]) => `<div class="gauge"><div class="gv" data-g="${k}">—</div><div class="gk">${esc(label)}</div></div>`).join("")}
       </div>
       <div class="fhealth" data-h="health"></div>
+      <div class="charthead">
+        <select class="csel" data-chart="${a.id}">${Object.keys(CHART_PRESETS).map((k) => `<option${k === preset ? " selected" : ""}>${esc(k)}</option>`).join("")}</select>
+      </div>
       <div class="chartrow">
         <canvas class="runchart" height="180"></canvas>
-        <select class="csel" data-chart="${a.id}">${Object.keys(CHART_PRESETS).map((k) => `<option${k === preset ? " selected" : ""}>${esc(k)}</option>`).join("")}</select>
       </div>
       <div class="chartlegend"></div>
       <div class="phases"></div>
@@ -613,8 +615,8 @@ function focusShell(r, live) {
           <h4>Temps</h4><div class="fhealth" data-f="temps"></div>
         </div>
         <div class="fcard"><h4>Telemetry</h4>
-          <div class="chartrow"><canvas class="runchart" height="200"></canvas>
-            <select class="csel" data-chart="${esc(r.id)}">${sel(r.id)}</select></div>
+          <div class="charthead"><select class="csel" data-chart="${esc(r.id)}">${sel(r.id)}</select></div>
+          <div class="chartrow"><canvas class="runchart" height="200"></canvas></div>
           <div class="chartlegend"></div>
           <div class="minigrid" data-f="minis">${FOCUS_MINI.map(([k, lbl]) =>
             `<div class="mini"><div class="ml"><span>${esc(lbl)}</span>

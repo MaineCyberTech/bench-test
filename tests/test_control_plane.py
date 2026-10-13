@@ -400,7 +400,7 @@ def run():
     _pulled = []
     _real_pull, _real_sg, _real_lg = _bdm.server_pull, _bdm.server_git, _bdm.latest_git
     _bdm.server_pull = lambda: (_pulled.append(1) or {"ok": True, "before": "a", "after": "b"})
-    _bdm.AUTO_UPDATE_S = 0.0
+    _bdm.AUTO_UPDATE_S = 0.001
     _bdm._AUTO_UPDATE_LAST[0] = 0.0
     _bdm.AUTO_UPDATE_OFF = False
     _bdm.server_git = lambda: "aaa"
