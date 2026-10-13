@@ -60,23 +60,28 @@ def probe():
         if vram:
             VRAM_TOTAL_MIB = _num(vram.strip().splitlines()[0])
         return VENDOR
-    if shutil.which("amd-smi") or shutil.which("rocm-smi"):
-        VENDOR = "amd"
-        out = _run(["rocm-smi", "--showproductname", "--csv"]) or ""
-        for line in out.splitlines():
-            if line.lower().startswith("card") and "," in line:
-                NAME = line.split(",", 1)[1].strip().strip('"')
-                break
-        if not NAME:
-            NAME = "AMD GPU"
-        return VENDOR
-    for card in _amdgpu_cards():
-        VENDOR = "amd"
-        NAME = _read(os.path.join(card, "device", "product_name")) or "AMD GPU"
-        total = _num(_read(os.path.join(card, "device", "mem_info_vram_total")))
-        if total:
-            VRAM_TOTAL_MIB = round(total / 1024 ** 2, 1)
-        return VENDOR
+    # AMD detection is Linux/ROCm-oriented (amd-smi/rocm-smi/amdgpu sysfs). On
+    # Windows the AMD driver ships C:\Windows\System32\amd-smi.exe, but invoking
+    # it churns the Virtual Disk Service (a "disk" popup every couple of seconds),
+    # so treat gpu_util as NVIDIA-only on Windows.
+    if os.name != "nt":
+        if shutil.which("amd-smi") or shutil.which("rocm-smi"):
+            VENDOR = "amd"
+            out = _run(["rocm-smi", "--showproductname", "--csv"]) or ""
+            for line in out.splitlines():
+                if line.lower().startswith("card") and "," in line:
+                    NAME = line.split(",", 1)[1].strip().strip('"')
+                    break
+            if not NAME:
+                NAME = "AMD GPU"
+            return VENDOR
+        for card in _amdgpu_cards():
+            VENDOR = "amd"
+            NAME = _read(os.path.join(card, "device", "product_name")) or "AMD GPU"
+            total = _num(_read(os.path.join(card, "device", "mem_info_vram_total")))
+            if total:
+                VRAM_TOTAL_MIB = round(total / 1024 ** 2, 1)
+            return VENDOR
     return None
 
 

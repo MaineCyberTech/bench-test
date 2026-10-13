@@ -19,12 +19,27 @@ $info.RAM_GiB = [math]::Round($cs.TotalPhysicalMemory / 1GB, 1)
 $vc = Get-CimInstance Win32_VideoController
 $info.GPUs = @()
 foreach ($g in $vc) {
+    $mem = $null
+    try { if ($g.AdapterRAM) { $mem = [math]::Round($g.AdapterRAM / 1GB, 2) } } catch {}
     $info.GPUs += [ordered]@{
         Name = $g.Name
+        Vendor = $g.AdapterCompatibility
         DriverVersion = $g.DriverVersion
         DriverDate = $g.DriverDate
+        VideoProcessor = $g.VideoProcessor
+        AdapterRAM_GiB = $mem
+        PnpDeviceID = $g.PNPDeviceID
         Status = $g.Status
     }
+}
+
+# Display adapter registry detail (dedicated VRAM + engine/AMD/NVIDIA name)
+$regPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000'
+if (Test-Path $regPath) {
+    $rp = Get-ItemProperty $regPath -ErrorAction SilentlyContinue
+    if ($rp.DriverDesc) { $info.RegGpuName = $rp.DriverDesc }
+    if ($rp.DriverVersion) { $info.RegDriverVersion = $rp.DriverVersion }
+    if ($rp.'HardwareInformation.qwMemorySize') { $info.DedicatedVram_GiB = [math]::Round($rp.'HardwareInformation.qwMemorySize' / 1GB, 2) }
 }
 
 $smi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
@@ -39,6 +54,11 @@ if ($smi) {
 $nvgpu = Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue |
     Where-Object { $_.DeviceID -like '*VEN_10DE*' -and $_.PNPClass -eq 'Display' } | Select-Object -First 1
 if ($nvgpu) { $info.GpuPciId = ($nvgpu.DeviceID -split '\\')[1] }
+
+# Generic primary display PCI id (any vendor, e.g. AMD VEN_1002 / Intel VEN_8086)
+$disp = Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue |
+    Where-Object { $_.PNPClass -eq 'Display' } | Select-Object -First 1
+if ($disp) { $info.PrimaryDisplayPciId = ($disp.DeviceID -split '\\')[1] }
 
 if ($Json) { $info | ConvertTo-Json -Depth 5 } else {
     foreach ($k in $info.Keys) {

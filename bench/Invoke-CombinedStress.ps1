@@ -27,13 +27,24 @@ Write-Host "[combined] GPU soak ($GpuSize) + CPU soak ($CpuSize) concurrently fo
 $mon = Start-Job {
     param($secs)
     $end = (Get-Date).AddSeconds($secs); $s = @()
+    $smi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
     while ((Get-Date) -lt $end) {
-        $line = & nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,power.draw,clocks.sm,memory.used,fan.speed --format=csv,noheader 2>$null
         $c = 0
         try { $c = [math]::Round((Get-Counter '\Processor(_Total)\% Processor Time' -ErrorAction Stop).CounterSamples.CookedValue, 0) } catch {}
-        if ($line -match ',') {
-            $p = $line -split ',' | ForEach-Object { [double](($_ -replace '[^0-9\.]', '')) }
-            $s += [pscustomobject]@{ util = $p[0]; temp = $p[1]; power = $p[2]; sm = $p[3]; mem = $p[4]; fan = $p[5]; cpu = $c }
+        if ($smi) {
+            $line = & nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,power.draw,clocks.sm,memory.used,fan.speed --format=csv,noheader 2>$null
+            if ($line -match ',') {
+                $p = $line -split ',' | ForEach-Object { [double](($_ -replace '[^0-9\.]', '')) }
+                $s += [pscustomobject]@{ util = $p[0]; temp = $p[1]; power = $p[2]; sm = $p[3]; mem = $p[4]; fan = $p[5]; cpu = $c }
+            }
+        } else {
+            $u = 0
+            try {
+                $cc = (Get-Counter '\GPU Engine(*)\Utilization Percentage' -ErrorAction Stop).CounterSamples
+                $sum = ($cc | Where-Object { $_.InstanceName -match 'engtype_3D' } | Measure-Object CookedValue -Sum).Sum
+                if ($sum) { $u = [math]::Min(100.0, [math]::Round($sum, 1)) }
+            } catch { }
+            $s += [pscustomobject]@{ util = $u; temp = 0; power = 0; sm = 0; mem = 0; fan = 0; cpu = $c }
         }
         Start-Sleep -Milliseconds 500
     }
@@ -70,8 +81,11 @@ $t = Get-Stats $samples
 
 $ev = Get-WinEvent -FilterHashtable @{ LogName = 'System'; StartTime = (Get-Date).AddSeconds(-($Seconds + 90)) } -ErrorAction SilentlyContinue |
     Where-Object { $_.Id -eq 4101 -or $_.ProviderName -match 'nvlddmkm|WHEA|BugCheck' }
-$throttle = & nvidia-smi -q -d PERFORMANCE 2>$null | Select-String -Pattern 'SW Power Cap|HW Thermal Slowdown|HW Slowdown|HW Power Braking|SW Thermal' |
-    ForEach-Object { $_.Line.Trim() }
+$throttle = @()
+if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
+    $throttle = @(& nvidia-smi -q -d PERFORMANCE 2>$null | Select-String -Pattern 'SW Power Cap|HW Thermal Slowdown|HW Slowdown|HW Power Braking|SW Thermal' |
+        ForEach-Object { $_.Line.Trim() })
+}
 
 $report = [ordered]@{
     host      = $hostname

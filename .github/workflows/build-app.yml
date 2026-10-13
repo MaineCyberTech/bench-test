@@ -49,10 +49,18 @@ jobs:
           python -m pip install --quiet --upgrade pip pyinstaller
           if [ "${{ matrix.label }}" = "linux" ]; then
             sudo apt-get update -qq && sudo apt-get install -y -qq python3-tk
+          else
+            # CPython on Windows has no _curses; the TUI bundle needs this wheel.
+            python -m pip install --quiet windows-curses
           fi
 
       - name: Build bundles
         shell: bash
+        env:
+          # bake the control-plane config into the bundles so a downloaded app
+          # auto-registers (same secret the live ISO uses). PUBLIC releases - use
+          # a limited, rotatable token.
+          BENCH_BAKE_AGENT_CONF: ${{ secrets.BENCH_AGENT_CONF }}
         run: python packaging/build_app.py --out dist
 
       - name: Package

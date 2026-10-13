@@ -52,18 +52,32 @@ try:
 except Exception:  # reporting is optional
     Reporter = None
 
+try:
+    import bootstrap  # stdlib-only local env helper
+except Exception:
+    bootstrap = None
+
 # --- runner: Linux shell script, or the Windows battery via run_win.py ---
 # When frozen (PyInstaller) sys.executable is the bundle exe, not python, so the
-# runner has to be launched with a real interpreter. Prefer the venv: it holds
-# numpy/psutil/PyTorch, and a dashboard started from a bare system python would
-# otherwise run the sampler without psutil (no CPU/RAM/disk/net telemetry).
+# runner must be launched with a real interpreter carrying numpy/psutil (the
+# sampler records CPU/RAM/disk/net telemetry only with psutil). bootstrap
+# provisions that interpreter + a cached env without needing a checkout or a
+# system Python; a repo .venv still wins if present.
 if os.name == "nt":
-    RUNNER = venv_python(REPO) or (sys.executable if not getattr(sys, "frozen", False) else (
-        shutil.which("python") or shutil.which("python3") or "python"))
+    RUNNER = None
     RUNNER_PREFIX = [os.path.join(BENCH, "run_win.py")]
+
+    def runner_command(args):
+        py = (bootstrap.python_path(REPO, ensure=True) if bootstrap else "") \
+            or venv_python(REPO) or sys.executable
+        return [py] + RUNNER_PREFIX + args, py
 else:
     RUNNER = os.path.join(BENCH, "Run-LinuxBench.sh")
     RUNNER_PREFIX = []
+
+    def runner_command(args):
+        return [RUNNER] + args, ""
+
 
 # ---------------------------------------------------------------- palette ---
 BG = "#0f1218"
@@ -353,6 +367,9 @@ class Dashboard:
         self.curve_btn = ttk.Button(btns, text="Fan curve: off", style="Ghost.TButton",
                                     command=self.toggle_curve)
         self.curve_btn.pack(fill="x", pady=2)
+        self.env_btn = ttk.Button(btns, text="Clean up environment", style="Ghost.TButton",
+                                  command=self.clean_env)
+        self.env_btn.pack(fill="x", pady=2)
 
         # ---------------------------------------------------------- main --
         main = ttk.Frame(body)
@@ -767,9 +784,12 @@ class Dashboard:
         self.run_t0 = time.time()
         os.makedirs(self.results_dir, exist_ok=True)
         env = os.environ.copy()
-        env.setdefault("BENCH_PY", sys.executable)
         try:
-            self.proc = subprocess.Popen([RUNNER] + RUNNER_PREFIX + args, cwd=REPO, env=env,
+            cmd, py = runner_command(args)
+            if py:
+                env.setdefault("BENCH_PY", py)
+                env["PATH"] = os.path.dirname(py) + os.pathsep + env.get("PATH", "")
+            self.proc = subprocess.Popen(cmd, cwd=REPO, env=env,
                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                          text=True, bufsize=1, start_new_session=True,
                                          creationflags=(subprocess.CREATE_NO_WINDOW
@@ -796,8 +816,26 @@ class Dashboard:
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
         self._set_status("running · %s" % (self.preset.get() or "run").split(" (")[0], ACCENT)
-        self._log("[gui] %s %s" % (RUNNER, " ".join(RUNNER_PREFIX + args)))
+        self._log("[gui] %s" % " ".join(cmd))
         threading.Thread(target=self._reader, args=(self.proc,), daemon=True).start()
+
+    def clean_env(self):
+        """Remove the cached runner interpreter + env (keeps results)."""
+        if bootstrap is None:
+            self._set_status("environment helper unavailable", BAD)
+            return
+        self.env_btn.configure(state="disabled")
+        try:
+            st = bootstrap.status()
+            if not st.get("env_present") and not st.get("python_present"):
+                self._set_status("nothing cached yet", ACCENT)
+            else:
+                bootstrap.clean(log=self._log)
+                self._set_status("environment cleaned", ACCENT)
+        except Exception as exc:
+            self._set_status("clean failed: %s" % exc, BAD)
+        finally:
+            self.env_btn.configure(state="normal")
 
     def _reader(self, proc):
         try:

@@ -5,6 +5,8 @@ param(
     [int]$SoakSeconds = 600,
     [string]$TorchIndex = 'https://download.pytorch.org/whl/cu128',
     [int]$Size = 12288,
+    [ValidateSet('auto', 'cuda', 'dml', 'cpu')]
+    [string]$Backend = 'auto',
     [switch]$UntilStable,
     [int]$StableHold = 60,
     [switch]$NoInstall
@@ -35,35 +37,60 @@ function Invoke-Phase($name, $extraArgs, $telemetrySeconds) {
         $mon = Start-Job -ScriptBlock {
             param($secs)
             $end = (Get-Date).AddSeconds($secs); $s = @()
+            $smi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
             while ((Get-Date) -lt $end) {
-                $line = & nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,power.draw,clocks.sm,memory.used,fan.speed --format=csv,noheader 2>$null
-                if ($line -match ',') {
-                    $p = $line -split ',' | ForEach-Object { [double](($_ -replace '[^0-9\.]', '')) }
-                    $s += [pscustomobject]@{ util = $p[0]; temp = $p[1]; power = $p[2]; sm = $p[3]; mem = $p[4]; fan = $p[5] }
+                if ($smi) {
+                    $line = & nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,power.draw,clocks.sm,memory.used,fan.speed --format=csv,noheader 2>$null
+                    if ($line -match ',') {
+                        $p = $line -split ',' | ForEach-Object { [double](($_ -replace '[^0-9\.]', '')) }
+                        $s += [pscustomobject]@{ util = $p[0]; temp = $p[1]; power = $p[2]; sm = $p[3]; mem = $p[4]; fan = $p[5] }
+                    }
+                } else {
+                    # Vendor-agnostic fallback (AMD/Intel on Windows): total GPU busy %.
+                    $u = 0
+                    try {
+                        $c = (Get-Counter '\GPU Engine(*)\Utilization Percentage' -ErrorAction Stop).CounterSamples
+                        $sum = ($c | Where-Object { $_.InstanceName -match 'engtype_3D' } | Measure-Object CookedValue -Sum).Sum
+                        if ($sum) { $u = [math]::Min(100.0, [math]::Round($sum, 1)) }
+                    } catch { }
+                    $s += [pscustomobject]@{ util = $u; temp = 0; power = 0; sm = 0; mem = 0; fan = 0 }
                 }
                 Start-Sleep -Milliseconds 1000
             }
             return $s
         } -ArgumentList $telemetrySeconds
     }
-    $out = & python $bench $name --size $Size --force @extraArgs 2>&1
-    $out | Where-Object { $_ -notmatch '^RESULT_JSON:' } | ForEach-Object { Write-Host "    $_" }
+    $out = & python $bench $name --size $Size --force --backend $Backend @extraArgs 2>&1
+    $out | Where-Object { $_ -notmatch '^RESULT_JSON:' -and $_ -notmatch '^\[backend\]' } | ForEach-Object { Write-Host "    $_" }
     $jsonLine = $out | Where-Object { $_ -match '^RESULT_JSON:' } | Select-Object -Last 1
     $result = if ($jsonLine) { ($jsonLine -replace '^RESULT_JSON:', '') | ConvertFrom-Json } else { $null }
     if ($mon) { $samples = Receive-Job $mon -Wait -ErrorAction SilentlyContinue; Remove-Job $mon -Force -ErrorAction SilentlyContinue }
     return [pscustomobject]@{ phase = $name; result = $result; telemetry = (Get-TelemetryStats $samples) }
 }
 
-# --- ensure python + torch ---
+# --- ensure python + a usable compute backend (cuda -> dml -> cpu) ---
 $py = Get-Command python -ErrorAction SilentlyContinue
 if (-not $py) { Write-Error "python not found on PATH"; exit 1 }
-$haveTorch = & python -c "import torch,sys; sys.stdout.write('1' if torch.cuda.is_available() else '0')" 2>$null
-if ($haveTorch -ne '1') {
-    if ($NoInstall) { Write-Error "torch+cuda not available and -NoInstall set"; exit 1 }
-    Write-Host "[setup] installing PyTorch ($TorchIndex) ..." -ForegroundColor Yellow
-    & python -m pip install --upgrade --index-url $TorchIndex torch 2>&1 | Select-Object -Last 3
-    $haveTorch = & python -c "import torch,sys; sys.stdout.write('1' if torch.cuda.is_available() else '0')" 2>$null
-    if ($haveTorch -ne '1') { Write-Error "PyTorch CUDA still unavailable"; exit 1 }
+
+$probe = & python $bench probe --backend $Backend 2>$null
+$hasCuda = ($probe | Select-String '^CUDA=1') -ne $null
+$hasDml = ($probe | Select-String '^DML=1') -ne $null
+$detected = (($probe | Select-String '^BACKEND=') -replace '^BACKEND=', '')
+Write-Host "[setup] probe: cuda=$hasCuda dml=$hasDml backend=$detected" -ForegroundColor DarkGray
+
+if (-not $hasCuda -and -not $hasDml -and $Backend -ne 'cpu') {
+    if ($NoInstall) {
+        Write-Error "no CUDA or DirectML backend available and -NoInstall set"; exit 1
+    } else {
+        Write-Host "[setup] installing GPU backend: onnxruntime-directml (+ numpy, onnx) ..." -ForegroundColor Yellow
+        & python -m pip install --upgrade onnxruntime-directml onnx numpy 2>&1 | Select-Object -Last 3
+        $probe = & python $bench probe --backend $Backend 2>$null
+        $hasDml = ($probe | Select-String '^DML=1') -ne $null
+        if (-not $hasDml -and -not $hasCuda) {
+            Write-Host "[setup] DirectML unavailable; trying PyTorch CPU" -ForegroundColor Yellow
+            & python -m pip install --upgrade torch 2>&1 | Select-Object -Last 2
+        }
+    }
 }
 
 # --- run phases (short measurements per phase, long soak) ---
@@ -82,8 +109,11 @@ $phases += Invoke-Phase 'soak' $soakArgs $SoakSeconds
 # --- stability scan ---
 $ev = Get-WinEvent -FilterHashtable @{ LogName = 'System'; StartTime = (Get-Date).AddMinutes(-1) } -ErrorAction SilentlyContinue |
     Where-Object { $_.Id -eq 4101 -or $_.ProviderName -match 'nvlddmkm|WHEA|BugCheck' }
-$throttle = & nvidia-smi -q -d PERFORMANCE 2>$null | Select-String -Pattern 'SW Power Cap|HW Thermal Slowdown|HW Slowdown|HW Power Braking|SW Thermal' |
-    ForEach-Object { $_.Line.Trim() }
+$throttle = @()
+if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
+    $throttle = @(& nvidia-smi -q -d PERFORMANCE 2>$null | Select-String -Pattern 'SW Power Cap|HW Thermal Slowdown|HW Slowdown|HW Power Braking|SW Thermal' |
+        ForEach-Object { $_.Line.Trim() })
+}
 $stability = [ordered]@{
     tdr_or_whea = if ($ev) { @($ev | ForEach-Object { "$($_.TimeCreated) id=$($_.Id) $($_.ProviderName)" }) } else { @() }
     throttle = @($throttle)
@@ -104,12 +134,14 @@ $md += "# GPU bench - $hostname"
 $md += ""
 $md += "Generated: $(Get-Date -Format o)"
 $i = $report.info
-if ($i) { $md += "**GPU:** $($i.device) | driver/torch cuda $($i.cuda) | SMs $($i.sm_count) | VRAM $($i.vram_gib) GiB" }
+if ($i) { $md += "**GPU:** $($i.device) | backend $($i.backend) | $($i.cuda) | SMs $($i.sm_count) | VRAM $($i.vram_gib) GiB" }
 $md += ""
 $md += "| phase | metric | telemetry (avg/max) |"
 $md += "|---|---|---|"
 foreach ($p in $phases) {
-    if (-not $p.result) { continue }
+    if (-not $p.result) { $md += "| $($p.phase) | (no result) | |"; continue }
+    if ($p.result.error) { $md += "| $($p.phase) | error: $($p.result.error) | |"; continue }
+    if ($p.result.skipped) { $md += "| $($p.phase) | skipped | |"; continue }
     $t = $p.telemetry
     $tm = if ($t) { "util $($t.util.avg)/$($t.util.max)% | $($t.temp.avg)/$($t.temp.max)C | $($t.power.avg)/$($t.power.max)W | fan $($t.fan.avg)/$($t.fan.max)%" } else { "" }
     $r = $p.result

@@ -75,6 +75,9 @@ powershell -ExecutionPolicy Bypass -File .\bench\Run-WorkstationBench.ps1
 .\bench-gui.cmd        # graphical
 .\bench-tui.cmd        # console
 ```
+No Python? Download a prebuilt GUI/TUI bundle from
+[Releases](https://github.com/MaineCyberTech/bench-test/releases?q=app-) — see
+[*Packaged app*](#packaged-app--download-no-python-install) below.
 
 **Linux workstation / live USB**
 ```bash
@@ -119,25 +122,50 @@ Other flags: `gui.py --tab N --self-test`, `tui.py --demo --exit-after S`, and
 `--instance NAME` on both (a label used when several dashboards share a host,e.g.
 `tty1`); `agent.py --once` runs a single battery and exits.
 
-## Packaged app (no Python install)
+## Packaged app — download (no Python install)
 
-Prebuilt bundles of the dashboards + agent are attached to each **App bundles**
-release, so the GUI/TUI can run on another machine without installing Python or
-the toolkit:
+Prebuilt **GUI + TUI + agent** bundles are attached to each **App bundles**
+release. Download one and run — no Python and no toolkit install:
+
+| Platform | Bundle |
+|---|---|
+| **Windows** | `bench-app-windows.zip` |
+| **Linux** | `bench-app-linux.zip` |
+
+Download from **Releases → newest “App bundles” build**:
+<https://github.com/MaineCyberTech/bench-test/releases?q=app->
+· or from the command line: `gh release download app-<n> -p 'bench-app-*.zip'`.
+
+Each zip contains `bench-gui/` (GUI), `bench-tui/` (TUI) and `bench-agent/`.
 
 ```bash
-gh release download app-<n> -p 'bench-app-*.zip'   # or grab it from Releases
-unzip bench-app-windows.zip                        # -> bench-gui/ bench-tui/ bench-agent/
-./bench-gui/bench-gui                              # or bench-tui / bench-agent
+unzip bench-app-windows.zip        # -> bench-gui/  bench-tui/  bench-agent/
+./bench-gui/bench-gui              # GUI   (Windows: dist\bench-gui\bench-gui.exe)
+./bench-tui/bench-tui              # TUI   (console dashboard; needs a real terminal)
+./bench-agent/bench-agent --server http://lab:8722 --token …   # fleet agent
 ```
 
-Each bundle carries its own interpreter (PyInstaller) and the dashboards/agent
-are stdlib-only, so **viewing/controlling runs and connecting to a control plane
-need nothing else.** Running a *local* battery additionally needs a toolkit
-checkout (for numpy/PyTorch) — point the app at it with `$BENCH_REPO`, or unzip
-the bundle next to a `bench/` directory. Build the
-bundles yourself with `python packaging/build_app.py`; CI builds them for
-Windows + Linux (`.github/workflows/build-app.yml`).
+Each bundle carries its own interpreter (PyInstaller) **and the `bench/` toolkit**,
+so the dashboards/agent run with nothing installed, and a **local battery** works
+too: on first run the app provisions a runner interpreter + deps — numpy/psutil
+always, plus DirectML (`onnxruntime-directml`) for AMD/Intel or CUDA PyTorch for
+NVIDIA — into a per-user cache (`%LOCALAPPDATA%\bench-test` on Windows,
+`~/.local/share/bench-test` elsewhere) via `bench/bootstrap.py`. Clear it any time
+with **Clean up environment** in the GUI (or `python bench/bootstrap.py clean`); a
+repo `.venv` or `$BENCH_REPO` still takes precedence when present. See
+[`bench/bootstrap.py`](bench/bootstrap.py) for `status` / `ensure` / `clean`.
+
+CI also **bakes the control-plane config** into each bundle — the
+`BENCH_AGENT_CONF` secret, the same one the live USB writes to
+`/etc/bench-agent.conf` — so a downloaded app **auto-registers** with no flags
+(the GUI/TUI/agent read `<toolkit>/bench-agent.conf`, ahead of `~/.config`). The
+releases are public, so that token is world-readable: use a limited, rotatable
+one.
+
+Build the bundles yourself with `python packaging/build_app.py` (on Windows also
+`pip install windows-curses` so the TUI can be bundled); set `BENCH_BAKE_AGENT_CONF`
+(or `BENCH_BAKE_AGENT_CONF_FILE`) to bake your own. CI builds Windows + Linux
+(`.github/workflows/build-app.yml`) and attaches them to each `app-<n>` release.
 
 ## Control plane (`benchd`)
 

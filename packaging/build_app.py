@@ -8,24 +8,83 @@ Produces `dist/bench-gui`, `dist/bench-tui` and `dist/bench-agent` (one-folder
 bundles) that run **without a Python install** — the dashboards/agent are
 stdlib-only (tkinter / curses), so the bundle carries its own interpreter.
 
-Running a *local* battery still needs the toolkit (and numpy/PyTorch for the
-compute phases): point the app at a checkout with `$BENCH_REPO`,
-or put the bundle next to a `bench/` directory. Connecting to a control plane and
-viewing/controlling runs needs nothing else.
+Each bundle also carries the whole `bench/` toolkit next to the exe, so a *local*
+battery runs with no checkout: on first run `bench/bootstrap.py` provisions a
+runner interpreter + the compute deps (numpy/psutil, plus DirectML for AMD/Intel
+or CUDA PyTorch for NVIDIA) into a per-user cache. A repo `.venv` or `$BENCH_REPO`
+still wins when present. A baked `.bench-version` gives the app a real toolkit
+identity (otherwise a non-git bundle reports an empty version).
 
 CI builds these for Windows and Linux and attaches them to a release
 (`.github/workflows/build-app.yml`).
 """
 import argparse
+import datetime
+import json
 import os
 import subprocess
 import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BENCH = os.path.join(REPO, "bench")
-APPS = [("bench-gui", "gui.py", True), ("bench-agent", "agent.py", False)]
-if sys.platform != "win32":            # the TUI needs curses (not in Windows CPython)
-    APPS.insert(1, ("bench-tui", "tui.py", False))
+# GUI + TUI dashboards and the agent. On Windows the TUI needs the windows-curses
+# wheel installed at build time (CPython on Windows ships no _curses).
+APPS = [("bench-gui", "gui.py", True), ("bench-tui", "tui.py", False),
+        ("bench-agent", "agent.py", False)]
+
+
+def _curses_ok():
+    try:
+        import curses  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _git(*args):
+    try:
+        r = subprocess.run(["git", "-C", REPO] + list(args),
+                           capture_output=True, text=True, timeout=10)
+        return r.stdout.strip() if r.returncode == 0 else None
+    except Exception:
+        return None
+
+
+def write_agent_conf(bundle_dir):
+    """Bake the control-plane config into the bundle (like the live USB).
+
+    Reads BENCH_BAKE_AGENT_CONF (content) or BENCH_BAKE_AGENT_CONF_FILE (path);
+    CI passes the repo's BENCH_AGENT_CONF secret as the former, so a downloaded
+    app auto-registers. NOTE: the app releases are public, so this makes the
+    server URL + token world-readable - use a limited/rotatable token."""
+    content = os.environ.get("BENCH_BAKE_AGENT_CONF")
+    src = os.environ.get("BENCH_BAKE_AGENT_CONF_FILE")
+    if not content and src and os.path.isfile(src):
+        with open(src, encoding="utf-8") as fh:
+            content = fh.read()
+    if not content or not content.strip():
+        return False
+    if not content.endswith("\n"):
+        content += "\n"
+    with open(os.path.join(bundle_dir, "bench-agent.conf"), "w", encoding="utf-8") as fh:
+        fh.write(content)
+    return True
+
+
+def write_version(bundle_dir):
+    """Write `.bench-version` so a non-git bundle reports a real identity."""
+    commit = _git("rev-parse", "--short", "HEAD")
+    ref = _git("rev-parse", "--abbrev-ref", "HEAD")
+    if commit and _git("status", "--porcelain"):
+        commit += "-dirty"
+    v = {"mode": "app", "commit": commit, "ref": ref, "sha256": None,
+         "built_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds")}
+    try:
+        with open(os.path.join(bundle_dir, ".bench-version"), "w", encoding="utf-8") as fh:
+            json.dump(v, fh, indent=2)
+    except OSError as e:
+        print("warning: could not write .bench-version: %s" % e)
+    return v
 
 
 def main():
@@ -37,10 +96,19 @@ def main():
     except ImportError:
         print("PyInstaller not installed: pip install pyinstaller")
         return 2
+    if not _curses_ok():
+        print("curses unavailable: install the TUI dependency first "
+              "(pip install windows-curses on Windows, or the system curses)")
+        return 2
     os.makedirs(a.out, exist_ok=True)
     for name, script, noconsole in APPS:
         cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
-               "--name", name, "--paths", BENCH, "--hidden-import", "benchreport",
+               "--name", name, "--paths", BENCH,
+               "--hidden-import", "benchreport", "--hidden-import", "bootstrap",
+               # ship the whole toolkit next to the exe so a local battery needs no
+               # checkout; bootstrap.py provisions the interpreter + deps on first run.
+               "--add-data", "%s%sbench" % (BENCH, os.pathsep),
+               "--contents-directory", ".",
                "--distpath", a.out, "--workpath", os.path.join(a.out, "_work"),
                "--specpath", os.path.join(a.out, "_spec"),
                os.path.join(BENCH, script)]
@@ -50,6 +118,13 @@ def main():
         if subprocess.run(cmd).returncode != 0:
             print("build failed: %s" % name)
             return 1
+        bdir = os.path.join(a.out, name)
+        v = write_version(bdir)
+        baked = write_agent_conf(bdir)
+        print("   %s version: %s (%s)%s" % (
+            name, v["commit"] or "?", v["ref"] or "?",
+            ", control-plane config baked" if baked else
+            " (no control-plane config baked - set BENCH_AGENT_CONF)"))
     print("built %s -> %s" % (", ".join(n for n, _s, _c in APPS), a.out))
     return 0
 
