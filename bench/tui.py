@@ -44,6 +44,19 @@ FAN_CURVE = os.path.join(BENCH, "fan_curve.py")
 FAN_CONF = "/etc/bench-fan-curve.conf"
 RESULT_COLLECTOR = "/usr/local/bin/bench-collect"
 GUI_LAUNCHER = "/usr/local/bin/bench-gui"
+
+
+def _upload_consented():
+    """Explicit opt-in for publishing results to GitHub (AN-P2-002).
+
+    The TUI's upload key sets BENCH_UPLOAD_CONSENT for the session; the automatic
+    post-collect upload only runs when it is already set, so results are never
+    published without an operator action.
+    """
+    return str(os.environ.get("BENCH_UPLOAD_CONSENT", "")).strip().lower() in \
+        ("1", "true", "yes", "on")
+
+
 sys.path.insert(0, BENCH)
 try:
     from benchreport import (Reporter, PhaseTracker, ReporterPump, build_summary, build_summary_dir,
@@ -582,7 +595,15 @@ class BenchTUI:
                 pass
         return False
 
-    def upload(self):
+    def upload(self, consent=False):
+        # publishing to GitHub needs explicit consent: pressing 'u' grants it for
+        # the session; the automatic post-collect upload only proceeds if it was
+        # already granted (AN-P2-002)
+        if consent:
+            os.environ["BENCH_UPLOAD_CONSENT"] = "1"
+        if not _upload_consented():
+            self._set("upload needs consent - press u to publish", 3)
+            return
         if not os.path.exists("/usr/local/bin/bench-upload"):
             self._set("upload not available on this system", 3)
             return
@@ -1359,7 +1380,7 @@ class BenchTUI:
         elif ch == ord("c"):
             self.collect()
         elif ch == ord("u"):
-            self.upload()
+            self.upload(consent=True)
         elif ch == ord("f"):
             self.toggle_curve()
         elif ch == ord("r"):

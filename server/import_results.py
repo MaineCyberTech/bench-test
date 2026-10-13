@@ -44,6 +44,19 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
                                 "bench"))
 from benchreport import (CSV_ALIASES as _ALIASES, _merge_into,  # noqa: E402
                          _hardware_verdicts)
+import redact  # opt-in PII redaction (BENCH_REDACT); pass-through when disabled
+
+
+def _redact_all(host, summary, system, arts):
+    """Apply the opt-in redaction mode to an imported unit (no-op when off)."""
+    if not redact.is_enabled():
+        return host, summary, system, arts
+    out_arts = []
+    for n, k, text in arts:
+        raw = redact.redact_bytes(n, str(text).encode("utf-8"))
+        out_arts.append((n, k, raw.decode("utf-8", "replace")))
+    return (redact.pseudonym("host", host), redact.redact_obj(summary),
+            redact.redact_obj(system), out_arts)
 
 SAMPLE_FIELDS = ["elapsed", "temp_c", "fan_pct", "power_w", "gpu_util",
                  "gpu_fan_rpm", "cpu_util", "ram_used", "sm_mhz"]
@@ -475,6 +488,7 @@ def main():
     for i, (kind, man, host, started, m) in enumerate(wins):
         window_end = min(win_starts[i + 1] - 1, started + 8 * 3600)
         phases, tele, arts, summary, ended, system = build_windows(root, man, host, started, m, window_end)
+        host, summary, system, arts = _redact_all(host, summary, system, arts)
         label = "Windows battery"
         print("win  %-32s phases=%-3d tele=%-5d dur=%-6s %s" %
               (os.path.basename(man), len(phases), len(tele), _dur(ended - started),
@@ -502,6 +516,7 @@ def main():
 
     for d, rep, j in linux_units(root):
         host, started, phases, tele, arts, summary, ended, system = build_linux(d, rep, j)
+        host, summary, system, arts = _redact_all(host, summary, system, arts)
         if not host:
             print("linux %-32s skipped (no host in report)" % os.path.basename(d))
             continue

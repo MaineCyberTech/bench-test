@@ -95,3 +95,112 @@ No notification/analytics service (for example ntfy) is used by the repository.
 
 These, and the rest of the open P0/P1/P2 items, are listed in
 [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md).
+
+# Privacy controls (opt-in)
+
+bench-test collects real hardware inventory and telemetry, and the workflow
+encourages sharing the results. This page documents the **opt-in** controls that
+limit what leaves a machine, and what each one covers. Defaults are unchanged:
+with no flags set, a run behaves exactly as before.
+
+## 1. Redaction mode (`BENCH_REDACT=1` / `--redact`)
+
+Off by default. When enabled, stable identifiers and personal data are replaced
+with **stable pseudonyms** (`kind-<sha256[:8]>`, e.g. `host-1a2b3c4d`) or
+blanked, before they are sent to the control plane, uploaded, or written to a
+run's artifacts. The pseudonym is deterministic, so runs from the same machine
+still correlate without revealing which machine it is; a second redaction pass
+leaves an existing token unchanged.
+
+Enable it one of these ways:
+
+| Surface | How |
+|---|---|
+| Environment (all collectors) | `BENCH_REDACT=1` |
+| Windows runner | `python bench/run_win.py --redact` |
+| Linux inventory phase | `python bench/linux_info.py info --redact` |
+| Headless agent | `python bench/agent.py --redact ...` |
+
+### What is redacted
+
+| Category | Fields (by key, case-insensitive) | Result |
+|---|---|---|
+| Hostname | `hostname`, `host`, `host_name`, `computername`, `computer_name`, `nodename` | `host-<sha256[:8]>` |
+| User / home | `username`, `user`, `user_name`, `login`, `owner`, `userprofile`, `home`, `homepath`, `homedir` | `user-<sha256[:8]>` |
+| Serials | `serial`, `serialnumber`, `serial_number` | `serial-<sha256[:8]>` |
+| GPU / product UUID | `uuid`, `machine_uuid`, `product_uuid` | `uuid-<sha256[:8]>` |
+| Machine id | `machine_id`, `machineid`, `machineguid` | `machine-<sha256[:8]>` |
+| Network | `mac`, `macaddress`, `mac_address`, `hwaddr` | `mac-<sha256[:8]>` |
+| Network | `ip`, `ipaddress`, `ip_address`, `ipv4`, `ipv6` | `ip-<sha256[:8]>` |
+
+Free text (log lines, health strings, report Markdown) is also scrubbed of:
+
+* MAC addresses (`aa:bb:cc:dd:ee:ff`),
+* valid IPv4 addresses (four 0–255 octets),
+* e-mail addresses,
+* home directories — `/home/<user>`, `/Users/<user>`, `C:\Users\<user>`,
+* the local machine's own hostname.
+
+### What is *not* redacted
+
+Hardware **models** are kept, because they are the point of the benchmark and are
+not personal data: CPU/GPU names, RAM size, disk models, BIOS/board
+manufacturer/model, and all measured metrics (TFLOPS, GB/s, temps, …). Binary
+artifacts (screenshots) pass through unchanged.
+
+### Where it is applied
+
+* `benchreport.system_info()` / `read_inventory()` — the live inventory sent at
+  register/start/finish, and the merged summary (`build_summary`,
+  `build_summary_dir`).
+* `Reporter.register`/`start_run`/`finish` — runner name, machine id, run host,
+  summary and system blocks.
+* `upload_run_files()` / `upload_telemetry_csv()` — text artifacts (JSON/JSONL
+  are parsed and walked; other text is scrubbed) before they are attached.
+* `bench/linux_info.py` — the Linux inventory phase result.
+* `bench/run_win.py --redact` — redacts the run's files in place after the
+  battery, scoped to the files this run wrote.
+* `server/import_results.py` — the same redaction when backfilling.
+
+> Windows inventory is collected by PowerShell (`Get-SystemInfo.ps1`). It is
+> redacted on the Python boundary — the in-memory summary/inventory sent to the
+> control plane, the uploaded artifacts, and (with `run_win.py --redact`) the
+> on-disk run files — rather than inside the `.ps1`, so there is one redaction
+> implementation for both platforms.
+
+## 2. Upload consent (`BENCH_UPLOAD_CONSENT=1`)
+
+Publishing a results directory to a GitHub repository requires an explicit
+opt-in. Without it, `bench/upload.py` skips the upload and logs:
+
+```
+[upload] skipped: no consent. Results were NOT published to GitHub.
+```
+
+* `BENCH_UPLOAD_CONSENT=1` grants consent for that process/session.
+* In the TUI, pressing **`u`** is the operator's confirmation and sets
+  `BENCH_UPLOAD_CONSENT` for the session. The automatic post-collect upload
+  (`AUTO_UPLOAD=1`) only runs once consent has been granted this way — it never
+  publishes on its own.
+* The GUI does not publish to GitHub, so no confirmation is needed there.
+
+## 3. Control plane: client IP, retention and anonymisation
+
+`server/benchd.py` stores a runner's source address (`runners.addr`), hostname
+(`name`) and machine id (`machine_id`).
+
+* **Stop storing the client IP** — `--store-client-ip=off` (or
+  `BENCHD_STORE_CLIENT_IP=0`). The `addr` column is then written as `NULL`.
+  Default is `on` (unchanged).
+* **Anonymise stale runners** — the retention sweep (hourly, same
+  `BENCHD_RETENTION_DAYS` window as per-sample retention, default 30 days)
+  additionally runs `anonymise_old_runners()`: for runners quiet longer than the
+  window it blanks `addr` and pseudonymises `name` / `machine_id`. Run history
+  keeps its own host label (what History/Trends group on), so fleet trends are
+  unaffected; a returning machine simply re-registers. `BENCHD_RETENTION_DAYS=0`
+  disables both the per-sample retention and the anonymisation.
+
+| Setting | Where | Default | Effect |
+|---|---|---|---|
+| `--store-client-ip=off` / `BENCHD_STORE_CLIENT_IP=0` | `benchd.py` | on | do not persist the client IP |
+| `BENCHD_RETENTION_DAYS` | `benchd.py` | 30 | window for per-sample retention and runner anonymisation (`0` = keep everything) |

@@ -463,11 +463,16 @@ def main():
     ap.add_argument("--out", default=os.path.join(REPO, "results"))
     ap.add_argument("--poll", type=float, default=2.0)
     ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--redact", action="store_true",
+                    help="replace hardware identifiers and PII with stable pseudonyms "
+                         "in everything sent or uploaded (same as BENCH_REDACT=1)")
     ap.add_argument("--once", action="store_true",
                     help="run the battery once and exit (args after -- go to the runner)")
     ap.add_argument("extra", nargs=argparse.REMAINDER,
                     help="runner flags after -- (with --once)")
     a = ap.parse_args()
+    if a.redact:
+        os.environ["BENCH_REDACT"] = "1"
     if not a.server or not a.token:
         print("agent: --server and --token are required (or BENCHD_SERVER/BENCHD_TOKEN)")
         return 2

@@ -34,6 +34,8 @@ import urllib.error
 import urllib.request
 import uuid
 
+import redact  # opt-in PII redaction (BENCH_REDACT); pass-through when disabled
+
 # ---------------------------------------------------------------- registry --
 # ONE source of truth for the benchmark groups/phases (EVOL-P2-001). Every
 # Python consumer derives its list from here instead of repeating a literal:
@@ -399,7 +401,7 @@ def system_info():
                     pass
         except Exception:
             pass
-    return info
+    return redact.redact_obj(info) if redact.is_enabled() else info
 
 
 def _f(v):
@@ -680,11 +682,13 @@ class Reporter:
 
     # -- lifecycle ---------------------------------------------------------
     def register(self, capabilities=None, status="idle"):
+        name = redact.pseudonym("host", self.name) if redact.is_enabled() else self.name
+        mid = redact.pseudonym("machine", self.machine_id) if redact.is_enabled() else self.machine_id
         s, r = self._req("POST", "/api/v1/register", {
             "runner_id": self.runner_id, "api_key": self.api_key,
-            "name": self.name, "os": self.os_name, "kind": self.kind, "version": self.version,
+            "name": name, "os": self.os_name, "kind": self.kind, "version": self.version,
             "git": self.git, "capabilities": capabilities or {}, "status": status,
-            "current_run": self.run_id, "machine_id": self.machine_id,
+            "current_run": self.run_id, "machine_id": mid,
             "ephemeral": self.ephemeral, "instance": self.instance})
         if s == 200 and r.get("runner_id"):
             self.runner_id = r["runner_id"]
@@ -714,8 +718,12 @@ class Reporter:
                   driver=None, torch=None, system=None, preset=None):
         if not self.runner_id:
             return None
+        host = host or self.name
+        if redact.is_enabled():
+            host = redact.pseudonym("host", host)
+            system = redact.redact_obj(system or {})
         s, r = self._req("POST", "/api/v1/runs", {
-            "runner_id": self.runner_id, "host": host or self.name, "label": label,
+            "runner_id": self.runner_id, "host": host, "label": label,
             "profile": profile or {}, "started": time.time(), "platform": platform,
             "gpu": gpu, "driver": driver, "torch": torch, "system": system or {},
             "preset": preset})
@@ -793,6 +801,9 @@ class Reporter:
         if not self.run_id:
             return False
         run_id = self.run_id
+        if redact.is_enabled():
+            summary = redact.redact_obj(summary or {})
+            system = redact.redact_obj(system or {})
         body = {"status": status, "exit_code": exit_code, "summary": summary or {},
                 "platform": platform, "gpu": gpu, "driver": driver, "torch": torch,
                 "ended": ended, "system": system or {}}
@@ -1090,7 +1101,7 @@ def read_inventory(results_dir):
         gpus = inv.get("GPUs")
         if isinstance(gpus, list) and gpus and isinstance(gpus[0], dict):
             out["gpu"] = gpus[0].get("name") or gpus[0].get("Name")
-    return out
+    return redact.redact_obj(out) if redact.is_enabled() else out
 
 
 def run_exec(reporter, cmd, timeout=120, cwd=None):
@@ -2685,7 +2696,7 @@ def build_summary(report_path):
                        key=os.path.getmtime)
         if shots:
             out["gfx"] = {"screenshot": os.path.basename(shots[-1])}
-    return out
+    return redact.redact_obj(out) if redact.is_enabled() else out
 
 
 def _throttle_active(thr):
@@ -3026,7 +3037,7 @@ def build_summary_dir(results_dir, window_h=8, since=None):
             shots = [s for s in shots if now - os.path.getmtime(s) <= window_h * 3600]
         if shots:
             out["gfx"] = {"screenshot": os.path.basename(shots[-1])}
-    return out
+    return redact.redact_obj(out) if redact.is_enabled() else out
 
 
 def prune_results(results_dir, keep=100, log=None):
@@ -3128,9 +3139,11 @@ def upload_run_files(rep, results_dir, log=None, limit=60, max_bytes=512 * 1024)
     for p in keep:
         try:
             with open(p, "rb") as fh:
-                rep.artifact(os.path.basename(p), fh.read(), kind="file")
+                raw = fh.read()
         except OSError:
             continue
+        rep.artifact(os.path.basename(p), redact.redact_bytes(os.path.basename(p), raw),
+                     kind="file")
         n += 1
     log("[report] attached %d run files" % n)
     return n
@@ -3240,7 +3253,8 @@ def upload_telemetry_csv(rep, results_dir, log=None, cap=None, sent=None,
         parts.append(cur)
     for i, part in enumerate(parts):
         name = base if len(parts) == 1 else "%s.part%04d" % (base, i + 1)
-        if rep.artifact(name, "\n".join(part) + "\n", kind="csv") != 200:
+        body = redact.redact_text("\n".join(part) + "\n")
+        if rep.artifact(name, body, kind="csv") != 200:
             log("[report] telemetry CSV artifact %s REJECTED by the server" % name)
     if failed:
         log("[report] telemetry: %d samples stored, %d REJECTED by the server + %s"

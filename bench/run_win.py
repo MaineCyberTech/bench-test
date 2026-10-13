@@ -19,6 +19,8 @@ import sys
 import threading
 import time
 
+import redact  # opt-in PII redaction (BENCH_REDACT); pass-through when disabled
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BENCH = os.path.join(REPO, "bench")
 BATTERY = os.path.join(BENCH, "Run-WorkstationBench.ps1")
@@ -64,6 +66,9 @@ def parse_args():
                     help="nvidia-smi cadence: ~69ms/call, and those fields are thermal-mass, "
                          "util/temp/power traces smooth without polling it flat out")
     ap.add_argument("-o", "--out-dir", default=os.path.join(REPO, "results"))
+    ap.add_argument("--redact", action="store_true",
+                    help="replace hardware identifiers and PII in the run's files "
+                         "(same as BENCH_REDACT=1)")
     return ap.parse_args()
 
 
@@ -596,7 +601,10 @@ def sampler(csv_path, stop_evt, interval=0.25, gpu_interval=0.5):
 
 def main():
     a = parse_args()
+    if a.redact:
+        os.environ["BENCH_REDACT"] = "1"
     os.makedirs(a.out_dir, exist_ok=True)
+    started = time.time()
     stamp = time.strftime("%Y%m%d-%H%M%S")
     host = os.environ.get("COMPUTERNAME", "win")
     csv_path = os.path.join(a.out_dir, "%s-win-%s.telemetry.csv" % (host, stamp))
@@ -692,6 +700,8 @@ def main():
         rc = p.wait()
     finally:
         stop_evt.set()
+    if redact.is_enabled():
+        redact.redact_dir(a.out_dir, since=started, log=lambda m: print(m, flush=True))
     return rc
 
 
