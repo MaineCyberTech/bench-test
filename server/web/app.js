@@ -363,7 +363,7 @@ function runnerInfo(r) {
       + ((s.gfx.engine || s.gfx.phase) ? ` (${s.gfx.engine || s.gfx.phase})` : ""));
     if (s.ram_soak_gbps != null) bits.push(fmt(s.ram_soak_gbps, 1) + " GB/s ram");
     rows.push(["last run", `${esc(last.label || "run")} · ${esc(last.status || "")} · `
-      + `${ago(last.ended || last.started)} · ${runDur(last)}${bits.length ? `<div class="muted mono">${bits.join(" · ")}</div>` : ""}`]);
+      + `${ago(last.ended || last.started)} · ${runDur(last)}${bits.length ? `<div class="muted mono">${esc(bits.join(" · "))}</div>` : ""}`]);
   } else {
     rows.push(["last run", "none yet"]);
   }

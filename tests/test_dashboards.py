@@ -137,6 +137,18 @@ def run():
     _gui(c)
     _tui(c)
     _web(c)
+    # ---- runner-supplied summary fields must be escaped before innerHTML ----
+    # The panel used to interpolate gpu_soak_size / cpu_soak_size / gfx.engine straight
+    # into HTML; a runner key could inject a script into the operator's browser.
+    import re as _re
+    with open(os.path.join(REPO, "server", "web", "app.js"), encoding="utf-8") as fh:
+        js = fh.read()
+    c.check("the runner panel escapes its summary bits",
+            "esc(bits.join(" in js, "")
+    c.check("and the chart height is not read back from the attribute",
+            'cv.dataset.baseH || (cv.dataset.baseH = cv.getAttribute("height")' in js
+            and 'const h = +cv.getAttribute("height") || 180;' not in js, "")
+
     return c.fails
 
 
