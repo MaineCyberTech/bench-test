@@ -33,11 +33,13 @@ import test_observability  # noqa: E402
 import test_schema  # noqa: E402
 import test_server_p3  # noqa: E402
 import test_server_left  # noqa: E402
+import test_alerts  # noqa: E402
 
 MODULES = [test_control_plane, test_reporting, test_import, test_update,
            test_presets, test_dashboards, test_soak, test_version, test_bootstrap,
            test_packaging, test_sbom, test_a11y, test_lifecycle, test_hardening,
-           test_observability, test_schema, test_server_p3, test_server_left]
+           test_observability, test_schema, test_server_p3, test_server_left,
+           test_alerts]
 
 
 def main():
