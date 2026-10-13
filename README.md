@@ -122,6 +122,11 @@ Other flags: `gui.py --tab N --self-test`, `tui.py --demo --exit-after S`, and
 `--instance NAME` on both (a label used when several dashboards share a host,e.g.
 `tty1`); `agent.py --once` runs a single battery and exits.
 
+On Windows, launch the GUI with **`pythonw.exe`** (`.venv\Scripts\pythonw.exe
+bench\gui.py`): started with `python.exe` it keeps a console window open for as long
+as the dashboard runs. The run's own children are already spawned with
+`CREATE_NO_WINDOW`, and the packaged bundles are built without a console.
+
 ## Packaged app — download (no Python install)
 
 Prebuilt **GUI + TUI + agent** bundles are attached to each **App bundles**
