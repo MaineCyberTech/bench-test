@@ -230,4 +230,8 @@ table td.num{font-family:var(--mono);text-align:right}
 .chartlegend .cl i{width:10px;height:3px;border-radius:2px;display:inline-block;flex:none}
 .chartlegend .cl b{color:var(--text);font-family:var(--mono);font-weight:600}
 .chartlegend .cl .muted{font-family:var(--mono);font-size:10px}
+
+/* grouped subheadings inside a detail section */
+.subhead{margin:12px 0 4px;font-size:11px;color:var(--text);text-transform:uppercase;
+  letter-spacing:.9px;opacity:.85}
 @media (max-width:980px){.fgrid,.fgrid.two{grid-template-columns:1fr}}

@@ -56,6 +56,16 @@ const CHART_PRESETS = {
 };
 const GAUGES = [["temp_c", "temp °C"], ["power_w", "power W"], ["gpu_util", "GPU %"],
                 ["fan_pct", "fan %"], ["mem_util", "VRAM %"], ["cpu_temp_c", "CPU °C"]];
+// telemetry tables are easier to scan with the load/thermal metrics first
+const STAT_ORDER = ["temp_c", "temp_limit_c", "throttle", "throttle_bits", "power_w",
+  "power_limit_w", "gpu_util", "sm_mhz", "mem_mhz", "gr_mhz", "vram_used_mib", "mem_util",
+  "fan_pct", "gpu_fan_rpm", "temp_mem_c", "cpu_util", "cpu_temp_c", "cpu_max_core_c",
+  "cpu_pkg_w", "cpu_mhz", "ram_used", "swap_used_gib", "load1", "nvme_c", "disk_read_mbs",
+  "disk_write_mbs", "net_rx_mbs", "net_tx_mbs", "pcie_gen", "pcie_width"];
+function orderedStatKeys(keys) {
+  const rank = (k) => { const i = STAT_ORDER.indexOf(k); return i < 0 ? 999 : i; };
+  return keys.slice().sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+}
 // bars in the live focus view (mirrors the TUI telemetry panel, wider); the 4th
 // entry is the full-scale value used for the bar width
 const FOCUS_BARS = [
@@ -595,7 +605,7 @@ function paintFocusStats(el, id) {
   const tb = el.querySelector("[data-f=stats]");
   if (!tb) return;
   const buf = TEL[id] || [];
-  const keys = Object.keys(SERIES).filter((k) => buf.some((b) => numOrNull(b[k]) != null));
+  const keys = orderedStatKeys(Object.keys(SERIES).filter((k) => buf.some((b) => numOrNull(b[k]) != null)));
   if (!keys.length) { tb.innerHTML = `<tr><td class="muted">no telemetry yet</td></tr>`; return; }
   const body = keys.map((k) => {
     const vals = buf.map((b) => numOrNull(b[k])).filter((x) => x != null);
@@ -1273,7 +1283,7 @@ async function showDetail(runId) {
     ["board", sy.board], ["bios", sy.bios && (sy.bios.version + " " + (sy.bios.date || ""))],
     ["torch", r.torch], ["git", r.git],
   ].filter((x) => x[1] != null && x[1] !== "");
-  const statKeys = Object.keys(st).filter((k) => k !== "elapsed" && k !== "ts");
+  const statKeys = orderedStatKeys(Object.keys(st).filter((k) => k !== "elapsed" && k !== "ts"));
   const statRows = statKeys.map((k) => {
     const meta = SERIES[k] || [k, "#8592a6"];
     const a = st[k];
@@ -1310,7 +1320,13 @@ async function showDetail(runId) {
       <select class="csel" id="dChartSel">${Object.keys(CHART_PRESETS).map((k) => `<option>${esc(k)}</option>`).join("")}</select></div>
     <div class="chartlegend" id="dChartLegend"></div>
     <h4 class="sechead">Results</h4>
-    <table class="kvtable">${resultRows(s).map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(String(v))}</td></tr>`).join("") || `<tr><td class="muted">no structured results</td></tr>`}</table>
+    ${(() => {
+      const secs = resultSections(s);
+      if (!secs.length) return `<div class="muted">no structured results</div>`;
+      return secs.map(([group, rows]) => `<h5 class="subhead">${esc(humanKey(group))}</h5>
+        <table class="kvtable">${rows.map(([k, val]) =>
+          `<tr><th>${esc(k)}</th><td>${esc(String(val))}</td></tr>`).join("")}</table>`).join("");
+    })()}
     <h4 class="sechead">System</h4>
     <table class="kvtable">${sysrows.map(([k, val]) => `<tr><th>${esc(k)}</th><td>${esc(String(val))}</td></tr>`).join("")}</table>
     <h4 class="sechead">Profile</h4>
@@ -1361,21 +1377,40 @@ async function showDetail(runId) {
   $("#dChartSel").onchange = (e) => { dpreset = e.target.value; drawDetail(); };
 }
 
-/* flatten a run summary into label/value rows so nothing measured stays hidden */
-function resultRows(summary) {
+/* Turn a run summary into readable, grouped rows. The raw summary is a flat dump
+ * of dotted keys (gpu_matmul_tflops.fp16, net.download_mbps ...) which is hard to
+ * scan: label each value, group by the first path segment, and format numbers. */
+function humanKey(k) {
+  const known = (STATE.metrics || []).find((m) => m[0] === k);
+  if (known) return known[1];
+  return String(k).split(".").map((part) => part.replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase()).replace(/\bTflops\b/, "TFLOPS")
+    .replace(/\bGflops\b/, "GFLOPS").replace(/\bGbps\b/, "GB/s")
+    .replace(/\bMbps\b/, "MB/s").replace(/\bC\b/, "°C")).join(" · ");
+}
+
+function humanVal(v) {
+  if (typeof v === "boolean") return v ? "yes" : "no";
+  if (typeof v === "number") return shortNum(v);
+  return String(v);
+}
+
+function resultSections(summary) {
   const skip = new Set(["host", "timestamp", "telemetry", "samples", "gpu_soak_telemetry"]);
-  const rows = [];
-  const walk = (prefix, obj) => {
+  const groups = new Map();
+  const walk = (path, obj) => {
     for (const [k, v] of Object.entries(obj || {})) {
       if (skip.has(k)) continue;
-      const key = prefix ? prefix + "." + k : k;
-      if (v && typeof v === "object" && !Array.isArray(v)) walk(key, v);
-      else if (Array.isArray(v)) rows.push([key, v.join(" / ")]);
-      else if (v !== null && v !== undefined && v !== "") rows.push([key, v]);
+      const key = path ? path + "." + k : k;
+      if (v && typeof v === "object" && !Array.isArray(v)) { walk(key, v); continue; }
+      if (v === null || v === undefined || v === "") continue;
+      const group = key.split(".")[0];
+      if (!groups.has(group)) groups.set(group, []);
+      groups.get(group).push([humanKey(key), Array.isArray(v) ? v.join(" / ") : humanVal(v)]);
     }
   };
   walk("", summary);
-  return rows;
+  return Array.from(groups.entries());
 }
 function dltHtml(cur, prev) {
   if (cur == null || prev == null || isNaN(cur) || isNaN(prev) || +prev === 0) return "";
