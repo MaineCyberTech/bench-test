@@ -1514,12 +1514,18 @@ def restart_self(delay=1.5, log=None, console=False):
     time.sleep(max(0.0, delay))
     log("[update] restarting to run the new toolkit")
     try:
+        # sys.argv[0] is the *script*, not the command (the launcher rewrites it), so
+        # re-passing the whole argv handed the successor a stray positional argument
+        # - argparse rejected it and the window closed with nothing coming back.
+        argv = [sys.executable]
+        if not getattr(sys, "frozen", False):
+            argv.append(os.path.abspath(sys.argv[0]) if sys.argv else "")
+        argv += [a for a in sys.argv[1:] if a]
         if os.name == "nt":
             flags = 0 if console else getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            subprocess.Popen([sys.executable] + list(sys.argv), cwd=os.getcwd(),
-                             close_fds=False, creationflags=flags)
+            subprocess.Popen(argv, cwd=os.getcwd(), close_fds=False, creationflags=flags)
             os._exit(0)
-        os.execv(sys.executable, [sys.executable] + list(sys.argv))
+        os.execv(sys.executable, argv)
     except Exception as e:
         log("[update] restart failed: %s" % e)
 

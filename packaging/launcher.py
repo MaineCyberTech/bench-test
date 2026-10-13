@@ -42,6 +42,19 @@ def _target(argv0):
     return "tui.py"
 
 
+def _app_args(argv):
+    """The app's own arguments.
+
+    An older `restart_self` re-passed the whole argv, which for a launcher bundle
+    meant the *script path* arrived as the first argument; the app then died on an
+    unknown positional (the window closed and nothing came back). Drop it if seen.
+    """
+    args = list(argv[1:])
+    if args and args[0].lower().endswith(".py") and os.path.isfile(args[0]):
+        args = args[1:]
+    return args
+
+
 def main():
     here = _bundle_dir()
     script_name = _target(sys.argv[0] if sys.argv else "")
@@ -60,7 +73,7 @@ def main():
     # the toolkit wins over anything the launcher itself imported, and every import
     # the app makes (benchreport, bootstrap, the phases) resolves from here
     sys.path.insert(0, bench)
-    sys.argv = [script] + list(sys.argv[1:])
+    sys.argv = [script] + _app_args(sys.argv)
     runpy.run_path(script, run_name="__main__")
     return 0
 
