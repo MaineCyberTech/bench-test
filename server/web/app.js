@@ -993,42 +993,48 @@ function attachHover(cv) {
 }
 function niceMax(v) { const p = Math.pow(10, Math.floor(Math.log10(v || 1))); return Math.ceil((v || 1) / p) * p; }
 
-/* x for a telemetry sample: seconds since the run started, from the wall clock.
- * `elapsed` is written by the sampler and is not reliably monotonic across
- * phases, which made the chart draw vertical zigzags; `ts` always is. */
-function teleX(sample, runStart) {
-  if (sample.ts != null && runStart != null) return sample.ts - runStart;
-  if (sample.elapsed != null) return sample.elapsed;
-  return null;
-}
-
-function runStarted(runId) {
-  const r = STATE.active.find((x) => x.id === runId) || STATE.recent.find((x) => x.id === runId);
-  return r && r.started ? r.started : null;
-}
-
-function seriesPoints(buf, key, runStart) {
-  const out = [];
+/* x for a telemetry sample: seconds since the run started.
+ *
+ * `elapsed` is the sampler's own clock and is the right axis; `ts` is stored at
+ * ~1s granularity, so two samples can share a ts and draw a vertical line. Sort
+ * and collapse same-instant duplicates (keeping the newest value), and drop a
+ * stray elapsed that would stretch the axis past the run. */
+function seriesPoints(buf, key, runStart, runEnd) {
+  const span = (runStart && runEnd) ? (runEnd - runStart) + 15 : null;
+  const raw = [];
   for (const b of buf) {
     if (b[key] == null) continue;
-    const x = teleX(b, runStart);
+    let x = b.elapsed;
+    if (x == null && b.ts != null && runStart != null) x = b.ts - runStart;
     if (x == null || x < 0) continue;
-    out.push({ x, y: b[key] });
+    if (span != null && x > span) continue;
+    raw.push({ x, y: b[key] });
   }
-  out.sort((a, b) => a.x - b.x);
+  raw.sort((a, b) => a.x - b.x);
+  const out = [];
+  for (const p of raw) {
+    const prev = out[out.length - 1];
+    if (prev && p.x - prev.x < 0.05) { prev.y = p.y; continue; }
+    out.push(p);
+  }
   return out;
+}
+
+function runWindow(runId) {
+  const r = STATE.active.find((x) => x.id === runId) || STATE.recent.find((x) => x.id === runId);
+  return { start: (r && r.started) || null, end: (r && r.ended) || null };
 }
 
 function drawRunChart(card, runId) {
   const cv = card.querySelector(".runchart");
   if (!cv) return;
   const buf = (TEL[runId] || []).slice(-600);
-  const start = runStarted(runId);
+  const win = runWindow(runId);
   const preset = CHART[runId] || Object.keys(CHART_PRESETS)[0];
   const keys = CHART_PRESETS[preset] || [];
   const series = keys.map((k) => {
     const meta = SERIES[k] || [k, "#4c9aff"];
-    return { name: meta[0], color: meta[1], points: seriesPoints(buf, k, start) };
+    return { name: meta[0], color: meta[1], points: seriesPoints(buf, k, win.start, win.end) };
   });
   drawChart(cv, series, { normalize: true, xElapsed: true });
   const lg = card.querySelector(".chartlegend");
@@ -1229,7 +1235,7 @@ async function showDetail(runId) {
   const s = r.summary || {};
   const sy = r.system || {};
   const tel = await api("/runs/" + runId + "/telemetry?max=900");
-  const pts = (n) => seriesPoints((tel.rows || []).filter((x) => x[n] != null), n, r.started);
+  const pts = (n) => seriesPoints((tel.rows || []).filter((x) => x[n] != null), n, r.started, r.ended);
   const st = (r.telemetry_stats && r.telemetry_stats.stats) || {};
   const dv = (r.telemetry_stats && r.telemetry_stats.derived) || {};
   const prev = await findPrev(r);
