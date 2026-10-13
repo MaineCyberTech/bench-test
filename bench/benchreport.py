@@ -2302,6 +2302,8 @@ def build_summary(report_path):
                 out["gpu_soak_telemetry"] = r.get("telemetry")
             elif r.get("gflops") is not None:
                 out["cpu_soak_gflops"] = r.get("gflops")
+                if r.get("size") is not None:
+                    out["cpu_soak_size"] = r.get("size")
             elif r.get("gbps") is not None:
                 out["ram_soak_gbps"] = r.get("gbps")
         elif phase == "seqwrite" and r.get("mbps") is not None:
@@ -2417,6 +2419,7 @@ def _merge_into(s, j):
                 setd("gpu_soak_telemetry", r.get("telemetry"))
             elif r.get("gflops") is not None:
                 setd("cpu_soak_gflops", r["gflops"])
+                setd("cpu_soak_size", r.get("size"))
             elif r.get("gbps") is not None:
                 setd("ram_soak_gbps", r["gbps"])
         elif phase == "seqwrite":

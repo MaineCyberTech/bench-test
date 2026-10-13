@@ -173,7 +173,7 @@ def phase_soak(a):
         np.add(x, y, out=z)
         np.multiply(z, 3.0, out=z)
         it += 1
-        by += 3 * n * 8
+        by += 5 * n * 8     # np.add (3n) + np.multiply(out=) (2n) bytes moved
         # periodic sample check
         if it % 200 == 0:
             if abs(z[0] - 9.0) > 1e-9:

@@ -665,7 +665,7 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/v1/runs/([^/]+)$", path)
         if m:
             rid = m.group(1)
-            for t in ("phases", "telemetry", "events", "artifacts"):
+            for t in ("phases", "telemetry", "events", "artifacts", "logs"):
                 self.store.ex("DELETE FROM %s WHERE run_id=?" % t, (rid,))
             self.store.ex("DELETE FROM runs WHERE id=?", (rid,))
             self.bus.publish({"event": "run", "data": {"id": rid, "deleted": True}})

@@ -80,7 +80,7 @@ def phase_soak(a):
         _ = A @ B
         it += 1
     dt = time.time() - t0
-    out = {"phase": "soak", "seconds": round(dt, 1), "iters": it,
+    out = {"phase": "soak", "seconds": round(dt, 1), "iters": it, "size": n,
            "gflops": round(2.0 * n ** 3 * it / dt / 1e9, 1)}
     print("soak %.1fs iters=%d GFLOPS=%.1f" % (dt, it, out["gflops"]))
     jline(out)

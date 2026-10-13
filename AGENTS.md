@@ -164,7 +164,8 @@ touching either path.
 ## Testing — required before every commit
 
 ```bash
-python tests/run_all.py            # RESULT: PASS expected (stdlib only)
+python tests/run_all.py            # RESULT: PASS expected
+#   (needs the venv, or windows-curses + psutil: the TUI tests import curses)
 python -m py_compile bench/*.py server/*.py
 bash -n bench/Run-LinuxBench.sh live/Build-LiveUSB.sh live/airootfs/usr/local/bin/bench-*
 ```
