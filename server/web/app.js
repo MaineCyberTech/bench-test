@@ -155,7 +155,13 @@ function median(vals) {
 function gpuOf(r) { return ((r.system && r.system.gpu) || r.gpu || "?").replace(/NVIDIA GeForce\s*/i, ""); }
 function toast(msg, kind) {
   let t = $("#toast");
-  if (!t) { t = document.createElement("div"); t.id = "toast"; document.body.appendChild(t); }
+  if (!t) {
+    t = document.createElement("div");
+    t.id = "toast";
+    t.setAttribute("role", "status");
+    t.setAttribute("aria-live", "polite");
+    document.body.appendChild(t);
+  }
   t.className = "toast show " + (kind || "");
   t.textContent = msg;
   clearTimeout(window._toast); window._toast = setTimeout(() => { t.className = "toast"; }, 4000);
@@ -1674,7 +1680,7 @@ async function showDetail(runId) {
       ${derived.map(([k, val]) => `<div class="kvitem"><div class="k">${esc(k)}</div><div class="v">${esc(val)}</div></div>`).join("")}
     </div>
     <div class="chartrow"><canvas id="dChart" height="220" role="img" aria-label="run telemetry chart"></canvas>
-      <select class="csel" id="dChartSel">${Object.keys(CHART_PRESETS).map((k) => `<option>${esc(k)}</option>`).join("")}</select></div>
+      <select class="csel" id="dChartSel" aria-label="chart preset">${Object.keys(CHART_PRESETS).map((k) => `<option>${esc(k)}</option>`).join("")}</select></div>
     <div class="chartlegend" id="dChartLegend"></div>
     <h4 class="sechead">Results</h4>
     ${(() => {

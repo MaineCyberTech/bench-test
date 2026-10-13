@@ -161,6 +161,9 @@ def _web(c):
     c.check("sortable headers are keyboard reachable and carry aria-sort",
             html.count('class="sortable') == 10 and html.count('tabindex="0"') >= 10
             and 'setAttribute("aria-sort"' in js, "")
+    c.check("toasts announce themselves to screen readers",
+            't.setAttribute("role", "status")' in js
+            and 't.setAttribute("aria-live", "polite")' in js, "")
 
 
 def run():
