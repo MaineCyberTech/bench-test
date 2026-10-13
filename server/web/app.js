@@ -8,12 +8,12 @@ const DEF_SPIN = { gpu: 600, combined: 300, fullsoak: 300, gfx: 60 };
 // Tuning knobs the runner accepts but the four duration boxes do not cover. Left
 // at these defaults a run inherits the runner's long values (cpu 120s, ram 120s,
 // gpu matrix 12288, steady 10GB); a preset overrides them via `tune`.
-const TUNE_DEFAULT = { cpu_soak: 120, ram_soak: 120, disk_seconds: 15, gpu_size: 12288,
-  cpu_size: 4096, ram_size_mb: 1024, passes: 2, steady_gb: 10, stable: 0, stable_hold: 60,
-  gfx_engine: "furmark" };
+const TUNE_DEFAULT = { cpu_soak: 120, ram_soak: 120, disk_seconds: 15, disk_size_mb: 2048,
+  gpu_size: 12288, cpu_size: 4096, ram_size_mb: 1024, passes: 2, steady_gb: 10, stable: 0,
+  stable_hold: 60, gfx_engine: "furmark" };
 const PRESETS = {
-  "Quick check (short soaks)": { groups: gset("gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "sys", "gfx"), spin: { gpu: 60, combined: 60, fullsoak: 60, gfx: 30 }, tune: { ...TUNE_DEFAULT, cpu_soak: 60, ram_soak: 30, disk_seconds: 15, gpu_size: 4096, cpu_size: 2048, ram_size_mb: 512, passes: 1, steady_gb: 2 } },
-  "Stabilized full soak (15 min)": { groups: gset("gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "fan", "sys", "gfx"), spin: { gpu: 180, combined: 45, fullsoak: 90, gfx: 30 }, tune: { ...TUNE_DEFAULT, cpu_soak: 45, ram_soak: 30, disk_seconds: 30, gpu_size: 4096, cpu_size: 2048, ram_size_mb: 512, passes: 1, steady_gb: 2, stable: 1, stable_hold: 60, gfx_engine: "furmark" } },
+  "Quick check (short soaks)": { groups: gset("gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "sys", "gfx"), spin: { gpu: 60, combined: 60, fullsoak: 60, gfx: 30 }, tune: { ...TUNE_DEFAULT, cpu_soak: 60, ram_soak: 30, disk_seconds: 15, disk_size_mb: 256, gpu_size: 4096, cpu_size: 2048, ram_size_mb: 512, passes: 1, steady_gb: 2 } },
+  "Stabilized full soak (15 min)": { groups: gset("gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "fan", "sys", "gfx"), spin: { gpu: 180, combined: 45, fullsoak: 90, gfx: 30 }, tune: { ...TUNE_DEFAULT, cpu_soak: 45, ram_soak: 30, disk_seconds: 30, disk_size_mb: 512, gpu_size: 4096, cpu_size: 2048, ram_size_mb: 512, passes: 1, steady_gb: 2, stable: 1, stable_hold: 60, gfx_engine: "furmark" } },
   "System info + 60s soak (all)": { groups: gset("sys", "fullsoak"), spin: { ...DEF_SPIN, fullsoak: 60 } },
   "Full run (defaults)": { groups: gset(...ALL_GROUPS), spin: { ...DEF_SPIN } },
   "GPU compute": { groups: gset("gpu", "sys"), spin: { ...DEF_SPIN, gpu: 60 } },
@@ -1197,6 +1197,7 @@ async function startRun(runnerId) {
       CPU soak <input id="mCpuSoak" type="number" value="120" style="width:80px">
       RAM soak <input id="mRamSoak" type="number" value="120" style="width:80px">
       disk s <input id="mDiskSec" type="number" value="15" style="width:80px">
+      disk MB <input id="mDiskSize" type="number" value="2048" style="width:80px">
       steady GB <input id="mSteady" type="number" value="10" style="width:80px">
       passes <input id="mPasses" type="number" value="2" style="width:80px">
       <label><input type="checkbox" id="mStable"> soak until stable, hold</label>
@@ -1217,6 +1218,7 @@ async function startRun(runnerId) {
     $("#mGpuSize").value = tune.gpu_size; $("#mCpuSize").value = tune.cpu_size;
     $("#mRamSize").value = tune.ram_size_mb; $("#mCpuSoak").value = tune.cpu_soak;
     $("#mRamSoak").value = tune.ram_soak; $("#mDiskSec").value = tune.disk_seconds;
+    $("#mDiskSize").value = tune.disk_size_mb;
     $("#mSteady").value = tune.steady_gb; $("#mPasses").value = tune.passes;
     $("#mStable").checked = !!tune.stable; $("#mStableHold").value = tune.stable_hold;
     $("#mGfxEngine").value = tune.gfx_engine || "furmark";
@@ -1243,6 +1245,7 @@ async function startRun(runnerId) {
       fullsoak: +$("#mFull").value, gfx: +$("#mGfx").value,
       cpu_soak: +$("#mCpuSoak").value, ram_soak: +$("#mRamSoak").value,
       disk_seconds: +$("#mDiskSec").value, gpu_size: +$("#mGpuSize").value,
+      disk_size_mb: +$("#mDiskSize").value,
       cpu_size: +$("#mCpuSize").value, ram_size_mb: +$("#mRamSize").value,
       passes: +$("#mPasses").value, steady_gb: +$("#mSteady").value,
       stable: $("#mStable").checked ? 1 : 0, stable_hold: +$("#mStableHold").value,
@@ -1466,7 +1469,8 @@ async function showDetail(runId) {
         ["gpu soak (s)", prof.gpu_soak], ["combined (s)", prof.combined],
         ["full soak (s)", prof.fullsoak], ["graphics (s)", prof.gfx],
         ["cpu soak (s)", prof.cpu_soak], ["ram soak (s)", prof.ram_soak],
-        ["disk (s)", prof.disk_seconds], ["steady write (GB)", prof.steady_gb],
+        ["disk (s)", prof.disk_seconds], ["disk size (MB)", prof.disk_size_mb],
+    ["steady write (GB)", prof.steady_gb],
         ["passes", prof.passes], ["gpu matrix", prof.gpu_size],
         ["cpu size", prof.cpu_size], ["ram size (MB)", prof.ram_size_mb],
         ["soak until stable", prof.stable == null ? null : (prof.stable ? "yes" : "no")],

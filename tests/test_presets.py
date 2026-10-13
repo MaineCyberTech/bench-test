@@ -117,6 +117,32 @@ def run():
             ("fan" not in rep.supported_groups()) if os.name == "nt"
             else ("llm" not in rep.supported_groups()), rep.supported_groups())
 
+    # ---- the preset trim: disk size must actually reach the runner ----
+    # The randread/randwrite/randmix phases are size-bound, not seconds-bound, so
+    # without disk_size_mb the runner's 2048MB default applies and cost 226s of the
+    # desktop's 1368s stabilized run. 512MB does the same job in ~57s.
+    c.check("extra_runner_args passes --disk-size-mb",
+            rep.extra_runner_args({"disk_size_mb": 512}) == ["--disk-size-mb", "512"],
+            rep.extra_runner_args({"disk_size_mb": 512}))
+    c.check("disk_size_mb is absent from the args when unset",
+            rep.extra_runner_args({}) == [], rep.extra_runner_args({}))
+    gtune = {k: ((v or {}).get("tune") or {}) for k, v in gui.PRESETS.items() if v}
+    ttune = {n: (s.get("tune") or {}) for n, s in tui.PRESETS}
+    for name in ("Quick check (short soaks)", "Stabilized full soak (15 min)"):
+        for label, tunes in (("gui", gtune), ("tui", ttune)):
+            ds = tunes.get(name, {}).get("disk_size_mb")
+            c.check("%s %s trims disk_size_mb below the runner default" % (label, name),
+                    isinstance(ds, int) and ds < 2048, ds)
+        line = next((ln for ln in block.splitlines() if '"%s":' % name in ln), "")
+        m = re.search(r"disk_size_mb:\s*(\d+)", line)
+        c.check("web %s trims disk_size_mb below the runner default" % name,
+                bool(m) and int(m.group(1)) < 2048, m and m.group(1))
+    # the three dashboard definitions must not drift apart
+    for name in CANON:
+        c.check("gui/tui tune parity for %s" % name,
+                gtune.get(name, {}) == ttune.get(name, {}),
+                (gtune.get(name), ttune.get(name)))
+
     return c.fails
 
 
