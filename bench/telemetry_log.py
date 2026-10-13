@@ -260,7 +260,18 @@ def cpu_snapshot():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
-    ap.add_argument("--interval", type=float, default=0.25)
+    ap.add_argument("--interval", type=float, default=0.25,
+                    help="row rate for the cheap stats (/proc reads, psutil, "
+                         "cpufreq) - sub-millisecond each, so this can be fast")
+    ap.add_argument("--gpu-interval", type=float, default=0.5,
+                    help="nvidia-smi cadence. Measured ~66 ms/call, so it is the "
+                         "expensive part of a row; 2 Hz costs ~13%% of a core and "
+                         "thermal/util traces stay smooth. The value is reused "
+                         "between polls.")
+    ap.add_argument("--slow-interval", type=float, default=1.0,
+                    help="cadence for the other subprocess stats (`sensors -j` "
+                         "temps, nvidia-settings fan RPM). Temps have seconds of "
+                         "thermal mass, so 1 Hz loses nothing.")
     ap.add_argument("--duration", type=float, default=0, help="0 = run until killed")
     a = ap.parse_args()
 
@@ -278,11 +289,22 @@ def main():
     prev_t = time.time()
     prev_e = rapl_uj()
     prev_e_t = time.time()
+    # Cached subprocess stats. Polling nvidia-smi/sensors/nvidia-settings every
+    # row made an iteration cost ~0.3 s, so asking for 4 Hz really delivered
+    # ~3 Hz; the cheap stats below stay on the row clock instead.
+    gpu_v, gpu_t = None, 0.0
+    pkg = maxcore = maxfan = ""
+    fan_rpm = ""
+    slow_t = 0.0
     with open(a.out, "w") as fh:
         fh.write(HEADER + "\n")
         fh.flush()
         while not stop["now"]:
-            g = gpu_sample()
+            now = time.time()
+            if gpu_v is None or now - gpu_t >= a.gpu_interval:
+                gpu_v = gpu_sample()
+                gpu_t = now
+            g = gpu_v
             cur_cpu = cpu_snapshot()
             cpu_pct = ""
             if prev_cpu and cur_cpu:
@@ -290,7 +312,6 @@ def main():
                 dt = cur_cpu[1] - prev_cpu[1]
                 cpu_pct = round(100.0 * (1.0 - di / dt), 1) if dt > 0 else ""
             prev_cpu = cur_cpu
-            now = time.time()
             io = disk_net_counters()
             dt_io = max(0.001, now - prev_t)
             drd = round((io[0] - prev_io[0]) / 1e6 / dt_io, 1)
@@ -298,7 +319,10 @@ def main():
             nrx = round((io[2] - prev_io[2]) * 8 / 1e6 / dt_io, 1)
             ntx = round((io[3] - prev_io[3]) * 8 / 1e6 / dt_io, 1)
             prev_io, prev_t = io, now
-            pkg, maxcore, maxfan = sensors_temps()
+            if now - slow_t >= a.slow_interval:
+                pkg, maxcore, maxfan = sensors_temps()
+                fan_rpm = gpu_fan_rpm()
+                slow_t = now
             ram, swap = meminfo()
             try:
                 load1 = round(os.getloadavg()[0], 2)
@@ -330,15 +354,17 @@ def main():
                     pkg_w = round(de / 1e6 / (now - prev_e_t), 1)
             if e is not None:
                 prev_e, prev_e_t = e, now
-            row = ([round(time.time() - t0, 1), datetime.now().strftime("%H:%M:%S")] + gpu
+            row = ([round(time.time() - t0, 2), datetime.now().strftime("%H:%M:%S")] + gpu
                    + [pkg, ram, load1, maxcore, swap, cpu_pct, nvme_temp(), enc, dec,
-                      maxfan, gpu_fan_rpm(), plimit, drd, dwr, nrx, ntx] + extra
+                      maxfan, fan_rpm, plimit, drd, dwr, nrx, ntx] + extra
                    + [pkg_w, cpu_mhz(), psi_io()])
             fh.write(",".join(str(x) for x in row) + "\n")
             fh.flush()
             if a.duration and time.time() - t0 >= a.duration:
                 break
-            time.sleep(max(0.2, a.interval))
+            # the floor only stops a hot loop; with the subprocess stats cached a
+            # row now costs ~1 ms, so the requested rate is actually delivered
+            time.sleep(max(0.05, a.interval - (time.time() - now)))
     return 0
 
 

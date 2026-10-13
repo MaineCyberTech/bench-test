@@ -39,6 +39,9 @@ def parse_args():
     ap.add_argument("--cpu-soak", default="120")
     ap.add_argument("--ram-soak", default="120")
     ap.add_argument("--disk-seconds", default="15")
+    ap.add_argument("--disk-size-mb", default="2048",
+                    help="randread/randwrite/randmix size; the phases scale with it "
+                         "(2048 took 226s of the desktop's 1368s run, 512 takes ~57s)")
     ap.add_argument("--steady-gb", default="10")
     ap.add_argument("--gpu-size", default="12288")
     ap.add_argument("--cpu-size", default="4096")
@@ -53,6 +56,11 @@ def parse_args():
     ap.add_argument("--furmark-bin", default="",
                     help="path to furmark.exe (else PATH/env FURMARK/standard install)")
     ap.add_argument("--valley-bin", default=DEFAULT_VALLEY)
+    ap.add_argument("--interval", default="0.25",
+                    help="row rate for the cheap stats (psutil/GetSystemTimes)")
+    ap.add_argument("--gpu-interval", default="0.5",
+                    help="nvidia-smi cadence: ~66ms/call, so 2Hz keeps GPU "
+                         "util/temp/power traces smooth without polling it flat out")
     ap.add_argument("-o", "--out-dir", default=os.path.join(REPO, "results"))
     return ap.parse_args()
 
@@ -212,7 +220,7 @@ def _win_mem():
         return None, None, None
 
 
-def sampler(csv_path, stop_evt):
+def sampler(csv_path, stop_evt, interval=0.25, gpu_interval=0.5):
     try:
         import psutil
     except Exception:
@@ -226,9 +234,17 @@ def sampler(csv_path, stop_evt):
                   "blank and CPU/RAM use the stdlib fallback (pip install psutil)", flush=True)
         t0 = time.time()
         prev = {}
+        # nvidia-smi costs ~66ms a call; the psutil/GetSystemTimes stats are
+        # sub-millisecond, so only the GPU query is throttled and reused between
+        # rows (it also carries temp + power, which change on a thermal timescale).
+        gpu_v, gpu_t = None, 0.0
         while not stop_evt.is_set():
-            row = [round(time.time() - t0, 1)]
-            g = _gpu_row()
+            tick = time.time()
+            if gpu_v is None or tick - gpu_t >= gpu_interval:
+                gpu_v = _gpu_row()
+                gpu_t = tick
+            row = [round(tick - t0, 2)]
+            g = gpu_v
             extra = [None] * 11
             extra[9] = _GPU_ENGINE["3d"]
             extra[10] = _GPU_ENGINE["copy"]
@@ -289,7 +305,7 @@ def sampler(csv_path, stop_evt):
                 os.fsync(fh.fileno())
             except Exception:
                 pass
-            stop_evt.wait(0.25)
+            stop_evt.wait(max(0.05, interval - (time.time() - tick)))
 
 
 def main():
@@ -300,7 +316,9 @@ def main():
     csv_path = os.path.join(a.out_dir, "%s-win-%s.telemetry.csv" % (host, stamp))
 
     stop_evt = threading.Event()
-    threading.Thread(target=sampler, args=(csv_path, stop_evt), daemon=True).start()
+    threading.Thread(target=sampler,
+                     args=(csv_path, stop_evt, float(a.interval), float(a.gpu_interval)),
+                     daemon=True).start()
     threading.Thread(target=cpu_temp_thread, args=(stop_evt,), daemon=True).start()
     threading.Thread(target=gpu_engine_thread, args=(stop_evt,), daemon=True).start()
 
@@ -315,6 +333,7 @@ def main():
           "-RamSizeMB", str(a.ram_size_mb),
           "-Passes", str(a.passes),
           "-DiskSeconds", str(a.disk_seconds),
+          "-DiskSizeMB", str(a.disk_size_mb),
           "-SteadyGB", str(a.steady_gb),
           "-GfxEngine", a.gfx_engine,
           "-GfxSeconds", str(a.gfx_seconds),
