@@ -928,8 +928,11 @@ class Dashboard:
                     ts = telemetry_summary(max(csvs, key=os.path.getmtime))
                     if ts:
                         summary["telemetry"] = ts
-            except Exception:
-                summary = {}
+            except Exception as e:
+                # never let a summary build failure pass for an empty summary: an
+                # earlier NameError here was swallowed into {} and the run looked
+                # like it had measured nothing
+                summary = {"summary_error": "%s: %s" % (type(e).__name__, e)}
             si = getattr(self, "sysinfo", None) or {}
             inv = read_inventory(self.results_dir) or si
             upload_telemetry_csv(self.rep, self.results_dir, sent=self._tel_sent)

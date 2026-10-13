@@ -97,6 +97,40 @@ def run():
     ts = telemetry_summary(os.path.join(d, "host-win-20260101-000000.telemetry.csv"))
     c.check("telemetry_summary", ts and ts["samples"] == 5 and ts["temp_c"] == [50, 52, 54], ts)
 
+    # ---- several gfx records: the one that scored must win ----
+    # A monitor-less stick writes a furmark "skipped" record and then a glmark2
+    # fallback that actually scored. Whichever record came last used to win, so
+    # the summary reported "skipped" while a real score existed.
+    gd = tmpdir()
+    with open(os.path.join(gd, "host-20260101-000000.json"), "w") as fh:
+        json.dump({"host": "h", "phases": [
+            {"group": "gfx", "phase": "furmark",
+             "result": {"phase": "furmark", "skipped": True,
+                        "reason": "no monitor on the X display"}},
+            {"group": "gfx", "phase": "glmark2",
+             "result": {"phase": "glmark2", "score": 31723, "scenes": 8}},
+            {"group": "gfx", "phase": "furmark",
+             "result": {"phase": "furmark", "skipped": True, "reason": "furmark exited 1"}},
+        ]}, fh)
+    g = build_summary_dir(gd)
+    c.check("summary keeps the gfx record that scored, not the later skipped one",
+            (g.get("gfx") or {}).get("score") == 31723, g.get("gfx"))
+    gd2 = tmpdir()
+    with open(os.path.join(gd2, "host-20260101-000000.json"), "w") as fh:
+        json.dump({"host": "h", "phases": [
+            {"group": "gfx", "phase": "furmark",
+             "result": {"phase": "furmark", "skipped": True,
+                        "reason": "no monitor on the X display"}}]}, fh)
+    g2 = build_summary_dir(gd2)
+    c.check("summary still reports a skipped gfx record when nothing scored",
+            (g2.get("gfx") or {}).get("skipped") is True, g2.get("gfx"))
+    # a summary build must never fail silently into {} - that hid a NameError and
+    # made a real run look like it had measured nothing
+    for f in ("tui.py", "gui.py"):
+        src = open(os.path.join(BENCH, f), encoding="utf-8").read()
+        c.check("%s surfaces a summary build failure" % f,
+                "summary_error" in src, f)
+
     # ---- run_exec ----
     rep2 = Reporter(srv.base, srv.token, name="exec", kind="test")
     rep2.register({})

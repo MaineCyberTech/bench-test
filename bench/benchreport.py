@@ -2160,13 +2160,15 @@ def _merge_into(s, j):
         grp = p.get("group") or r.get("group")
         if grp == "gfx" and isinstance(r, dict):
             # several gfx records can exist: furmark "skipped" (no monitor) and then
-            # the glmark2 fallback that actually ran and scored. Keep the one with a
-            # score; a skipped record may only stand in until a scored one arrives.
-            have = out.get("gfx") or {}
+            # the glmark2 fallback that actually ran and scored. setd() refuses to
+            # overwrite, which is why the first record used to stick, so assign
+            # directly: a scored record always wins, a skipped one only stands in
+            # until a scored record arrives.
+            have = s.get("gfx") or {}
             new_scored = r.get("score") is not None and not r.get("skipped")
             have_scored = have.get("score") is not None and not have.get("skipped")
             if new_scored or not have_scored:
-                setd("gfx", r)
+                s["gfx"] = r
         if phase == "matmul" and isinstance(r.get("results"), dict):
             sub = r["results"]
             first = next(iter(sub.values()), {})
