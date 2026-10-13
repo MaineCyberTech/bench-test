@@ -103,6 +103,11 @@ The live USB already starts `bench-tui`; add the flags via `bench-agent` or an
 
 ## API reference (prefix `/api/v1`, `Authorization: Bearer <token>`)
 
+The machine-readable contract lives in [`openapi.json`](openapi.json) (OpenAPI
+3.0): every route, its methods, its auth expectation and the command catalogue.
+It is kept honest by `tests/test_contract.py`, which checks it against the
+server's own route table and the live dispatcher.
+
 Runner-facing:
 
 | Method | Path | Purpose |
@@ -122,7 +127,7 @@ UI-facing:
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/state` | snapshot: runners, active runs (+latest telemetry, phases), recent, `hosts`, `server_git`, `version`, `version_source` |
+| GET | `/state` | snapshot: runners, active runs (+latest telemetry, phases), recent, `hosts`, `command_kinds`, `server_git`, `version`, `version_source` |
 | GET | `/stream?token=` | SSE: `snapshot`/`runner`/`run`/`phase`/`telemetry` (coalesced)/`command`/`log`/`schedule`/`event`/`artifact` |
 | GET | `/runners` · `/runs` · `/runs/<id>` | fleet / history / detail |
 | GET | `/runs/<id>/telemetry?max=N` | downsampled series (named fields) |
@@ -132,6 +137,7 @@ UI-facing:
 | GET | `/runs/<id>/artifact/<name>?token=` | download an attached artifact (binary-safe) |
 | DELETE | `/runs/<id>/artifact/<name>` | remove one attached artifact (its run's owner or the operator; audited) |
 | GET | `/trends?host=&metric=` | metric-over-time series + per-series median/p95/p99 |
+| GET | `/commands` | the command catalogue: every accepted kind with `destructive`/`needs_confirm`/`description` (operator only) |
 | GET | `/health` | public liveness + the control plane's `version`, commit (`git`) and `version_source` |
 | POST | `/server/update` | pull the control plane's own checkout + restart it (operator only; git deploy) |
 | GET | `/metrics` | the metric catalogue (key → label) |
@@ -216,10 +222,15 @@ otherwise cpu 120 s, ram 120 s, gpu matrix 12288, 10 GiB steady write, disk
 2048 MB) — which is how a "Quick check" ran 600 s soaks. The web start dialog
 builds the full shape above.
 
-`shutdown`, `reboot`, `iso_write` and `iso_write_slot` are **destructive** and are
-refused with `400` unless the payload carries an explicit `confirm: true` (the
-browser ticks its confirm box; a script must echo the flag). The API no longer
-relies on the browser's prompt alone.
+The **command catalogue is a registry**, not a hardcoded list: each kind carries
+`destructive`, `needs_confirm` and a `description`, and the server derives both the
+accepted set and the confirm gate from it. A client can read it (read-only) at
+`GET /api/v1/commands`, or as `command_kinds` in `GET /api/v1/state`, so it never
+has to guess which kinds a server accepts. Today `shutdown`, `reboot`, `iso_write`
+and `iso_write_slot` are the **destructive** kinds: they are refused with `400`
+unless the payload carries an explicit `confirm: true` (the browser ticks its
+confirm box; a script must echo the flag). The API no longer relies on the
+browser's prompt alone.
 
 ### Operator controls (all optional, off by default)
 
@@ -241,18 +252,22 @@ Run `benchd` as a small unprivileged **LXC container** so it shows in the Proxmo
 
 ```bash
 # on the Proxmox node (root)
-pct create 108 local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst \
+pct create <CTID> local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst \
   --hostname benchd --cores 1 --memory 1024 --rootfs local-lvm:4 \
-  --net0 name=eth0,bridge=vmbr0,ip=192.168.222.188/24,gw=192.168.222.1 \
-  --nameserver 192.168.222.1 --unprivileged 1 --onboot 1 --start 1 --password '...'
-pct exec 108 -- mkdir -p /opt/bench-test/server/web
-pct push 108 benchd.py /opt/bench-test/server/benchd.py          # + web/ + unit
-pct push 108 benchd.conf /etc/benchd.conf && pct exec 108 -- chmod 600 /etc/benchd.conf
-pct exec 108 -- cp /opt/bench-test/server/benchd.service /etc/systemd/system/
-pct exec 108 -- systemctl enable --now benchd
+  --net0 name=eth0,bridge=vmbr0,ip=<benchd-ip>/24,gw=<gateway> \
+  --nameserver <gateway> --unprivileged 1 --onboot 1 --start 1 --password '...'
+pct exec <CTID> -- mkdir -p /opt/bench-test/server/web
+pct push <CTID> benchd.py /opt/bench-test/server/benchd.py          # + web/ + unit
+pct push <CTID> benchd.conf /etc/benchd.conf && pct exec <CTID> -- chmod 600 /etc/benchd.conf
+pct exec <CTID> -- cp /opt/bench-test/server/benchd.service /etc/systemd/system/
+pct exec <CTID> -- systemctl enable --now benchd
 # mask the unprivileged-LXC mount units so systemd is not 'degraded'
-pct exec 108 -- systemctl mask tmp.mount run-lock.mount dev-mqueue.mount
+pct exec <CTID> -- systemctl mask tmp.mount run-lock.mount dev-mqueue.mount
 ```
+
+**Substitute your lab values.** `<CTID>` (the LXC container id), `<benchd-ip>` and
+`<gateway>`, and the storage/bridge names (`local-lvm`, `vmbr0`) are placeholders —
+set them to match your own Proxmox node; nothing here is tied to a specific host.
 
 `onboot=1` starts it with the node. Live-USB and workstation runners reach it over the LAN/overlay.
 
@@ -475,7 +490,11 @@ caching, artifact retention, the version stamp), control-plane P2 enforcement
 key rotation and TTL expiry, and the artifact size/quota/name limits), the
 reporting client
 (Reporter, PhaseTracker, ReporterPump, exec, inventory/summary builders), preset
-parity across GUI/TUI/web, and the dashboard phase-table logic.
+parity across GUI/TUI/web, and the dashboard phase-table logic. It also keeps the
+API contract honest: `tests/test_contract.py` checks `docs/openapi.json` against
+the server's route table and the live dispatcher (every documented path+method is
+dispatched, every dispatched route is documented) and checks the command
+catalogue against `COMMAND_KINDS` and the confirm gate.
 
 ## Measured phase durations
 
