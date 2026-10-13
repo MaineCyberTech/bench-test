@@ -354,7 +354,7 @@ function runnerInfo(r) {
     if (s.cpu_soak_gflops != null) bits.push(fmt(s.cpu_soak_gflops, 0) + " GFLOPS cpu"
       + (s.cpu_soak_size ? ` @ n=${s.cpu_soak_size}` : ""));
     if (s.gfx && s.gfx.score != null) bits.push("gfx " + fmt(s.gfx.score, 0)
-      + (s.gfx.engine ? ` (${s.gfx.engine})` : ""));
+      + ((s.gfx.engine || s.gfx.phase) ? ` (${s.gfx.engine || s.gfx.phase})` : ""));
     if (s.ram_soak_gbps != null) bits.push(fmt(s.ram_soak_gbps, 1) + " GB/s ram");
     rows.push(["last run", `${esc(last.label || "run")} · ${esc(last.status || "")} · `
       + `${ago(last.ended || last.started)} · ${runDur(last)}${bits.length ? `<div class="muted mono">${bits.join(" · ")}</div>` : ""}`]);
