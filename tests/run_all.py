@@ -28,11 +28,12 @@ import test_lifecycle  # noqa: E402
 import test_hardening  # noqa: E402
 import test_observability  # noqa: E402
 import test_schema  # noqa: E402
+import test_perf  # noqa: E402
 
 MODULES = [test_control_plane, test_reporting, test_import, test_update,
            test_presets, test_dashboards, test_soak, test_version, test_bootstrap,
            test_packaging, test_lifecycle, test_hardening, test_observability,
-           test_schema]
+           test_schema, test_perf]
 
 
 def main():

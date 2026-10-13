@@ -34,11 +34,13 @@ server/benchd.conf, ~/.config/benchd.conf, /etc/benchd.conf   (key=value).
 """
 import argparse
 import base64
+import collections
 import csv
 import hashlib
 import io
 import json
 import os
+import queue
 import re
 import secrets
 import sqlite3
@@ -525,30 +527,129 @@ class Store:
 
 
 # ----------------------------------------------------------------------- bus --
+# PERF-P2-002: bound the realtime fan-out. A hard cap on concurrent SSE clients
+# keeps a burst of dashboards from spawning unbounded handler threads, and
+# telemetry (the high-rate event) is coalesced per subscriber so a slow reader
+# can never make the server buffer whole batches without limit.
+MAX_SSE_SUBSCRIBERS = 32
+SSE_QUEUE_MAX = 1000
+TELEMETRY_BATCH_MAX = 1000
+
+
+class BusFull(Exception):
+    """Raised by Bus.subscribe() when MAX_SSE_SUBSCRIBERS is already reached."""
+
+
+def _merge_telemetry(a, b):
+    """Coalesce two pending telemetry batches into one event.
+
+    Same run: concatenate the samples (bounded) and sum the counts. A different
+    run cannot be merged, so the newest batch wins - the older one is counted as
+    dropped rather than queued.
+    """
+    da, db = a.get("data") or {}, b.get("data") or {}
+    if da.get("run_id") != db.get("run_id"):
+        return b
+    samples = list(da.get("samples") or []) + list(db.get("samples") or [])
+    merged = dict(db)
+    merged["samples"] = samples[-TELEMETRY_BATCH_MAX:]
+    merged["sample"] = db.get("sample", da.get("sample"))
+    merged["n"] = (da.get("n") or 0) + (db.get("n") or 0)
+    return {"event": "telemetry", "data": merged}
+
+
+class Subscriber:
+    """One SSE client's mailbox.
+
+    Non-telemetry events queue in order (bounded, oldest dropped on overflow);
+    telemetry is kept in a single pending slot and merged on arrival, so at most
+    one telemetry batch is ever pending per subscriber. Drops are counted.
+    """
+
+    def __init__(self, maxsize=SSE_QUEUE_MAX):
+        self.cv = threading.Condition()
+        self.events = collections.deque()
+        self.maxsize = maxsize
+        self.telemetry = None
+        self.dropped = 0
+
+    def offer(self, ev):
+        """Queue one event; return the number dropped or merged (0 or 1)."""
+        with self.cv:
+            if ev.get("event") == "telemetry":
+                if self.telemetry is None:
+                    self.telemetry = ev
+                    self.cv.notify()
+                    return 0
+                self.telemetry = _merge_telemetry(self.telemetry, ev)
+                self.dropped += 1
+                self.cv.notify()
+                return 1
+            if len(self.events) >= self.maxsize:
+                self.events.popleft()
+                self.dropped += 1
+                self.cv.notify()
+                return 1
+            self.events.append(ev)
+            self.cv.notify()
+            return 0
+
+    def get(self, timeout):
+        """Next event, or raise queue.Empty after `timeout` seconds."""
+        deadline = time.time() + timeout
+        with self.cv:
+            while self.telemetry is None and not self.events:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    raise queue.Empty()
+                self.cv.wait(remaining)
+            if self.telemetry is not None:
+                ev, self.telemetry = self.telemetry, None
+                return ev
+            return self.events.popleft()
+
+    def pending(self):
+        with self.cv:
+            return len(self.events) + (1 if self.telemetry is not None else 0)
+
+
 class Bus:
-    def __init__(self):
+    def __init__(self, max_subscribers=MAX_SSE_SUBSCRIBERS):
         self.lock = threading.Lock()
         self.subs = set()
+        self.max_subscribers = max_subscribers
+        self.dropped_lock = threading.Lock()
+        self.dropped = 0
 
     def subscribe(self):
-        import queue
-        q = queue.Queue(maxsize=1000)
+        s = Subscriber()
         with self.lock:
-            self.subs.add(q)
-        return q
+            if len(self.subs) >= self.max_subscribers:
+                raise BusFull("subscriber limit (%d) reached" % self.max_subscribers)
+            self.subs.add(s)
+        return s
 
-    def unsubscribe(self, q):
+    def unsubscribe(self, s):
         with self.lock:
-            self.subs.discard(q)
+            self.subs.discard(s)
 
     def publish(self, ev):
         with self.lock:
             subs = list(self.subs)
-        for q in subs:
-            try:
-                q.put_nowait(ev)
-            except Exception:
-                pass
+        dropped = 0
+        for s in subs:
+            dropped += s.offer(ev)
+        if dropped:
+            with self.dropped_lock:
+                self.dropped += dropped
+
+    def dropped_count(self):
+        with self.dropped_lock:
+            return self.dropped
+
+    def subscriber_count(self):
+        with self.lock:
+            return len(self.subs)
 
 
 # ------------------------------------------------------------------ helpers ---
@@ -618,25 +719,24 @@ def server_version():
 
 REPO_SLUG = os.environ.get("BENCH_REPO_SLUG") or "MaineCyberTech/bench-test"
 GH_API = os.environ.get("BENCH_GH_API") or "https://api.github.com"
-_REF = {"v": None, "t": 0.0}
+_REF = {"v": None, "t": 0.0, "pending": False}
 REF_TTL = 120.0
-_CMP = {}
+# PERF-P2-004: the GitHub ref/compare lookups must never run on a request thread.
+# Their urllib timeout is 8s, four times the 2s runner heartbeat, so a slow or
+# offline GitHub used to stall heartbeats and liveness probes. Results are cached
+# with a TTL and refreshed by a single background daemon; a request with an empty
+# cache answers "unknown" (or the server's own commit) immediately instead of
+# waiting. BENCH_OFFLINE=1 still skips the network entirely.
+COMPARE_TTL = 600.0
+_CMP = {}                 # (base, head) -> {"v": (status, files), "t": ts}
+_CMP_PENDING = set()      # keys queued or in flight for the background worker
+_CMP_LOCK = threading.Lock()
+_VERSION_Q = queue.Queue()
+_VERSION_THREAD = {"t": None}
 
 
-def compare_detail(base, head):
-    """(status, files) for GitHub compare `base...head`.
-
-    status is ahead|behind|diverged|identical|'' (unknown); `files` are the changed
-    paths GitHub reports (possibly truncated, [] when unknown) - enough to tell a
-    docs-only difference from a real one.
-    """
-    if not base or not head:
-        return "", []
-    if base == head:
-        return "identical", []
-    key = (base, head)
-    if key in _CMP:
-        return _CMP[key]
+def _compare_fetch(base, head):
+    """Blocking GitHub compare. Only ever called from the background worker."""
     status, files = "", []
     if os.environ.get("BENCH_OFFLINE") != "1":
         try:
@@ -649,10 +749,92 @@ def compare_detail(base, head):
             files = [str(f.get("filename") or "") for f in (j.get("files") or [])]
         except Exception:
             status, files = "", []
-    if len(_CMP) > 500:
-        _CMP.clear()
-    _CMP[key] = (status, files)
     return status, files
+
+
+def _latest_fetch():
+    """Blocking GitHub `commits/main`. Only ever called from the worker."""
+    val = ""
+    if os.environ.get("BENCH_OFFLINE") != "1":
+        try:
+            url = "%s/repos/%s/commits/main" % (GH_API, REPO_SLUG)
+            req = urllib.request.Request(url, headers={"User-Agent": "benchd",
+                                                       "Accept": "application/vnd.github+json"})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                val = str(json.loads(r.read().decode()).get("sha") or "")[:7]
+        except Exception:
+            val = ""
+    return val
+
+
+def _version_worker():
+    """Single daemon thread: the only place the request path's GitHub data is
+    fetched, so no request ever blocks on it (PERF-P2-004)."""
+    while True:
+        kind, base, head = _VERSION_Q.get()
+        try:
+            if kind == "ref":
+                val = _latest_fetch()
+                # server_git() can shell out on its first call; keep it off the
+                # lock so a request thread is never stuck behind it.
+                git = server_git()
+                with _CMP_LOCK:
+                    _REF["v"] = val or _REF.get("v") or git
+                    _REF["t"] = time.time()
+                    _REF["pending"] = False
+            else:
+                v = _compare_fetch(base, head)
+                with _CMP_LOCK:
+                    if len(_CMP) > 500:
+                        _CMP.clear()
+                    _CMP[(base, head)] = {"v": v, "t": time.time()}
+                    _CMP_PENDING.discard((base, head))
+        except Exception:
+            with _CMP_LOCK:
+                _CMP_PENDING.discard((base, head))
+                if kind == "ref":
+                    _REF["pending"] = False
+        finally:
+            _VERSION_Q.task_done()
+
+
+def _kick_version(kind, base=None, head=None):
+    """Queue a background refresh, starting the worker lazily."""
+    t = _VERSION_THREAD["t"]
+    if t is None or not t.is_alive():
+        with _CMP_LOCK:
+            t = _VERSION_THREAD["t"]
+            if t is None or not t.is_alive():
+                t = threading.Thread(target=_version_worker, name="benchd-version",
+                                     daemon=True)
+                _VERSION_THREAD["t"] = t
+                t.start()
+    _VERSION_Q.put((kind, base, head))
+
+
+def compare_detail(base, head):
+    """(status, files) for GitHub compare `base...head` - never blocks.
+
+    status is ahead|behind|diverged|identical|'' (unknown); `files` are the changed
+    paths GitHub reports (possibly truncated, [] when unknown) - enough to tell a
+    docs-only difference from a real one. A cached result is served (stale ones
+    are refreshed in the background); an unseen pair answers ("", []) at once and
+    queues the lookup, so a request never waits on GitHub.
+    """
+    if not base or not head:
+        return "", []
+    if base == head:
+        return "identical", []
+    key = (base, head)
+    with _CMP_LOCK:
+        ent = _CMP.get(key)
+        stale = ent is None or (time.time() - ent["t"]) >= COMPARE_TTL
+        need = stale and key not in _CMP_PENDING
+        if need:
+            _CMP_PENDING.add(key)
+    if need:
+        _kick_version("compare", base, head)
+    return ent["v"] if ent is not None else ("", [])
 
 
 def compare_commits(base, head):
@@ -691,26 +873,23 @@ def update_matters(files):
 
 
 def latest_git(force=False):
-    """Newest commit on main (GitHub, cached) — what a runner should be running.
+    """Newest commit on main (cached) — what a runner should be running.
 
-    Falls back to this server's own commit when GitHub is unreachable. Set
-    BENCH_OFFLINE=1 to skip the lookup entirely (tests).
+    Never blocks a request: a fresh cached tip is returned, otherwise the
+    server's own commit is the cheap fallback while a background refresh is
+    queued (PERF-P2-004). Set BENCH_OFFLINE=1 to skip the lookup entirely.
     """
     t = time.time()
-    if not force and _REF["v"] and (t - _REF["t"]) < REF_TTL:
-        return _REF["v"]
-    val = ""
-    if os.environ.get("BENCH_OFFLINE") != "1":
-        try:
-            url = "%s/repos/%s/commits/main" % (GH_API, REPO_SLUG)
-            req = urllib.request.Request(url, headers={"User-Agent": "benchd",
-                                                       "Accept": "application/vnd.github+json"})
-            with urllib.request.urlopen(req, timeout=8) as r:
-                val = str(json.loads(r.read().decode()).get("sha") or "")[:7]
-        except Exception:
-            val = ""
-    _REF["v"], _REF["t"] = (val or server_git()), t
-    return _REF["v"]
+    v = _REF.get("v")
+    if v and not force and (t - _REF.get("t", 0.0)) < REF_TTL:
+        return v
+    with _CMP_LOCK:
+        pending = _REF.get("pending", False)
+        if not pending:
+            _REF["pending"] = True
+    if not pending:
+        _kick_version("ref")
+    return v or server_git()
 
 
 ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
@@ -1354,6 +1533,13 @@ class Handler(BaseHTTPRequestHandler):
             "# HELP benchd_command_queue_depth Commands queued and not yet sent to a runner.",
             "# TYPE benchd_command_queue_depth gauge",
             "benchd_command_queue_depth %d" % queued,
+            "# HELP benchd_sse_subscribers Active SSE subscribers.",
+            "# TYPE benchd_sse_subscribers gauge",
+            "benchd_sse_subscribers %d" % self.bus.subscriber_count(),
+            "# HELP benchd_sse_dropped_events_total SSE events dropped or merged by"
+            " bounded-queue / telemetry coalescing.",
+            "# TYPE benchd_sse_dropped_events_total counter",
+            "benchd_sse_dropped_events_total %d" % self.bus.dropped_count(),
         ]
         return "\n".join(lines) + "\n"
 
@@ -1567,7 +1753,11 @@ class Handler(BaseHTTPRequestHandler):
                                 "stats": stats})
 
     def _stream(self):
-        q = self.bus.subscribe()
+        try:
+            q = self.bus.subscribe()
+        except BusFull:
+            # PERF-P2-002: bounded fan-out - the (N+1)th live client is refused.
+            return self._err(503, "too many subscribers")
         self._metrics_obj().status(200)
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
