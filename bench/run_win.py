@@ -86,7 +86,7 @@ COLUMNS = ["elapsed_s", "gpu_util_pct", "mem_util_pct", "temp_c", "temp_mem_c", 
            # Appended (never reordered, so older CSVs keep lining up). These are
            # the Linux logger's columns that the Windows sampler lacked, plus
            # LibreHardwareMonitor-only facts; blank when nothing can read them.
-           "vram_total_mib", "gpu_fan_rpm", "cpu_mhz", "cpu_pkg_w", "nvme_c"]
+           "vram_total_mib", "gpu_fan_rpm", "cpu_mhz", "cpu_pkg_w", "nvme_c", "load1"]
 # per-core CPU load columns are appended to the header at sampler start
 # (cpu_core1..cpu_coreN) so a 16-thread APU and a 6-core desktop both fit.
 
@@ -428,8 +428,14 @@ def sampler(csv_path, stop_evt, interval=0.25, gpu_interval=0.5):
             row += extra
             # the appended columns (see COLUMNS) + per-core loads; a value the
             # library cannot read stays blank rather than becoming a fake zero
+            load1 = None
+            if psutil:
+                try:
+                    load1 = round(psutil.getloadavg()[0], 2)
+                except Exception:
+                    load1 = None
             row += [lhm.get("vram_total"), lhm.get("gpu_fan_rpm"), lhm.get("cpu_mhz"),
-                    lhm.get("cpu_power"), lhm.get("storage_temp")]
+                    lhm.get("cpu_power"), lhm.get("storage_temp"), load1]
             lhm_cores = lhm.get("cores") or {}
             for i in range(1, ncores + 1):
                 row += [lhm_cores.get("cpu_core%d" % i)]

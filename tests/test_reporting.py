@@ -193,6 +193,14 @@ def run():
                                         "pcie_gen", "pcie_width", "power_max_w"))
             and all(k in ln_cols for k in ("throttle", "temp_limit_c", "video_mhz", "pcie_gen")),
             (win_cols[-9:], ln_cols[-9:]))
+    # columns that were only ever on one platform, so a tile was permanently blank
+    c.check("the Linux sampler reports total VRAM too (for a percentage)",
+            "vram_total_mib" in ln_cols and "memory.total" in ln_src, "")
+    c.check("the Windows sampler reports load1 like Linux does", "load1" in win_cols, "")
+    # a single impossible value flattens a whole chart, so the samplers bound what
+    # they derive: RAPL produced 6-9 kW single-row spikes on the stick
+    c.check("the Linux sampler rejects an impossible package wattage",
+            "w <= 1000" in ln_src, "")
 
     # ---- the CSV must stay rectangular (a short row shifts every column) ----
     # Per-core columns are appended dynamically, so this is the check that the

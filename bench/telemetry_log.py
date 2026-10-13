@@ -26,13 +26,14 @@ GPU_FIELDS = ("utilization.gpu,utilization.memory,temperature.gpu,fan.speed,powe
               "clocks.sm,clocks.mem,memory.used,pstate,utilization.encoder,utilization.decoder,"
               "power.limit,temperature.gpu.tlimit,power.default_limit,power.max_limit,clocks.video,"
               "pcie.link.gen.current,pcie.link.width.current,retired_pages.pending,"
-              "clocks_throttle_reasons.active")
+              "clocks_throttle_reasons.active,memory.total")
 HEADER = ("elapsed_s,time,gpu_util_pct,mem_util_pct,temp_c,fan_pct,power_w,"
           "sm_mhz,mem_mhz,vram_used_mib,pstate,cpu_package_c,ram_used_gib,load1,"
           "cpu_max_core_c,swap_used_gib,cpu_util_pct,nvme_c,gpu_enc_pct,gpu_dec_pct,"
           "cpu_fan_rpm,gpu_fan_rpm,power_limit_w,disk_read_mbs,disk_write_mbs,"
           "net_rx_mbs,net_tx_mbs,temp_limit_c,power_default_w,power_max_w,video_mhz,"
-          "pcie_gen,pcie_width,retired,throttle,throttle_bits,cpu_pkg_w,cpu_mhz,psi_io")
+          "pcie_gen,pcie_width,retired,throttle,throttle_bits,cpu_pkg_w,cpu_mhz,psi_io,"
+          "vram_total_mib")
 
 
 def _read(path):
@@ -360,6 +361,9 @@ def main():
                 enc = g[9] if g[9] not in ("[N/A]", "N/A") else ""
                 dec = g[10] if g[10] not in ("[N/A]", "N/A") else ""
                 plimit = g[11] if g[11] not in ("[N/A]", "N/A") else ""
+                # total VRAM, so the dashboards can show a percentage instead of a
+                # bare MiB figure (the Windows sampler already carries it)
+                vram_total = _clean(g[20]) if len(g) > 20 else ""
                 if len(g) >= 20:
                     bits = _bits(g[19])
                     extra = [_clean(g[12]), _clean(g[13]), _clean(g[14]), _clean(g[15]),
@@ -370,13 +374,19 @@ def main():
             else:
                 gpu = [""] * 9
                 enc = dec = plimit = ""
+                vram_total = ""
                 extra = [""] * 9
             e = rapl_uj()
             pkg_w = ""
             if e is not None and prev_e is not None and now > prev_e_t:
                 de = e - prev_e
                 if de >= 0:
-                    pkg_w = round(de / 1e6 / (now - prev_e_t), 1)
+                    w = de / 1e6 / (now - prev_e_t)
+                    # a RAPL counter glitch produced single-row readings of 6-9 kW on
+                    # the stick; nothing draws that, so treat it as unreadable rather
+                    # than chart a spike that flattens the whole power trace
+                    if w <= 1000:
+                        pkg_w = round(w, 1)
             if e is not None:
                 prev_e, prev_e_t = e, now
             # per-core load from /proc/stat deltas, padded so the row always has
@@ -392,7 +402,7 @@ def main():
             row = ([round(time.time() - t0, 2), datetime.now().strftime("%H:%M:%S")] + gpu
                    + [pkg, ram, load1, maxcore, swap, cpu_pct, nvme_temp(), enc, dec,
                       maxfan, fan_rpm, plimit, drd, dwr, nrx, ntx] + extra
-                   + [pkg_w, cpu_mhz(), psi_io()] + core_pct)
+                   + [pkg_w, cpu_mhz(), psi_io(), vram_total] + core_pct)
             fh.write(",".join(str(x) for x in row) + "\n")
             fh.flush()
             if a.duration and time.time() - t0 >= a.duration:
