@@ -1,13 +1,17 @@
 """Control-plane (benchd) API tests: auth, runners, runs, telemetry, logs,
 artifacts, stats, commands, schedules, delete, reaper, SSE."""
 import importlib.util
+import http.client
 import json
 import os
+import shutil
+import socket
+import subprocess
 import sys
 import time
 import urllib.request
 
-from harness import Checker, Server, TOKEN, REPO, BENCH
+from harness import Checker, Server, TOKEN, REPO, BENCH, tmpdir
 
 
 def run():
@@ -104,6 +108,17 @@ def run():
                                                        "status": "done", "t1": time.time()}, token=key)
     cl.call("POST", "/api/v1/runs/%s/phase" % run_id, {"seq": 2, "group": "gpu", "label": "soak",
                                                        "status": "running"}, token=key)
+    # a re-posted phase is an upsert: group/label/t0 were silently ignored on the
+    # update path, so a phase that renamed itself kept the stale first values
+    cl.call("POST", "/api/v1/runs/%s/phase" % run_id, {"seq": 1, "group": "gpu2",
+                                                       "label": "matmul-v2", "status": "done",
+                                                       "t1": time.time()}, token=key)
+    _, det0 = cl.call("GET", "/api/v1/runs/%s" % run_id)
+    p1 = [p for p in det0["phases"] if p["seq"] == 1]
+    c.check("a phase update applies group and label",
+            len(p1) == 1 and p1[0]["grp"] == "gpu2" and p1[0]["label"] == "matmul-v2", p1)
+    c.check("a phase update does not duplicate the row",
+            len([p for p in det0["phases"] if p["seq"] == 1]) == 1, det0["phases"])
 
     # named telemetry with extras
     st, r = cl.call("POST", "/api/v1/runs/%s/telemetry" % run_id, {"samples": [
@@ -141,6 +156,39 @@ def run():
     c.check("mem_util is deliberately unbounded (drivers exceed 100)",
             by_el.get(4.0, {}).get("mem_util") == 180, by_el.get(4.0))
 
+    # non-finite floats (NaN/Infinity) are not valid JSON: json.dumps emitted them
+    # as bare literals, the dashboard's JSON.parse threw, and the run page died.
+    # They are nulled on ingest and can never be serialised out.
+    st, r = cl.call("POST", "/api/v1/runs/%s/telemetry" % run_id, {"samples": [
+        {"elapsed": 6.0, "temp_c": float("inf"), "power_w": float("nan"),
+         "fan_pct": float("-inf"), "gpu_util": 50, "bad_extra": float("inf"),
+         "ts": float("inf")},
+        {"elapsed": 7.0, "temp_c": 60}]}, token=key)
+    c.check("non-finite telemetry accepted (sanitised)", st == 200 and r.get("accepted") == 2, r)
+    st, raw = cl.call("GET", "/api/v1/runs/%s/telemetry" % run_id, raw=True)
+    c.check("no literal NaN/Infinity can be emitted",
+            b"Infinity" not in raw and b"NaN" not in raw and b"nan" not in raw, raw[:120])
+    t = json.loads(raw.decode())
+    by_el = {x.get("elapsed"): x for x in t["rows"]}
+    c.check("a non-finite reading is stored as null, not Infinity",
+            by_el.get(6.0, {}).get("temp_c") is None and by_el.get(6.0, {}).get("power_w") is None,
+            by_el.get(6.0))
+    c.check("a non-finite extra is dropped",
+            not isinstance(by_el.get(6.0, {}).get("bad_extra"), float), by_el.get(6.0))
+    c.check("a finite sample in the same batch is unaffected",
+            by_el.get(7.0, {}).get("temp_c") == 60, by_el.get(7.0))
+
+    # ---- per-request batch caps (the byte cap alone left the arrays unbounded) ----
+    st, _ = cl.call("POST", "/api/v1/runs/%s/telemetry" % run_id,
+                    {"samples": [{"elapsed": i} for i in range(5001)]}, token=key)
+    c.check("an oversized telemetry batch -> 413", st == 413, st)
+    st, _ = cl.call("POST", "/api/v1/runs/%s/log" % run_id,
+                    {"lines": ["x"] * 2001}, token=key)
+    c.check("an oversized log batch -> 413", st == 413, st)
+    st, _ = cl.call("POST", "/api/v1/runs/%s/telemetry" % run_id,
+                    {"samples": {"elapsed": 1}}, token=key)
+    c.check("a non-list samples body -> 400", st == 400, st)
+
     # the importer must read telemetry rows as dicts: indexing them positionally
     # raised KeyError and aborted every Windows import with telemetry in the window
     _imp = open(os.path.join(REPO, "server", "import_results.py"), encoding="utf-8").read()
@@ -173,6 +221,14 @@ def run():
     c.check("detail has stats", det["telemetry_stats"]["stats"]["temp_c"]["max"] == 62, det.get("telemetry_stats"))
     st, body = cl.call("GET", "/api/v1/runs/%s/artifact/report.json?token=%s" % (run_id, TOKEN), raw=True)
     c.check("artifact download", st == 200 and b"gpu_soak_tflops" in body, body[:60])
+    # a retried upload must replace the stored copy: the download used to serve
+    # the stale first one
+    cl.call("POST", "/api/v1/runs/%s/artifact" % run_id,
+            {"name": "report.json", "kind": "json",
+             "content": base64.b64encode(b'{"gpu_soak_tflops":99.9}').decode()}, token=key)
+    st, body = cl.call("GET", "/api/v1/runs/%s/artifact/report.json?token=%s" % (run_id, TOKEN), raw=True)
+    c.check("a re-uploaded artifact serves the new copy",
+            st == 200 and b"99.9" in body and b"81.1" not in body, body[:60])
     st, body = cl.call("GET", "/api/v1/runs/%s/telemetry.csv?token=%s" % (run_id, TOKEN), raw=True)
     c.check("telemetry.csv download", st == 200 and b"elapsed_s" in body, body[:60])
 
@@ -217,6 +273,39 @@ def run():
     c.check("bad log paging -> not 5xx", st < 500, st)
     st, _ = cl.call("POST", "/api/v1/runners/no-such-runner/heartbeat", {"status": "idle"})
     c.check("heartbeat unknown runner -> 404", st == 404, st)
+    st, _ = cl.call("POST", "/api/v1/runners/no-such-runner/commands", {"kind": "stop"})
+    c.check("commands for an unknown runner -> 404", st == 404, st)
+
+    # ---- malformed / oversized / truncated bodies ----
+    port = srv.httpd.server_address[1]
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    conn.putrequest("POST", "/api/v1/runs/%s/finish" % run_id)
+    conn.putheader("Authorization", "Bearer " + TOKEN)
+    conn.putheader("Content-Length", str(25 * 1024 * 1024))
+    conn.endheaders()                       # declare a huge body and send nothing
+    resp = conn.getresponse()
+    c.check("a declared-oversized body -> 413 (not a pinned thread)",
+            resp.status == 413, resp.status)
+    resp.read()
+    conn.close()
+
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    conn.request("POST", "/api/v1/runs/%s/finish" % run_id, body=b"{",
+                 headers={"Authorization": "Bearer " + TOKEN})
+    resp = conn.getresponse()
+    c.check("a malformed JSON body -> 400", resp.status == 400, resp.status)
+    resp.read()
+    conn.close()
+    c.check("a malformed finish did not mark the run done",
+            cl.call("GET", "/api/v1/runs/%s" % run_id)[1]["status"] == "running", "")
+
+    s = socket.create_connection(("127.0.0.1", port), timeout=10)
+    s.sendall(("POST /api/v1/runs/%s/finish HTTP/1.0\r\nAuthorization: Bearer %s\r\n"
+               "Content-Length: 10\r\n\r\n{\"a\":1}" % (run_id, TOKEN)).encode())
+    s.shutdown(socket.SHUT_WR)              # truncate: 7 bytes sent, 10 declared
+    head = s.recv(200)
+    s.close()
+    c.check("a truncated body -> 400", b" 400 " in head.split(b"\r\n", 1)[0], head[:40])
 
     # ---- binary artifacts survive the round-trip ----
     import base64 as _b64
@@ -250,6 +339,29 @@ def run():
     ts_ = tr.get("stats", {}).get("gpu_soak_tflops", {})
     c.check("trends carry percentile stats",
             ts_.get("n") == 1 and ts_.get("p95") == 81.1 and "p50" in ts_, ts_)
+
+    # ---- API consistency: finished/unknown runs, idempotent create, query token ----
+    st, _ = cl.call("POST", "/api/v1/runs/%s/telemetry" % run_id,
+                    {"samples": [{"elapsed": 99}]}, token=key)
+    c.check("telemetry into a finished run -> 409", st == 409, st)
+    st, _ = cl.call("POST", "/api/v1/runs/%s/finish" % run_id,
+                    {"status": "done", "summary": {"x": 1}}, token=key)
+    c.check("a second finish -> 409", st == 409, st)
+    st, _ = cl.call("POST", "/api/v1/runs/no-such-run/finish", {"status": "done"}, token=key)
+    c.check("finish on an unknown run -> 404", st == 404, st)
+    st, r2 = cl.call("POST", "/api/v1/runs", {"id": run_id, "runner_id": rid, "label": "retry"},
+                     token=key)
+    c.check("re-posting a run id is idempotent", st == 200 and r2.get("existing"), (st, r2))
+    st, _ = cl.call("POST", "/api/v1/runs", {"id": "bad-started-1", "started": "yesterday",
+                                             "runner_id": rid}, token=key)
+    c.check("a non-numeric started -> 400", st == 400, st)
+    st, _ = cl.call("GET", "/api/v1/state?token=" + TOKEN, token=None)
+    c.check("?token= is not accepted on ordinary GETs", st == 401, st)
+    st, _ = cl.call("GET", "/api/v1/runs/%s/telemetry.csv?token=%s" % (run_id, TOKEN),
+                    token=None, raw=True)
+    c.check("?token= still works for downloads", st == 200, st)
+    st, _ = cl.call("GET", "/api/v1/server/update")
+    c.check("the side-effecting server update is POST-only", st == 404, st)
 
     # ---- schedules ----
     st, sc = cl.call("POST", "/api/v1/schedules", {"runner_id": rid, "label": "nightly",
@@ -323,8 +435,15 @@ def run():
             and B.ack_timeout("exec", '{"timeout": 600}') == 660, "")
 
     # ---- delete ----
+    # deleting a run must clear a runner still pointing at it (it would otherwise
+    # look busy forever and block schedules)
+    B.Handler.store.ex("UPDATE runners SET status='busy', current_run=? WHERE id=?",
+                       (run_id, rid))
     st, _ = cl.call("DELETE", "/api/v1/runs/" + run_id)
     c.check("delete run", cl.call("GET", "/api/v1/runs/%s" % run_id)[0] == 404, "")
+    c.check("deleting a run clears the runner's current_run",
+            B.Handler.store.one("SELECT current_run FROM runners WHERE id=?",
+                                (rid,))["current_run"] is None, "")
     st, _ = cl.call("DELETE", "/api/v1/runners/" + rid)
     c.check("delete runner", not any(x["id"] == rid for x in cl.call("GET", "/api/v1/runners")[1]["runners"]), "")
 
@@ -431,6 +550,14 @@ def run():
     c.check("an idle runner orphans its run, and the reaper fails it",
             any("UPDATE runs SET status='failed'" in x for x in st2.sql) and bus2.events,
             st2.sql)
+    # the residual gap: the runner restarted, picked up a NEWER run, and the old
+    # one was never examined (the old condition only looked at an empty current_run)
+    _newer = {"id": "r1", "last_seen": _t.time(), "status": "busy", "current_run": "run-newer"}
+    st3, bus3 = _Store(_newer), _Bus()
+    _bdm.reap_stale_runs(st3, bus3)
+    c.check("a runner on a newer run orphans the old one, and the reaper fails it",
+            any("UPDATE runs SET status='failed'" in x for x in st3.sql) and bus3.events,
+            st3.sql)
 
     # ---- the control plane auto-updates itself when it can ----
     _spec_au = importlib.util.spec_from_file_location(
@@ -492,22 +619,26 @@ def run():
     c.check("retention selects finished runs older than the cutoff",
             "status != 'running'" in _seen[0][0] and _seen[0][1][0] < time.time(),
             _seen[0])
-    c.check("retention sweeps all three per-sample tables per run",
-            n == 30 and len([s for s, _a in _seen if s.startswith("UPDATE")]) == 2 and
-            len([s for s, _a in _seen if s.startswith("DELETE")]) == 6,
+    c.check("retention sweeps telemetry, logs, events and artifacts per run",
+            n == 45 and len([s for s, _a in _seen if s.startswith("UPDATE")]) == 2 and
+            len([s for s, _a in _seen if s.startswith("DELETE")]) == 9,
             (n, len(_seen)))
     c.check("retention stores a run's stats before deleting its samples",
             [s.split()[0] for s, _a in _seen if s.startswith(("UPDATE", "DELETE"))] ==
-            ["UPDATE", "DELETE", "DELETE", "DELETE",
-             "UPDATE", "DELETE", "DELETE", "DELETE"],
+            ["UPDATE", "DELETE", "DELETE", "DELETE", "DELETE",
+             "UPDATE", "DELETE", "DELETE", "DELETE", "DELETE", "DELETE"],
             [s[:24] for s, _a in _seen if s.startswith(("UPDATE", "DELETE"))])
     c.check("retention computes the stats from the run's own samples",
             len([s for s, _a in _seen if s.startswith("SELECT * FROM telemetry")]) == 2, "")
     c.check("retention deletes per run, not one sweep of everything",
             all("WHERE run_id=?" in s and "IN (SELECT" not in s
-                for s, _a in _seen if s.startswith("DELETE")), "")
+                for s, _a in _seen if s.startswith("DELETE") and "commands" not in s), "")
+    _cmd = [(s, a) for s, a in _seen if s.startswith("DELETE FROM commands")]
+    c.check("retention prunes terminal commands older than the cutoff",
+            len(_cmd) == 1 and "status IN ('done','failed')" in _cmd[0][0]
+            and _cmd[0][1][0] < time.time(), _cmd)
     c.check("retention covers every old run it selected",
-            {a[0] for s, a in _seen if s.startswith("DELETE")} ==
+            {a[0] for s, a in _seen if s.startswith("DELETE") and "commands" not in s} ==
             {"run-old-1", "run-old-2"} and
             {a[1] for s, a in _seen if s.startswith("UPDATE")} ==
             {"run-old-1", "run-old-2"}, "")
@@ -515,12 +646,35 @@ def run():
     c.check("retention is throttled between sweeps",
             _bdm.retain_old_data(_FakeStore()) == 0 and len(_seen) == before, "")
     c.check("a forced sweep runs regardless of the throttle",
-            _bdm.retain_old_data(_FakeStore(), force=True) == 30, "")
+            _bdm.retain_old_data(_FakeStore(), force=True) == 45, "")
     _bdm.RETENTION_DAYS = 0.0
     _bdm._RETENTION_LAST[0] = 0.0
     settled = len(_seen)
     c.check("retention disabled keeps everything",
             _bdm.retain_old_data(_FakeStore()) == 0 and len(_seen) == settled, "")
+
+    # ...and a real sweep removes artifact content and terminal commands while a
+    # fresh terminal command survives (they hold base64/rows in the same DB)
+    import base64 as _b64r
+    _rs = B.Handler.store
+    _old_t = time.time() - 10 * 86400
+    _rs.ex("INSERT INTO runs(id,runner_id,host,label,started,ended,status) VALUES(?,?,?,?,?,?,?)",
+           ("ret-old", "gone-r", "lab-1", "old", _old_t, _old_t + 60, "done"))
+    _rs.ex("INSERT INTO artifacts(run_id,name,kind,size,sha256,content) VALUES(?,?,?,?,?,?)",
+           ("ret-old", "big.bin", "bin", 4, None, _b64r.b64encode(b"data").decode()))
+    _rs.ex("INSERT INTO commands(id,runner_id,kind,payload,status,created,acked) "
+           "VALUES(?,?,?,?,?,?,?)",
+           ("ret-cmd", "gone-r", "exec", "{}", "done", _old_t, _old_t))
+    _rs.ex("INSERT INTO commands(id,runner_id,kind,payload,status,created) VALUES(?,?,?,?,?,?)",
+           ("keep-cmd", "gone-r", "exec", "{}", "queued", time.time()))
+    _bdm.RETENTION_DAYS = 1.0
+    _bdm._RETENTION_LAST[0] = 0.0
+    _bdm.retain_old_data(_rs, force=True)
+    c.check("retention removes old artifact content from the database",
+            _rs.one("SELECT COUNT(*) c FROM artifacts WHERE run_id='ret-old'")["c"] == 0, "")
+    c.check("retention prunes old terminal commands, keeps live ones",
+            _rs.one("SELECT COUNT(*) c FROM commands WHERE id='ret-cmd'")["c"] == 0
+            and _rs.one("SELECT COUNT(*) c FROM commands WHERE id='keep-cmd'")["c"] == 1, "")
 
     # the run detail must still have stats once the samples are gone
     _stored = {"samples": 400, "stats": {"temp_c": {"max": 62}}, "derived": {"energy_j": 1}}
@@ -555,6 +709,91 @@ def run():
     c.check("a run with no samples and no stored stats is still empty, not an error",
             _bdm.Handler._compute_stats(_Self([], stored=False), "run-nothing")["samples"] == 0,
             "")
+
+    # ---- config parsing and self-update failure reporting ----
+    os.environ["BENCHD_TEST_BAD_FLOAT"] = "30d"
+    c.check("a bad numeric env var falls back instead of crashing the unit",
+            _bdm.env_float("BENCHD_TEST_BAD_FLOAT", 30.0) == 30.0, "")
+    os.environ["BENCHD_TEST_BAD_FLOAT"] = "7.5"
+    c.check("a valid numeric env var is used",
+            _bdm.env_float("BENCHD_TEST_BAD_FLOAT", 30.0) == 7.5, "")
+    os.environ["BENCHD_TEST_BAD_FLOAT"] = "nan"
+    c.check("a non-finite env var falls back",
+            _bdm.env_float("BENCHD_TEST_BAD_FLOAT", 30.0) == 30.0, "")
+    del os.environ["BENCHD_TEST_BAD_FLOAT"]
+
+    _cdir = tmpdir()
+    with open(os.path.join(_cdir, "benchd.conf"), "w", encoding="utf-8") as fh:
+        fh.write("# comment line\nBENCHD_TOKEN=abc123  # rotated last week\n")
+    _real_here = _bdm.HERE
+    _bdm.HERE = _cdir
+    c.check("find_conf_value strips inline comments",
+            _bdm.find_conf_value("BENCHD_TOKEN") == "abc123", _bdm.find_conf_value("BENCHD_TOKEN"))
+    with open(os.path.join(_cdir, "benchd.conf"), "w", encoding="utf-8") as fh:
+        fh.write('BENCHD_TOKEN="quoted value"\n')
+    c.check("find_conf_value unwraps a quoted value",
+            _bdm.find_conf_value("BENCHD_TOKEN") == "quoted value", "")
+    _bdm.HERE = _real_here
+
+    # a failed git pull must be reported as not ok (server_pull ignored return codes)
+    _gd = tmpdir()
+    os.makedirs(os.path.join(_gd, "server"))
+    shutil.copy(os.path.join(REPO, "server", "benchd.py"),
+                os.path.join(_gd, "server", "benchd.py"))
+
+    def _git(*a):
+        return subprocess.run(["git", "-C", _gd] + list(a), capture_output=True, text=True)
+
+    _git("init", "-q")
+    _git("remote", "add", "origin", os.path.join(_gd, "no-such-remote.git"))
+    _spec_pull = importlib.util.spec_from_file_location(
+        "benchd_pull", os.path.join(_gd, "server", "benchd.py"))
+    _pdm = importlib.util.module_from_spec(_spec_pull)
+    _spec_pull.loader.exec_module(_pdm)
+    _res = _pdm.server_pull()
+    c.check("a failed git pull is reported as not ok", _res.get("ok") is False, _res)
+
+    # ---- fail-closed auth: no token must refuse to start ----
+    c.check("no token without --allow-anonymous is refused",
+            _bdm.auth_refusal(None, False) is not None, "")
+    _ref = _bdm.auth_refusal(None, False) or ""
+    c.check("the refusal names the fix",
+            "BENCHD_TOKEN" in _ref and "allow-anonymous" in _ref, _ref)
+    c.check("a token or --allow-anonymous allows serving",
+            _bdm.auth_refusal("tok", False) is None
+            and _bdm.auth_refusal(None, True) is None, "")
+    _home = tmpdir()
+    _env = {k: v for k, v in os.environ.items() if k != "BENCHD_TOKEN"}
+    _env["USERPROFILE"] = _home
+    _env["HOME"] = _home
+    _p = subprocess.run([sys.executable, os.path.join(REPO, "server", "benchd.py"),
+                         "--host", "127.0.0.1", "--port", "0",
+                         "--db", os.path.join(_home, "auth.sqlite")],
+                        capture_output=True, text=True, timeout=60, env=_env, cwd=REPO)
+    c.check("benchd refuses to start with no token (exit 2)",
+            _p.returncode == 2 and "BENCHD_TOKEN" in (_p.stderr + _p.stdout),
+            (_p.returncode, (_p.stderr or "")[-200:]))
+
+    # ---- an operator key rotation must store what it returns ----
+    st, rot = cl.call("POST", "/api/v1/register",
+                      {"name": "rotate", "os": "Linux", "kind": "agent"})
+    rrid, rkey = rot.get("runner_id"), rot.get("api_key")
+    st, rot2 = cl.call("POST", "/api/v1/register",
+                       {"runner_id": rrid, "api_key": "rotated-key-123", "name": "rotate"})
+    newkey = rot2.get("api_key")
+    c.check("an operator re-register returns a key that was actually stored",
+            st == 200 and rot2.get("runner_id") == rrid and newkey and newkey != rkey, rot2)
+    st, _ = cl.call("POST", "/api/v1/runners/%s/heartbeat" % rrid, {"status": "idle"},
+                    token=newkey)
+    c.check("the returned key authenticates", st == 200, st)
+    st, _ = cl.call("POST", "/api/v1/runners/%s/heartbeat" % rrid, {"status": "idle"},
+                    token=rkey)
+    c.check("the superseded key no longer authenticates", st == 401, st)
+    _rs.ex("UPDATE runners SET current_run='stale-run', status='busy' WHERE id=?", (rrid,))
+    st, _ = cl.call("POST", "/api/v1/register", {"runner_id": rrid, "name": "rotate"})
+    c.check("a re-register clears a stale current_run",
+            st == 200 and _rs.one("SELECT current_run FROM runners WHERE id=?",
+                                  (rrid,))["current_run"] is None, st)
 
     srv.stop()
     return c.fails

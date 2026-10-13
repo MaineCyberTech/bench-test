@@ -18,6 +18,7 @@ import base64
 import csv
 import glob
 import json
+import math
 import os
 import re
 import sys
@@ -134,9 +135,14 @@ def read_telemetry(path, cap=1500, t0=None):
                 for c, i in cols.items():
                     if i < len(v) and v[i] != "":
                         try:
-                            s[c] = float(v[i])
+                            fv = float(v[i])
                         except ValueError:
                             continue
+                        if not math.isfinite(fv):
+                            # nan/inf from a CSV would be stored and then emitted
+                            # as invalid JSON (the dashboard's JSON.parse throws)
+                            continue
+                        s[c] = fv
                 if not s:
                     continue
                 if t0 is not None and isinstance(s.get("elapsed"), float):

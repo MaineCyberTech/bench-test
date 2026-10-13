@@ -43,6 +43,18 @@ def run():
     c.check("read_telemetry downsamples over cap",
             len(imp.read_telemetry(csv_path, cap=1)) == 1, "")
 
+    # nan/inf from a CSV must not pass through: the server stores them and would
+    # then emit invalid JSON (the dashboard's JSON.parse throws)
+    csv2 = os.path.join(d, "h-win-20260101-000001.telemetry.csv")
+    with open(csv2, "w", encoding="utf-8") as fh:
+        fh.write("elapsed_s,temp_c,power_w\n")
+        fh.write("0,nan,inf\n")
+        fh.write("1,55,200\n")
+    rows2 = imp.read_telemetry(csv2, t0=2000.0)
+    c.check("read_telemetry drops non-finite CSV values",
+            len(rows2) == 2 and rows2[0].get("temp_c") is None
+            and rows2[0].get("power_w") is None and rows2[1]["temp_c"] == 55, rows2)
+
     # ---- _merge_summary shares the live-run merge (both platform shapes) ----
     s = {}
     imp._merge_summary(s, [

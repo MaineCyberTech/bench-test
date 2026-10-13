@@ -30,11 +30,13 @@ import base64
 import csv
 import io
 import json
+import math
 import os
 import re
 import secrets
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 import urllib.request
@@ -54,6 +56,11 @@ DEFAULT_DB = os.path.join(HERE, "data", "benchd.sqlite")
 # (telemetry CSV, sensors dump, a screenshot) post separately and fit comfortably.
 MAX_BODY = 24 * 1024 * 1024
 
+# Per-request array caps: the byte cap alone still let one POST carry an unbounded
+# number of samples or log lines (SQLite rows and SSE payloads grow with it).
+MAX_SAMPLES = 5000
+MAX_LOG_LINES = 2000
+
 SAMPLE_FIELDS = ["elapsed", "temp_c", "fan_pct", "power_w", "gpu_util",
                  "gpu_fan_rpm", "cpu_util", "ram_used", "sm_mhz"]
 
@@ -68,12 +75,44 @@ _PCT_0_100 = ("fan_pct", "gpu_util", "cpu_util")
 
 
 def sanitise_sample(s):
-    """Null out physically impossible percentage readings, in place."""
+    """Null out physically impossible percentage readings, in place.
+
+    Non-finite values (NaN/Infinity from a divide or a bad sensor) are nulled too:
+    json.dumps would otherwise emit the bare literals NaN/Infinity, which are not
+    valid JSON and make the dashboard's JSON.parse throw.
+    """
+    for k, v in list(s.items()):
+        if isinstance(v, float) and not math.isfinite(v):
+            s[k] = None
     for k in _PCT_0_100:
         v = s.get(k)
         if isinstance(v, (int, float)) and not isinstance(v, bool) and not (0 <= v <= 100):
             s[k] = None
     return s
+
+
+def _json_safe(obj):
+    """Recursively replace non-finite floats so a payload can be serialised.
+
+    Python's json.dumps would happily emit NaN/Infinity (invalid JSON that a
+    browser's JSON.parse rejects); this is the fallback for objects that did not
+    come through sanitise_sample (legacy rows, derived stats).
+    """
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    return obj
+
+
+def _json_dumps(obj):
+    """json.dumps that can never emit NaN/Infinity/other invalid JSON."""
+    try:
+        return json.dumps(obj, allow_nan=False)
+    except (ValueError, TypeError):
+        return json.dumps(_json_safe(obj), allow_nan=False, default=str)
 
 METRICS = [
     ("gpu_matmul_tflops.fp16", "GPU matmul fp16 (TFLOPS)"),
@@ -176,6 +215,19 @@ class Store:
             self.conn.execute("ALTER TABLE runs ADD COLUMN preset TEXT")
         if "stats" not in rcols:
             self.conn.execute("ALTER TABLE runs ADD COLUMN stats TEXT")
+        # A retried artifact upload used to leave the old copy in place (the
+        # download then served stale content) and phases were SELECT-then-INSERT
+        # with no uniqueness, so a race could double them. Collapse any existing
+        # duplicates to the newest row, then enforce the invariant with unique
+        # indexes the upload paths can use as ON CONFLICT targets.
+        self.conn.execute("DELETE FROM artifacts WHERE id NOT IN "
+                          "(SELECT MAX(id) FROM artifacts GROUP BY run_id, name)")
+        self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_run_name "
+                          "ON artifacts(run_id, name)")
+        self.conn.execute("DELETE FROM phases WHERE id NOT IN "
+                          "(SELECT MAX(id) FROM phases GROUP BY run_id, seq)")
+        self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_phases_run_seq "
+                          "ON phases(run_id, seq)")
 
     def ex(self, sql, args=()):
         with self.lock:
@@ -230,6 +282,8 @@ def online(last_seen):
 
 _SERVER_GIT = {"v": None}
 _SERVER_VER = {"v": None}
+# serialises POST /api/v1/server/update so two pulls cannot race the checkout
+_SERVER_UPDATE_LOCK = threading.Lock()
 
 
 def server_git():
@@ -502,13 +556,18 @@ def derive_stats(rows, series, stats):
             w = tele_public(r).get("power_w")
         except Exception:
             w = None
-        if t is not None and isinstance(w, (int, float)):
-            pts.append((float(t), float(w)))
+        if t is not None and isinstance(w, (int, float)) and math.isfinite(float(w)):
+            try:
+                t = float(t)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(t):
+                pts.append((t, float(w)))
     if len(pts) >= 2:
         j = 0.0
         for (t0, w0), (t1, w1) in zip(pts, pts[1:]):
             dt = t1 - t0
-            if dt > 0:
+            if math.isfinite(dt) and dt > 0:
                 j += (w0 + w1) / 2.0 * dt
         d["energy_j"] = round(j, 1)
         if pts[-1][0] > 0:
@@ -546,7 +605,7 @@ def compute_stats(store, run_id):
     series = {}
     for r in rows:
         for k, v in tele_public(r).items():
-            if isinstance(v, (int, float)) and not isinstance(v, bool):
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v)):
                 series.setdefault(k, []).append(float(v))
     stats = {}
     for k, vals in series.items():
@@ -586,9 +645,22 @@ def next_daily(at_time, after=None):
 
 
 # ------------------------------------------------------------------ server ----
+class BodyError(Exception):
+    """A request body that must be refused with a specific status code."""
+
+    def __init__(self, code, msg):
+        super().__init__(msg)
+        self.code = code
+        self.msg = msg
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "benchd/2.0"
     protocol_version = "HTTP/1.0"
+    # A declared-but-never-sent body would otherwise pin a handler thread (and its
+    # buffer) forever: without a socket timeout rfile.read() blocks indefinitely.
+    # Comfortably above the SSE keepalive interval so idle streams stay open.
+    timeout = 60.0
     store = None
     bus = None
     token = None
@@ -608,7 +680,7 @@ class Handler(BaseHTTPRequestHandler):
         print("[benchd] %s %s" % (time.strftime("%H:%M:%S"), msg), flush=True)
 
     def _send(self, code, obj=None, raw=None, ctype="application/json", headers=None):
-        body = raw if raw is not None else json.dumps(obj).encode()
+        body = raw if raw is not None else _json_dumps(obj).encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -625,26 +697,67 @@ class Handler(BaseHTTPRequestHandler):
     def _err(self, code, msg):
         self._send(code, {"error": msg})
 
+    def _log_error(self, method, path, exc):
+        # The caller gets a generic message; the detail stays in the server log so
+        # an internal failure cannot leak types, paths or query fragments.
+        print("[benchd] %s %s failed: %s: %s" % (method, path, type(exc).__name__, exc),
+              flush=True)
+
     def _body(self):
+        """Parse the JSON body, raising BodyError instead of guessing.
+
+        A malformed or truncated body used to be silently reinterpreted as {} - a
+        garbage /finish then marked a run done with an empty summary.
+        """
+        raw_hdr = self.headers.get("Content-Length")
+        if raw_hdr is None or str(raw_hdr).strip() == "":
+            return {}
         try:
-            n = int(self.headers.get("Content-Length") or 0)
+            n = int(raw_hdr)
         except ValueError:
-            n = 0
-        if n <= 0:
+            raise BodyError(400, "invalid Content-Length")
+        if n < 0:
+            raise BodyError(400, "invalid Content-Length")
+        if n == 0:
             return {}
-        # a declared-but-huge body used to be read in full, so an authenticated
-        # client could pin a thread and its memory with one request
         if n > MAX_BODY:
-            raise ValueError("body too large (%d > %d)" % (n, MAX_BODY))
+            # checked before reading: a declared-but-never-sent body must not pin
+            # this thread or allocate its memory
+            raise BodyError(413, "body too large (%d > %d bytes)" % (n, MAX_BODY))
         try:
-            return json.loads(self.rfile.read(n).decode() or "{}")
+            raw = self.rfile.read(n)
         except Exception:
+            raise BodyError(400, "body read failed")
+        if len(raw) != n:
+            raise BodyError(400, "truncated body (%d of %d bytes)" % (len(raw), n))
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            raise BodyError(400, "body is not UTF-8")
+        if not text.strip():
             return {}
+        try:
+            obj = json.loads(text)
+        except ValueError:
+            raise BodyError(400, "malformed JSON body")
+        if not isinstance(obj, dict):
+            raise BodyError(400, "body must be a JSON object")
+        return obj
 
     # -- auth --------------------------------------------------------------
     def _bearer(self):
         h = self.headers.get("Authorization", "")
         return h[7:] if h.startswith("Bearer ") else None
+
+    @staticmethod
+    def _token_eq(a, b):
+        """Constant-time token comparison; False for anything empty/missing."""
+        if not a or not b:
+            return False
+        try:
+            return secrets.compare_digest(str(a), str(b))
+        except Exception:
+            return False
 
     def _runner_from_bearer(self):
         b = self._bearer()
@@ -652,21 +765,31 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return self.store.one("SELECT * FROM runners WHERE api_key=?", (b,))
 
-    def _is_operator(self, q=None):
+    def _is_operator(self):
+        """The shared operator token as a bearer header only.
+
+        ?token= is not accepted here: it is exposed in URLs, logs and proxy
+        access logs, and the documented exception is only the SSE stream and
+        file downloads (which cannot set headers), handled by _query_token_ok.
+        """
         if self.token is None:
             return True
-        b = self._bearer()
-        if b and secrets.compare_digest(b, self.token):
+        return self._token_eq(self._bearer(), self.token)
+
+    def _query_token_ok(self, q):
+        """The operator token as ?token= - SSE and downloads only."""
+        if self.token is None:
             return True
-        if q and q.get("token", [None])[0] == self.token:
-            return True
-        return False
+        try:
+            v = (q or {}).get("token", [None])[0]
+        except Exception:
+            v = None
+        return self._token_eq(v, self.token)
 
     def _runner_ok(self, rid=None):
         if self.token is None:
             return True
-        b = self._bearer()
-        if b and b == self.token:
+        if self._token_eq(self._bearer(), self.token):
             return True
         r = self._runner_from_bearer()
         if r and (rid is None or r["id"] == rid):
@@ -677,8 +800,7 @@ class Handler(BaseHTTPRequestHandler):
         """(is_operator, runner_row_or_None) for the current request."""
         if self.token is None:
             return True, None
-        b = self._bearer()
-        if b and b == self.token:
+        if self._token_eq(self._bearer(), self.token):
             return True, None
         return False, self._runner_from_bearer()
 
@@ -716,26 +838,28 @@ class Handler(BaseHTTPRequestHandler):
                                     "latest": latest_git(),
                                     "runners": len(self.store.q("SELECT id FROM runners"))})
         if path.startswith("/api/"):
+            # ?token= is allowed only where a browser cannot send a header:
+            # the SSE stream (EventSource) and file downloads (link navigation).
             if path == "/api/v1/stream":
-                if not self._is_operator(q):
+                if not (self._is_operator() or self._query_token_ok(q)):
                     return self._err(401, "unauthorized")
                 return self._stream()
-            m = re.match(r"^/api/v1/server/update$", path)
-            if m:
-                if not self._is_operator(q):
-                    return self._err(403, "operator only")
-                return self._server_update()
+            if re.match(r"^/api/v1/runs/[^/]+/(?:artifact/[^/]+|telemetry\.csv)$", path):
+                if not (self._is_operator() or self._query_token_ok(q)):
+                    return self._err(401, "unauthorized")
+                return self._api_get(path, q)
             m = re.match(r"^/api/v1/runners/([^/]+)/commands$", path)
             if m:
                 if not self._may_act_as(m.group(1)):
                     return self._err(403, "not your runner")
                 return self._runner_commands(m.group(1))
-            if not self._is_operator(q):
+            if not self._is_operator():
                 return self._err(401, "unauthorized")
             try:
                 return self._api_get(path, q)
             except Exception as exc:
-                return self._err(500, "%s: %s" % (type(exc).__name__, exc))
+                self._log_error("GET", path, exc)
+                return self._err(500, "internal server error")
         return self._static(path)
 
     def do_DELETE(self):
@@ -743,7 +867,7 @@ class Handler(BaseHTTPRequestHandler):
         path, q = u.path, parse_qs(u.query)
         if not path.startswith("/api/"):
             return self._err(404, "not found")
-        if not self._is_operator(q):
+        if not self._is_operator():
             return self._err(401, "unauthorized")
         m = re.match(r"^/api/v1/schedules/([^/]+)$", path)
         if m:
@@ -756,6 +880,9 @@ class Handler(BaseHTTPRequestHandler):
             for t in ("phases", "telemetry", "events", "artifacts", "logs"):
                 self.store.ex("DELETE FROM %s WHERE run_id=?" % t, (rid,))
             self.store.ex("DELETE FROM runs WHERE id=?", (rid,))
+            # a runner still pointing at the deleted run must not look busy forever
+            self.store.ex("UPDATE runners SET status='idle', current_run=NULL "
+                          "WHERE current_run=?", (rid,))
             self.bus.publish({"event": "run", "data": {"id": rid, "deleted": True}})
             return self._send(200, {"ok": True})
         m = re.match(r"^/api/v1/runners/([^/]+)$", path)
@@ -773,12 +900,17 @@ class Handler(BaseHTTPRequestHandler):
         path, q = u.path, parse_qs(u.query)
         if not path.startswith("/api/"):
             return self._err(404, "not found")
-        if not self._is_operator(q) and not self._runner_ok():
+        if not self._is_operator() and not self._runner_ok():
             return self._err(401, "unauthorized")
         try:
-            return self._api_post(path, q, self._body())
+            b = self._body()
+        except BodyError as e:
+            return self._err(e.code, e.msg)
+        try:
+            return self._api_post(path, q, b)
         except Exception as exc:
-            return self._err(500, "%s: %s" % (type(exc).__name__, exc))
+            self._log_error("POST", path, exc)
+            return self._err(500, "internal server error")
 
     # -- GET api -----------------------------------------------------------
     def _api_get(self, path, q):
@@ -937,7 +1069,8 @@ class Handler(BaseHTTPRequestHandler):
                                    'attachment; filename="%s-telemetry.csv"' % safe_filename(run_id)})
 
     def _artifact_download(self, run_id, name):
-        a = self.store.one("SELECT * FROM artifacts WHERE run_id=? AND name=?", (run_id, name))
+        a = self.store.one("SELECT * FROM artifacts WHERE run_id=? AND name=? "
+                           "ORDER BY id DESC LIMIT 1", (run_id, name))
         if not a:
             return self._err(404, "no such artifact")
         ctype = {"json": "application/json", "text": "text/plain; charset=utf-8"}.get(
@@ -1006,19 +1139,25 @@ class Handler(BaseHTTPRequestHandler):
             self.bus.unsubscribe(q)
 
     def _sse(self, event, data):
-        self.wfile.write(("event: %s\ndata: %s\n\n" % (event, json.dumps(data))).encode())
+        self.wfile.write(("event: %s\ndata: %s\n\n" % (event, _json_dumps(data))).encode())
         self.wfile.flush()
 
     # -- POST api ----------------------------------------------------------
     def _api_post(self, path, q, b):
         S = self.store
-        # a writer may only touch its own run (404 unknown, 403 someone else's)
+        # a writer may only touch its own run, and only while it is running:
+        # telemetry/phase/finish into a finished (or unknown) run is refused
         mrun = re.match(r"^/api/v1/runs/([^/]+)/(?:phase|telemetry|event|log|artifact|finish)$",
                         path)
-        if mrun and not self._may_write_run(mrun.group(1)):
-            exists = S.one("SELECT id FROM runs WHERE id=?", (mrun.group(1),))
-            return self._err(404 if not exists else 403,
-                             "no such run" if not exists else "not your run")
+        if mrun:
+            run_id = mrun.group(1)
+            row = S.one("SELECT status FROM runs WHERE id=?", (run_id,))
+            if not row:
+                return self._err(404, "no such run")
+            if not self._may_write_run(run_id):
+                return self._err(403, "not your run")
+            if row["status"] != "running":
+                return self._err(409, "run is %s, not running" % row["status"])
         if path == "/api/v1/register":
             return self._register(b)
         m = re.match(r"^/api/v1/runners/([^/]+)/heartbeat$", path)
@@ -1032,7 +1171,7 @@ class Handler(BaseHTTPRequestHandler):
             for k in ("status", "current_run", "capabilities", "version", "git"):
                 if k in b:
                     fields.append("%s=?" % k)
-                    args.append(json.dumps(b[k]) if k == "capabilities" else b[k])
+                    args.append(_json_dumps(b[k]) if k == "capabilities" else b[k])
             args.append(rid)
             S.ex("UPDATE runners SET %s WHERE id=?" % ",".join(fields), args)
             r = runner_public(S.one("SELECT * FROM runners WHERE id=?", (rid,)))
@@ -1043,12 +1182,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "commands": pending, "server_time": now()})
         m = re.match(r"^/api/v1/server/update$", path)
         if m:
-            if not self._is_operator(q):
+            if not self._is_operator():
                 return self._err(403, "operator only")
             return self._server_update()
         m = re.match(r"^/api/v1/runners/([^/]+)/commands$", path)
         if m:
-            if not self._is_operator(q):
+            if not self._is_operator():
                 return self._err(403, "operator only")
             return self._issue_command(m.group(1), b)
         m = re.match(r"^/api/v1/runners/([^/]+)/commands/([^/]+)/ack$", path)
@@ -1060,13 +1199,13 @@ class Handler(BaseHTTPRequestHandler):
             if not cmd or cmd["runner_id"] != rid:
                 return self._err(404, "no such command")
             S.ex("UPDATE commands SET status=?, acked=?, result=? WHERE id=?",
-                 (b.get("status", "done"), now(), json.dumps(b.get("result") or {}), cid))
+                 (b.get("status", "done"), now(), _json_dumps(b.get("result") or {}), cid))
             self.bus.publish({"event": "command", "data": {"id": cid, "runner_id": rid,
                                                            "status": b.get("status", "done"),
                                                            "result": b.get("result")}})
             return self._send(200, {"ok": True})
         if path == "/api/v1/schedules":
-            if not self._is_operator(q):
+            if not self._is_operator():
                 return self._err(403, "operator only")
             return self._create_schedule(b)
         if path == "/api/v1/runs":
@@ -1081,12 +1220,35 @@ class Handler(BaseHTTPRequestHandler):
             run_id = b.get("id") or str(uuid.uuid4())
             if not safe_id(run_id):
                 return self._err(400, "bad run id")
-            S.ex("INSERT INTO runs(id,runner_id,host,label,profile,started,status,platform,gpu,"
-                 "driver,torch,system,preset) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                 (run_id, rid, b.get("host"), b.get("label"), json.dumps(b.get("profile") or {}),
-                  b.get("started") or now(), "running", b.get("platform"), b.get("gpu"),
-                  b.get("driver"), b.get("torch"), json.dumps(b.get("system") or {}),
-                  b.get("preset") or (b.get("profile") or {}).get("preset")))
+            started = b.get("started")
+            if started is None:
+                started = now()
+            else:
+                # a string here used to land in a REAL column as TEXT, sorting
+                # ahead of every real timestamp and never meeting the retention
+                # cutoff; only a finite epoch is allowed
+                try:
+                    started = float(started)
+                except (TypeError, ValueError):
+                    return self._err(400, "bad started timestamp")
+                if not math.isfinite(started) or started <= 0:
+                    return self._err(400, "bad started timestamp")
+            profile = b.get("profile") if isinstance(b.get("profile"), dict) else {}
+            cur = S.ex("INSERT INTO runs(id,runner_id,host,label,profile,started,status,platform,"
+                       "gpu,driver,torch,system,preset) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                       "ON CONFLICT(id) DO NOTHING",
+                       (run_id, rid, b.get("host"), b.get("label"), _json_dumps(profile),
+                        started, "running", b.get("platform"), b.get("gpu"),
+                        b.get("driver"), b.get("torch"),
+                        _json_dumps(b.get("system") if isinstance(b.get("system"), dict) else {}),
+                        b.get("preset") or profile.get("preset")))
+            if not cur.rowcount:
+                # a retry of POST /runs with the same client id must be idempotent,
+                # not a 500 IntegrityError
+                existing = S.one("SELECT runner_id FROM runs WHERE id=?", (run_id,))
+                if not op and (not existing or existing["runner_id"] != rid):
+                    return self._err(409, "run id already in use")
+                return self._send(200, {"run_id": run_id, "existing": True})
             if rid:
                 S.ex("UPDATE runners SET status='busy', current_run=? WHERE id=?", (run_id, rid))
             run = run_public(S.one("SELECT * FROM runs WHERE id=?", (run_id,)))
@@ -1097,23 +1259,35 @@ class Handler(BaseHTTPRequestHandler):
         if m:
             run_id = m.group(1)
             seq = int_arg({"seq": [b.get("seq", 0)]}, "seq", 0, hi=100000)
-            existing = S.one("SELECT id FROM phases WHERE run_id=? AND seq=?", (run_id, seq))
-            if existing:
-                S.ex("UPDATE phases SET status=?, t1=?, detail=? WHERE id=?",
-                     (b.get("status", "running"), b.get("t1"), b.get("detail"), existing["id"]))
-            else:
-                S.ex("INSERT INTO phases(run_id,seq,grp,label,status,t0,t1,detail) "
-                     "VALUES(?,?,?,?,?,?,?,?)",
-                     (run_id, seq, b.get("group"), b.get("label"), b.get("status", "running"),
-                      b.get("t0") or now(), b.get("t1"), b.get("detail")))
+            grp, label, t0 = b.get("group"), b.get("label"), b.get("t0")
+            # the unique (run_id, seq) index makes this an upsert: a re-posted
+            # phase updates in place, and group/label/t0 are applied too instead
+            # of being silently ignored on update
+            S.ex("INSERT INTO phases(run_id,seq,grp,label,status,t0,t1,detail) "
+                 "VALUES(?,?,?,?,?,?,?,?) "
+                 "ON CONFLICT(run_id,seq) DO UPDATE SET "
+                 "grp=CASE WHEN ? THEN excluded.grp ELSE phases.grp END, "
+                 "label=CASE WHEN ? THEN excluded.label ELSE phases.label END, "
+                 "status=excluded.status, "
+                 "t0=CASE WHEN ? THEN excluded.t0 ELSE phases.t0 END, "
+                 "t1=excluded.t1, detail=excluded.detail",
+                 (run_id, seq, grp, label, b.get("status", "running"),
+                  t0 or now(), b.get("t1"), b.get("detail"),
+                  1 if grp is not None else 0,
+                  1 if label is not None else 0,
+                  1 if t0 is not None else 0))
             self.bus.publish({"event": "phase", "data": {
-                "run_id": run_id, "seq": seq, "group": b.get("group"), "label": b.get("label"),
+                "run_id": run_id, "seq": seq, "group": grp, "label": label,
                 "status": b.get("status", "running"), "detail": b.get("detail")}})
             return self._send(200, {"ok": True})
         m = re.match(r"^/api/v1/runs/([^/]+)/telemetry$", path)
         if m:
             run_id = m.group(1)
             samples = b.get("samples") or []
+            if not isinstance(samples, list):
+                return self._err(400, "samples must be a list")
+            if len(samples) > MAX_SAMPLES:
+                return self._err(413, "too many samples (%d > %d)" % (len(samples), MAX_SAMPLES))
             rows = []
             named = []
             for s in samples:
@@ -1124,7 +1298,7 @@ class Handler(BaseHTTPRequestHandler):
                     extra = {k: v for k, v in s.items()
                              if k not in SAMPLE_FIELDS and k != "ts"
                              and isinstance(v, (int, float, str)) and not isinstance(v, bool)}
-                    if isinstance(s.get("ts"), (int, float)):
+                    if isinstance(s.get("ts"), (int, float)) and math.isfinite(float(s["ts"])):
                         ts = float(s["ts"])
                     named.append(dict(s))
                 else:
@@ -1134,7 +1308,8 @@ class Handler(BaseHTTPRequestHandler):
                     core = [d.get(f) for f in SAMPLE_FIELDS]
                     extra = {}
                     named.append(dict(d))
-                rows.append([run_id, ts or now()] + core + [json.dumps(extra) if extra else None])
+                rows.append([run_id, ts or now()] + core
+                            + [_json_dumps(extra) if extra else None])
             with S.lock:
                 S.conn.executemany(
                     "INSERT INTO telemetry(run_id,ts,elapsed,temp_c,fan_pct,power_w,gpu_util,"
@@ -1161,6 +1336,11 @@ class Handler(BaseHTTPRequestHandler):
         if m:
             run_id = m.group(1)
             lines = b.get("lines") or ([b["line"]] if b.get("line") else [])
+            if not isinstance(lines, list):
+                return self._err(400, "lines must be a list")
+            if len(lines) > MAX_LOG_LINES:
+                return self._err(413, "too many log lines (%d > %d)"
+                                 % (len(lines), MAX_LOG_LINES))
             lines = [str(x)[:4000] for x in lines]
             stream = b.get("stream", "out")
             if lines:
@@ -1180,23 +1360,48 @@ class Handler(BaseHTTPRequestHandler):
                 raw = base64.b64decode(content, validate=True) if content else b""
             except Exception:
                 raw = b""
-            S.ex("INSERT INTO artifacts(run_id,name,kind,size,sha256,content) VALUES(?,?,?,?,?,?)",
+            # a retried upload replaces the stored copy (the unique index makes
+            # this an upsert); without it the stale first copy was served
+            S.ex("INSERT INTO artifacts(run_id,name,kind,size,sha256,content) VALUES(?,?,?,?,?,?) "
+                 "ON CONFLICT(run_id,name) DO UPDATE SET kind=excluded.kind, size=excluded.size, "
+                 "sha256=excluded.sha256, content=excluded.content",
                  (run_id, name, b.get("kind", "json"), len(raw), b.get("sha256"), content))
             return self._send(200, {"ok": True})
         m = re.match(r"^/api/v1/runs/([^/]+)/finish$", path)
         if m:
             run_id = m.group(1)
-            S.ex("UPDATE runs SET status=?, ended=?, exit_code=?, summary=?, platform=COALESCE(?,platform),"
-                 " gpu=COALESCE(?,gpu), driver=COALESCE(?,driver), torch=COALESCE(?,torch),"
-                 " system=CASE WHEN ?='{}' THEN system ELSE ? END WHERE id=?",
-                 (b.get("status", "done"), b.get("ended") or now(), b.get("exit_code"),
-                  json.dumps(b.get("summary") or {}), b.get("platform"), b.get("gpu"),
-                  b.get("driver"), b.get("torch"), json.dumps(b.get("system") or {}),
-                  json.dumps(b.get("system") or {}), run_id))
+            ended = b.get("ended")
+            if ended is None:
+                ended = now()
+            else:
+                try:
+                    ended = float(ended)
+                except (TypeError, ValueError):
+                    return self._err(400, "bad ended timestamp")
+                if not math.isfinite(ended) or ended <= 0:
+                    return self._err(400, "bad ended timestamp")
+            system_json = _json_dumps(b.get("system") if isinstance(b.get("system"), dict) else {})
+            # WHERE status='running' makes a second finish a no-op instead of
+            # overwriting the first summary/ended (the status gate above already
+            # rejects it; this closes the concurrent-finish race)
+            cur = S.ex("UPDATE runs SET status=?, ended=?, exit_code=?, summary=?, "
+                       "platform=COALESCE(?,platform), gpu=COALESCE(?,gpu), "
+                       "driver=COALESCE(?,driver), torch=COALESCE(?,torch), "
+                       "system=CASE WHEN ?='{}' THEN system ELSE ? END "
+                       "WHERE id=? AND status='running'",
+                       (b.get("status", "done"), ended, b.get("exit_code"),
+                        _json_dumps(b.get("summary") if isinstance(b.get("summary"), dict) else {}),
+                        b.get("platform"), b.get("gpu"), b.get("driver"), b.get("torch"),
+                        system_json, system_json, run_id))
+            if not cur.rowcount:
+                return self._err(409, "run is not running")
             run = S.one("SELECT runner_id FROM runs WHERE id=?", (run_id,))
             if run and run["runner_id"]:
-                S.ex("UPDATE runners SET status='idle', current_run=NULL WHERE id=?",
-                     (run["runner_id"],))
+                # only clear the runner's assignment if it still names this run
+                # (a newer run must not be knocked off by an old finish)
+                S.ex("UPDATE runners SET status='idle', current_run=NULL "
+                     "WHERE id=? AND (current_run=? OR current_run IS NULL)",
+                     (run["runner_id"], run_id))
             run = run_public(S.one("SELECT * FROM runs WHERE id=?", (run_id,)))
             if run:
                 self.bus.publish({"event": "run", "data": run})
@@ -1218,7 +1423,7 @@ class Handler(BaseHTTPRequestHandler):
             # ownership may be proved by the body's api_key or by the bearer that
             # authenticated this request; either must match THIS row's key
             proof = key or self._bearer()
-            if existing and not (proof and secrets.compare_digest(str(proof), str(existing["api_key"]))) \
+            if existing and not self._token_eq(proof, existing["api_key"]) \
                     and not self._is_operator():
                 # An explicit runner_id is only honoured by its own key or an
                 # operator. Any valid runner bearer passes the POST gate, so
@@ -1228,7 +1433,7 @@ class Handler(BaseHTTPRequestHandler):
                 # persisted config reclaims its own row).
                 existing = None
                 rid = None
-            elif existing and key and existing["api_key"] != key:
+            elif existing and key and not self._token_eq(key, existing["api_key"]):
                 existing = None  # stale/wrong key -> treat as new
         if not existing and mid:
             # Stable identity: adopt the row this machine already owns for this
@@ -1244,15 +1449,21 @@ class Handler(BaseHTTPRequestHandler):
         else:
             rid = rid or str(uuid.uuid4())
             key = secrets.token_urlsafe(32)
+        # api_key and current_run are part of the upsert: a re-register that
+        # changed either must actually store what it returns (an operator rotation
+        # used to mint a key that was never persisted, so it 401ed) and a stale
+        # current_run must not survive it
         S.ex("INSERT INTO runners(id,name,os,kind,version,capabilities,first_seen,last_seen,"
              "status,current_run,addr,git,api_key,machine_id,ephemeral,instance) "
              "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
              "ON CONFLICT(id) DO UPDATE SET name=excluded.name, os=excluded.os, kind=excluded.kind, "
              "version=excluded.version, capabilities=excluded.capabilities, last_seen=excluded.last_seen, "
-             "status=excluded.status, addr=excluded.addr, git=excluded.git, "
+             "status=excluded.status, current_run=excluded.current_run, addr=excluded.addr, "
+             "git=excluded.git, api_key=excluded.api_key, "
              "machine_id=excluded.machine_id, ephemeral=excluded.ephemeral, instance=excluded.instance",
              (rid, b.get("name"), b.get("os"), kind, b.get("version"),
-              json.dumps(b.get("capabilities") or {}), now(), now(),
+              _json_dumps(b.get("capabilities") if isinstance(b.get("capabilities"), dict) else {}),
+              now(), now(),
               b.get("status", "idle"), b.get("current_run"), self.client_address[0],
               b.get("git"), key, mid, 1 if b.get("ephemeral") else 0, inst))
         r = runner_public(S.one("SELECT * FROM runners WHERE id=?", (rid,)))
@@ -1261,11 +1472,22 @@ class Handler(BaseHTTPRequestHandler):
                                 "telemetry_interval": 1.0, "server_time": now()})
 
     def _server_update(self):
-        """Pull the control plane's own checkout and restart it (see server_pull)."""
-        return self._send(200, server_pull())
+        """Pull the control plane's own checkout and restart it (see server_pull).
+
+        POST only (a GET is prefetchable/retryable) and serialised: a second
+        request while a pull is in flight gets 409 instead of racing git.
+        """
+        if not _SERVER_UPDATE_LOCK.acquire(blocking=False):
+            return self._err(409, "an update is already in progress")
+        try:
+            return self._send(200, server_pull())
+        finally:
+            _SERVER_UPDATE_LOCK.release()
 
     def _issue_command(self, rid, b):
         S = self.store
+        if not S.one("SELECT id FROM runners WHERE id=?", (rid,)):
+            return self._err(404, "no such runner")
         kind = b.get("kind")
         if kind not in ("start", "stop", "update", "fan_curve", "power_limit", "restart",
                         "shutdown", "reboot", "exec", "shell",
@@ -1273,7 +1495,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(400, "unknown command kind")
         cid = str(uuid.uuid4())
         S.ex("INSERT INTO commands(id,runner_id,kind,payload,status,created) VALUES(?,?,?,?,?,?)",
-             (cid, rid, kind, json.dumps(b.get("payload") or {}), "queued", now()))
+             (cid, rid, kind, _json_dumps(b.get("payload") or {}), "queued", now()))
         self.bus.publish({"event": "command", "data": {"id": cid, "runner_id": rid,
                                                        "kind": kind, "status": "queued"}})
         return self._send(200, {"id": cid, "status": "queued"})
@@ -1291,7 +1513,8 @@ class Handler(BaseHTTPRequestHandler):
                else now() + max(60, every_s))
         S.ex("INSERT INTO schedules(id,runner_id,label,profile,kind,every_s,at_time,next_run,"
              "enabled,last_run,created,last_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-             (sid, rid, b.get("label") or "scheduled run", json.dumps(b.get("profile") or {}),
+             (sid, rid, b.get("label") or "scheduled run",
+              _json_dumps(b.get("profile") if isinstance(b.get("profile"), dict) else {}),
               kind, every_s, at_time, nxt, 1 if b.get("enabled", True) else 0, None, now(), None))
         s = schedule_public(S.one("SELECT * FROM schedules WHERE id=?", (sid,)))
         self.bus.publish({"event": "schedule", "data": s})
@@ -1364,7 +1587,28 @@ def scheduler_tick(store, bus):
 # tables bounds the database without losing the record of a run. A 15-minute run
 # writes ~4.5 MB of telemetry at 4 Hz and nothing ever pruned it.
 # BENCHD_RETENTION_DAYS=0 keeps everything.
-RETENTION_DAYS = float(os.environ.get("BENCHD_RETENTION_DAYS") or 30)
+def env_float(name, default, lo=0.0):
+    """Read a float from the environment without letting a typo crash the unit.
+
+    A bare float() at import time turned `BENCHD_RETENTION_DAYS=30d` into a
+    traceback on every restart (the service crash-looped); a bad value now logs
+    and falls back to the default.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        v = None
+    if v is None or not math.isfinite(v) or v < lo:
+        print("[benchd] WARNING: ignoring bad %s=%r - using %s" % (name, raw, default),
+              flush=True)
+        return default
+    return v
+
+
+RETENTION_DAYS = env_float("BENCHD_RETENTION_DAYS", 30.0)
 RETENTION_EVERY_S = 3600.0        # a full sweep does not need to run every tick
 _RETENTION_LAST = [0.0]
 
@@ -1384,8 +1628,15 @@ def server_pull():
     before = server_git()
 
     def git(*args):
-        return subprocess.run(["git", "-C", root] + list(args), capture_output=True,
-                              text=True, timeout=180)
+        r = subprocess.run(["git", "-C", root] + list(args), capture_output=True,
+                           text=True, timeout=180)
+        if r.returncode != 0:
+            # a failed fetch/pull used to be reported as ok: the code never looked
+            # at the return code, so the message claimed a pull that never happened
+            tail = [l for l in ((r.stderr or "") + (r.stdout or "")).strip().splitlines() if l]
+            raise RuntimeError("git %s failed (rc=%d): %s"
+                               % (" ".join(args), r.returncode, (tail[-1] if tail else "")[:160]))
+        return r
 
     try:
         git("fetch", "--depth", "1", "origin")
@@ -1396,8 +1647,13 @@ def server_pull():
     after = server_git()
     restart = bool(after) and after != before
     if restart:
+        # the unit is deploy-specific (a dev box may run benchd@lab, the lab box
+        # runs benchd); BENCHD_UNIT overrides the default
+        unit = os.environ.get("BENCHD_UNIT") or "benchd"
+        if not re.match(r"^[A-Za-z0-9_.@-]+$", unit):
+            unit = "benchd"
         try:
-            subprocess.Popen(["bash", "-c", "sleep 1; systemctl restart benchd"],
+            subprocess.Popen(["bash", "-c", "sleep 1; systemctl restart %s" % unit],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                              start_new_session=True)
         except Exception:
@@ -1412,8 +1668,11 @@ def server_pull():
 # does nothing. BENCHD_AUTO_UPDATE=0 disables it.
 AUTO_UPDATE_OFF = (os.environ.get("BENCHD_AUTO_UPDATE") or "").lower() in (
     "0", "off", "no", "false")
-AUTO_UPDATE_S = float(os.environ.get("BENCHD_AUTO_UPDATE_HOURS") or 1) * 3600.0
+AUTO_UPDATE_S = env_float("BENCHD_AUTO_UPDATE_HOURS", 1.0) * 3600.0
 _AUTO_UPDATE_LAST = [0.0]
+# the scheduler runs auto_update on a worker thread (a 180 s git timeout must not
+# stall the tick loop); this keeps two attempts from overlapping
+_AUTO_UPDATE_BUSY = threading.Lock()
 
 
 def auto_update(store, force=False):
@@ -1429,21 +1688,36 @@ def auto_update(store, force=False):
     busy = store.one("SELECT COUNT(*) n FROM runs WHERE status='running'")["n"]
     if busy:
         return None                     # a run is in progress: try again next tick
-    _AUTO_UPDATE_LAST[0] = t
     res = server_pull()
+    if res.get("ok"):
+        _AUTO_UPDATE_LAST[0] = t
+    else:
+        # do not consume the whole interval on a failed pull: retry in 5 minutes
+        # (or the configured interval, if that is shorter)
+        _AUTO_UPDATE_LAST[0] = t - AUTO_UPDATE_S + min(AUTO_UPDATE_S, 300.0)
     if res.get("ok") and res.get("restarting"):
         print("[benchd] auto-update: %s -> %s, restarting" % (res.get("before"), res.get("after")),
               flush=True)
     return res
 
 
+def _auto_update_worker(store):
+    try:
+        auto_update(store)
+    except Exception as e:
+        print("[benchd] auto-update error: %s" % e, flush=True)
+    finally:
+        _AUTO_UPDATE_BUSY.release()
+
+
 def retain_old_data(store, force=False):
-    """Delete telemetry/logs/events of finished runs older than RETENTION_DAYS.
+    """Delete bulky per-run data of finished runs older than RETENTION_DAYS.
 
     Running runs are never touched, and neither are the run rows themselves: each
     one keeps its stats (min/avg/max/p95/p99 and the derived metrics), materialised
     here just before its samples go, so only the rows that grow with run length and
-    sample rate are dropped.
+    sample rate are dropped. Artifacts hold base64 content in the same database and
+    terminal commands accumulate forever, so both are swept too.
     """
     days = RETENTION_DAYS
     if days <= 0:
@@ -1461,12 +1735,17 @@ def retain_old_data(store, force=False):
         # Compare and Fleet read them, and they are tiny next to the rows they sum up.
         st = compute_stats(store, r["id"])
         if st.get("samples"):
-            store.ex("UPDATE runs SET stats=? WHERE id=?", (json.dumps(st), r["id"]))
-        for table in ("telemetry", "logs", "events"):
+            store.ex("UPDATE runs SET stats=? WHERE id=?", (_json_dumps(st), r["id"]))
+        for table in ("telemetry", "logs", "events", "artifacts"):
             # the table names are literals here, never caller input
             cur = store.ex("DELETE FROM %s WHERE run_id=?" % table, (r["id"],))
             if cur.rowcount and cur.rowcount > 0:
                 gone += cur.rowcount
+    # commands have no run row to outlive: prune the terminal ones by their own age
+    cur = store.ex("DELETE FROM commands WHERE status IN ('done','failed') AND "
+                   "COALESCE(acked, sent, created) < ?", (cutoff,))
+    if cur.rowcount and cur.rowcount > 0:
+        gone += cur.rowcount
     if gone:
         print("[benchd] retention: removed %d row(s) older than %.0f days"
               % (gone, days), flush=True)
@@ -1487,21 +1766,28 @@ def reap_stale_runs(store, bus):
             rr = store.one("SELECT last_seen FROM runners WHERE id=?", (r["runner_id"],))
             last = rr["last_seen"] if rr else None
         if last is not None and (t - last) <= 45:
-            # The runner is alive, so the run is fine - unless the runner says it is
-            # idle. A runner restarted mid-run (an update, say) comes back, registers
-            # and goes idle, and the heartbeat rule above can never see the run it left
-            # behind: it stayed 'running' for hours with three samples.
+            # The runner is alive, so the run is fine - unless the runner is no
+            # longer on it. A runner restarted mid-run (an update, say) comes back,
+            # registers and goes idle, and the heartbeat rule above can never see
+            # the run it left behind; worse, if it then picks up a newer run its
+            # current_run points elsewhere and the old run stayed 'running' for
+            # ever, blocking retention and auto-update.
             rr = store.one("SELECT status, current_run FROM runners WHERE id=?",
                            (r["runner_id"],))
-            if rr and not rr["current_run"] and (rr["status"] or "") != "busy":
+            if rr and rr["current_run"] != r["id"]:
                 m = store.one("SELECT MAX(ts) m FROM telemetry WHERE run_id=?", (r["id"],))
                 quiet = (m or {}).get("m") or (r["started"] or t)
                 if t - quiet > 60:
                     store.ex("UPDATE runs SET status='failed', ended=? WHERE id=?",
                              (t, r["id"]))
+                    if (rr.get("current_run") or "") == r["id"]:
+                        # only possible if the condition above is relaxed later;
+                        # never leave a runner pointing at a reaped run
+                        store.ex("UPDATE runners SET status='idle', current_run=NULL "
+                                 "WHERE id=?", (r["runner_id"],))
                     bus.publish({"event": "run", "data": run_public(
                         store.one("SELECT * FROM runs WHERE id=?", (r["id"],)))})
-                    print("[benchd] reaped orphaned run %s (runner alive but idle)"
+                    print("[benchd] reaped orphaned run %s (runner alive, moved on)"
                           % r["id"][:8], flush=True)
             continue  # runner still heartbeating
         store.ex("UPDATE runs SET status='failed', ended=? WHERE id=?", (t, r["id"]))
@@ -1571,7 +1857,11 @@ def scheduler_loop(store, bus, stop):
             reap_ephemeral_runners(store, bus)
             reap_stale_commands(store, bus)
             retain_old_data(store)
-            auto_update(store)
+            # a pull can block for the git timeout (180 s): run it off this thread
+            # so schedules/reaping keep ticking. One attempt at a time.
+            if not AUTO_UPDATE_OFF and _AUTO_UPDATE_BUSY.acquire(blocking=False):
+                threading.Thread(target=_auto_update_worker, args=(store,),
+                                 daemon=True).start()
         except Exception as e:
             print("[benchd] scheduler error: %s" % e, flush=True)
         stop.wait(10.0)
@@ -1579,19 +1869,54 @@ def scheduler_loop(store, bus, stop):
 
 # -------------------------------------------------------------------- config --
 def find_conf_value(key):
+    """First key=value for `key` in the config files; inline comments stripped.
+
+    The file handle used to be left open (one leaked descriptor per candidate that
+    existed) and `BENCHD_TOKEN=abc  # rotated` kept the comment as part of the
+    token.
+    """
     for cand in (os.path.join(HERE, "benchd.conf"), os.path.expanduser("~/.config/benchd.conf"),
                  "/etc/benchd.conf"):
-        if os.path.isfile(cand):
-            for ln in open(cand):
-                ln = ln.strip()
-                if ln.startswith(key + "="):
-                    return ln.split("=", 1)[1].strip().strip('"').strip("'")
+        if not os.path.isfile(cand):
+            continue
+        try:
+            with open(cand, encoding="utf-8") as fh:
+                lines = fh.readlines()
+        except OSError:
+            continue
+        for ln in lines:
+            ln = ln.strip()
+            if not ln or ln.startswith("#"):
+                continue
+            if not ln.startswith(key + "="):
+                continue
+            val = ln.split("=", 1)[1].strip()
+            if val[:1] in ('"', "'"):
+                end = val.find(val[0], 1)
+                return val[1:end] if end > 0 else val.strip(val[0])
+            return val.split("#", 1)[0].strip()
     return None
 
 
 def find_token(cli_token):
     return (cli_token or os.environ.get("BENCHD_TOKEN")
             or find_conf_value("BENCHD_TOKEN"))
+
+
+def auth_refusal(token, allow_anonymous):
+    """None when serving is allowed; an actionable message when it is refused.
+
+    A missing or misspelled BENCHD_TOKEN used to only print a warning: the server
+    then served on 0.0.0.0 with every auth check open (register, exec, shutdown),
+    so one typo turned the fleet controller into an open endpoint.
+    """
+    if token or allow_anonymous:
+        return None
+    return ("no BENCHD_TOKEN configured - refusing to serve an open control plane "
+            "(anyone who can reach the port could register runners and run commands). "
+            "Fix: set BENCHD_TOKEN in the environment, pass --token TOKEN, or add "
+            "BENCHD_TOKEN=... to server/benchd.conf. For a deliberately open local "
+            "instance, pass --allow-anonymous.")
 
 
 def main():
@@ -1602,9 +1927,15 @@ def main():
     ap.add_argument("--token", default=None, help="join/registration + operator API bearer")
     ap.add_argument("--web", default=WEB_DIR)
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--allow-anonymous", action="store_true",
+                    help="serve without BENCHD_TOKEN (dangerous: anyone can control the fleet)")
     a = ap.parse_args()
 
     token = find_token(a.token)
+    refusal = auth_refusal(token, a.allow_anonymous)
+    if refusal:
+        print("[benchd] %s" % refusal, file=sys.stderr, flush=True)
+        return 2
     store = Store(a.db)
     Handler.store, Handler.bus, Handler.token, Handler.web_dir = store, Bus(), token, a.web
     httpd = ThreadingHTTPServer((a.host, a.port), Handler)
@@ -1617,7 +1948,8 @@ def main():
     print("[benchd] listening on http://%s:%d  db=%s  auth=%s"
           % (a.host, a.port, a.db, "token+login" if token else "OPEN (no token)"), flush=True)
     if not token:
-        print("[benchd] WARNING: no BENCHD_TOKEN set - anyone can register/control", flush=True)
+        print("[benchd] WARNING: --allow-anonymous is set - anyone who can reach "
+              "%s:%d can register/control" % (a.host, a.port), flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -1625,7 +1957,8 @@ def main():
     finally:
         stop.set()
         httpd.server_close()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
