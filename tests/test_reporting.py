@@ -124,6 +124,19 @@ def run():
     g2 = build_summary_dir(gd2)
     c.check("summary still reports a skipped gfx record when nothing scored",
             (g2.get("gfx") or {}).get("skipped") is True, g2.get("gfx"))
+
+    # a Windows gfx phase writes a FLAT report (host/timestamp/engine/result) with no
+    # phases array; the AMD run's summary had no gfx at all because of it
+    gd4 = tmpdir()
+    with open(os.path.join(gd4, "host-furmark-20260101-000000.json"), "w") as fh:
+        json.dump({"host": "h", "timestamp": "x", "engine": "furmark",
+                   "result": {"phase": "furmark", "score": 983, "fps_avg": 33}}, fh)
+    with open(os.path.join(gd4, "host-20260101-000000.json"), "w") as fh:
+        json.dump({"host": "h", "phases": [{"group": "gpu", "phase": "matmul",
+                                            "result": {"tflops": 1.0}}]}, fh)
+    g4 = build_summary_dir(gd4)
+    c.check("a flat gfx report reaches the summary",
+            (g4.get("gfx") or {}).get("score") == 983, g4.get("gfx"))
     # a summary build must never fail silently into {} - that hid a NameError and
     # made a real run look like it had measured nothing
     for f in ("tui.py", "gui.py"):

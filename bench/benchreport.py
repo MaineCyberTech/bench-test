@@ -2327,6 +2327,30 @@ def _merge_into(s, j):
         if isinstance(res, dict) and any(isinstance(v, dict) and ("fps" in v or v.get("skipped"))
                                          for v in res.values()):
             s["nvenc"] = {"width": j.get("width"), "height": j.get("height"), "results": res}
+    def keep_gfx(r):
+        """A scored gfx record wins; a skipped one only stands in until one arrives.
+
+        setd() refuses to overwrite, which is why the first record used to stick, so
+        assign directly. Several gfx records can exist: furmark "skipped" (no
+        monitor) and then the glmark2 fallback that actually ran and scored.
+        """
+        if not isinstance(r, dict):
+            return
+        have = s.get("gfx") or {}
+        new_scored = r.get("score") is not None and not r.get("skipped")
+        have_scored = have.get("score") is not None and not have.get("skipped")
+        if new_scored or not have_scored:
+            s["gfx"] = r
+
+    # A Windows gfx phase writes a FLAT report ({host, timestamp, engine, result})
+    # with no phases array, so the loop below never sees it - the same shape problem
+    # nvenc had, and it left the AMD run with no gfx in its summary at all.
+    flat = j.get("result")
+    if isinstance(flat, dict):
+        phase = str(flat.get("phase") or flat.get("group") or "").lower()
+        if "score" in flat or phase in ("furmark", "valley", "glmark2", "glmark2-es2"):
+            keep_gfx(flat)
+
     ph = j.get("phases")
     items = ph if isinstance(ph, list) else (list(ph.values()) if isinstance(ph, dict) else [])
     for p in items:
@@ -2335,17 +2359,8 @@ def _merge_into(s, j):
         r = p.get("result") if isinstance(p.get("result"), dict) else p
         phase = p.get("phase") or r.get("phase")
         grp = p.get("group") or r.get("group")
-        if grp == "gfx" and isinstance(r, dict):
-            # several gfx records can exist: furmark "skipped" (no monitor) and then
-            # the glmark2 fallback that actually ran and scored. setd() refuses to
-            # overwrite, which is why the first record used to stick, so assign
-            # directly: a scored record always wins, a skipped one only stands in
-            # until a scored record arrives.
-            have = s.get("gfx") or {}
-            new_scored = r.get("score") is not None and not r.get("skipped")
-            have_scored = have.get("score") is not None and not have.get("skipped")
-            if new_scored or not have_scored:
-                s["gfx"] = r
+        if grp == "gfx":
+            keep_gfx(r)
         if phase == "matmul" and isinstance(r.get("results"), dict):
             sub = r["results"]
             first = next(iter(sub.values()), {})
