@@ -160,6 +160,13 @@ with **Clean up environment** in the GUI (or `python bench/bootstrap.py clean`);
 repo `.venv` or `$BENCH_REPO` still takes precedence when present. See
 [`bench/bootstrap.py`](bench/bootstrap.py) for `status` / `ensure` / `clean`.
 
+A downloaded app also **updates itself in place**: the launcher runs the dashboard
+and the runners from `<bundle>/bench/` on disk, so the control plane's `update`
+command — or the startup check, throttled by `BENCH_APP_UPDATE_HOURS` (default 6;
+`0` checks every launch) — refreshes that toolkit and the app restarts into the
+new code. Only the launcher and its interpreter come from the download, so
+updating *those* still needs a new bundle.
+
 CI also **bakes the control-plane config** into each bundle — the
 `BENCH_AGENT_CONF` secret, the same one the live USB writes to
 `/etc/bench-agent.conf` — so a downloaded app **auto-registers** with no flags
@@ -210,21 +217,25 @@ closes dialogs, `/` jumps to search.
 
 ## Presets
 
-Identical across GUI/TUI/web; each sets every group and duration.
+Identical across GUI/TUI/web; each sets every group and the four duration boxes,
+and carries the extra knobs the boxes do not cover in a `tune` field where it has
+one — anything absent falls back to the runner's defaults.
 
-| Preset | Groups | Soaks |
-|---|---|---|
-| Quick check (short soaks) | all except llm/fan | gpu 60 · combined 60 · fullsoak 60 · gfx 30 |
-| System info + 60s soak (all) | sys, fullsoak | fullsoak 60 |
-| Full run (defaults) | all 12 | gpu 600 · combined 300 · fullsoak 300 · gfx 60 |
-| GPU compute | gpu, sys | gpu 60 |
-| CPU + RAM + disk | cpu, ram, disk, sys | — |
-| Storage + network | disk, net, sys | — |
-| Video / graphics | nvenc, gfx, sys | gfx 60 |
-| LLM inference (Ollama) | llm, sys | — |
-| Fan response | fan, sys | — |
-| Soak only (long) | gpu, fullsoak, sys | gpu 1800 · fullsoak 1800 |
-| Full-system soak (long) | fullsoak, sys | fullsoak 1800 |
+| Preset | Groups | Soaks | Tune (extra knobs) |
+|---|---|---|---|
+| Quick check (short soaks) | all except llm/fan | gpu 60 · combined 60 · fullsoak 60 · gfx 30 | cpu soak 60 · ram soak 30 · disk 15 s / 256 MB · gpu matrix 4096 · cpu 2048 · ram 512 MiB · 1 pass · steady 2 GB |
+| Stabilized full soak (15 min) | all except llm | gpu 180 · combined 45 · fullsoak 90 · gfx 30 | cpu soak 45 · ram soak 30 · disk 30 s / 512 MB · gpu matrix 4096 · cpu 2048 · ram 512 MiB · 1 pass · steady 2 GB · soak-until-stable (60 s hold) |
+| System info + 60s soak (all) | sys, fullsoak | fullsoak 60 | runner defaults |
+| Full run (defaults) | all 12 | gpu 600 · combined 300 · fullsoak 300 · gfx 60 | runner defaults |
+| GPU compute | gpu, sys | gpu 60 | runner defaults |
+| CPU + RAM + disk | cpu, ram, disk, sys | — | runner defaults |
+| Storage + network | disk, net, sys | — | runner defaults |
+| Video / graphics | nvenc, gfx, sys | gfx 60 | runner defaults |
+| Graphics only (FurMark/Valley) | gfx, sys | gfx 30 | gfx engine `furmark` |
+| LLM inference (Ollama) | llm, sys | — | runner defaults |
+| Fan response | fan, sys | — | runner defaults |
+| Soak only (long) | gpu, fullsoak, sys | gpu 1800 · fullsoak 1800 | runner defaults |
+| Full-system soak (long) | fullsoak, sys | fullsoak 1800 | runner defaults |
 
 Measured per-phase durations to estimate preset runtimes:
 [`docs/PHASE_TIMINGS.md`](docs/PHASE_TIMINGS.md).
@@ -314,12 +325,18 @@ benchmarks the USB or RAM); desktop/CI hosts test the machine's real disk.
 
 ## Tests
 
+Run it from the repo venv — the TUI tests import `curses` (needs
+`windows-curses` on Windows), a TUI check needs `psutil`, and a RAM-integrity
+check only runs when `numpy` is importable:
+
 ```bash
-python tests/run_all.py          # RESULT: PASS
+.venv\Scripts\python.exe tests\run_all.py     # Windows — RESULT: PASS
+.venv/bin/python tests/run_all.py             # Linux / live USB
 ```
-Stdlib only; starts an in-process `benchd` on an ephemeral port. Covers the
-control-plane API, the reporting client, preset parity across GUI/TUI/web, and the
-dashboard phase-table logic.
+
+The suite itself adds no dependencies; it starts an in-process `benchd` on an
+ephemeral port and covers the control-plane API, the reporting client, preset
+parity across GUI/TUI/web, and the dashboard phase-table logic.
 
 ## Interpreting results
 
@@ -344,7 +361,8 @@ results/   output (mostly git-ignored; a few runs tracked as history)
 
 `results/` keeps the newest 100 run directories and one Valley frame per run
 (`BENCH_KEEP_RUNS=0` keeps everything); the control plane sweeps the per-sample
-telemetry of finished runs after 30 days — see
+telemetry, logs and events of finished runs after 30 days
+(`BENCHD_RETENTION_DAYS=0` keeps everything) — see
 [`docs/DATA.md`](docs/DATA.md#5-retention).
 
 ## Scripts
@@ -354,11 +372,14 @@ telemetry of finished runs after 30 days — see
 | `Run-WorkstationBench.ps1` / `Run-LinuxBench.sh` | one-command battery (all groups) |
 | `run_win.py` | Windows runner bridging the dashboards/agent to the battery + telemetry |
 | `gpu_bench.py` · `cpu_bench.py` · `ram_bench.py` · `disk_bench.py` · `net_bench.py` · `nvenc_bench.py` | phases |
+| `Invoke-*.ps1` | the Windows battery's phase implementations (GPU/CPU/RAM/disk/net/NVENC/LLM/gfx/soaks) |
 | `telemetry_log.py` | telemetry CSV (Linux) |
 | `gui.py` · `tui.py` | Tk / curses dashboards (report + accept remote control) |
 | `fan_curve.py` · `gpu_util.py` · `rawlog.py` | GPU fan-curve tool, AMD/Intel gpu telemetry, raw-slot result writer |
 | `benchreport.py` | control-plane client (Reporter, PhaseTracker, Pump, exec, inventory) |
+| `bootstrap.py` | provision the runner interpreter + deps in a per-user cache (`status` / `ensure` / `clean`) |
 | `agent.py` | headless agent: register, run on command, stream, update (`--once` for a single run) |
+| `live_update.py` | live-USB toolkit self-update + A/B ISO write, without the control plane |
 | `server/benchd.py` | control plane: REST + SSE + SQLite + web dashboard |
 | `server/import_results.py` | backfill existing results into the server |
 | `upload.py` | upload a results dir to GitHub |

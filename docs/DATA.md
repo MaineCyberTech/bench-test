@@ -98,16 +98,19 @@ Both dashboards render the **same** field set from one shared list
 
 ## 5. Retention
 
-Two knobs bound the growth; both default to keeping data and are safe to raise.
+Two knobs bound the growth; both default to generous limits and are safe to raise.
 Retention **never** touches a running run, and it never deletes a run itself.
 
 | What | Where | Default | Override |
 |---|---|---|---|
 | Per-sample telemetry, logs and events of **finished** runs | control-plane DB | 30 days | `BENCHD_RETENTION_DAYS=0` keeps everything |
-| Run directories under `results/` | each runner | newest 100 | `BENCH_KEEP_RUNS=0` keeps everything |
+| Run directories under `results/` | each runner, when a run finishes | newest 100 | `BENCH_KEEP_RUNS=0` keeps everything |
 | Valley screenshots | each run directory | newest 1 | `prune_screenshots(results_dir, keep=N)` |
 
-The run row, its phases, artifacts and summary stay, because that is what History,
-Trends, Compare and Fleet read. Only the per-sample tables grow with run length and
+The run row — with the stats materialised just before its samples go — plus its
+phases, artifacts and summary stay, because that is what History, Trends, Compare
+and Fleet read; the sweep deletes nothing else (not artifacts, commands or
+schedules), and the runner-side prune only considers directories named like a run
+(`host-mode-YYYYMMDD-HHMMSS`). Only the per-sample tables grow with run length and
 sample rate (4 Hz is ~4.5 MB per 15-minute run), so only those are swept — hourly,
 from the control plane's scheduler loop.

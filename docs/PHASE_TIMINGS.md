@@ -101,9 +101,10 @@ and both runners accept the matching flags.
 | `stable` / `stable_hold` | `--soak-until-stable` / `--stable-hold` | plateau soak and its hold |
 | `gfx_engine` | `--gfx-engine` | `furmark` (default) or `valley` |
 
-Without these a run falls back to the runner's long defaults (cpu 120 s, ram
-120 s, gpu matrix 12288, 10 GiB steady write, disk 2048 MB) — that is why "Quick
-check" is not quick.
+Without a `tune` a run falls back to the runner's long defaults (cpu 120 s, ram
+120 s, gpu matrix 12288, 10 GiB steady write, disk 2048 MB). "Quick check" and
+"Stabilized full soak (15 min)" do carry the lean knobs above — it is the presets
+without a `tune` that inherit the long defaults.
 
 ### Disk size is the disk lever, not disk seconds
 
@@ -130,7 +131,7 @@ limit. Costs measured on a Windows box (nvidia-smi is the same command on Linux)
 
 | Stat | How | Cost | Cadence |
 |---|---|---|---|
-| GPU util/temp/fan/power/clocks/VRAM/pstate | `nvidia-smi` | **66 ms/call** | 1 Hz (`--gpu-interval 0.5`) |
+| GPU util/temp/fan/power/clocks/VRAM/pstate | `nvidia-smi` | **66 ms/call** | 1 Hz (`--gpu-interval 1.0`) |
 | CPU package/core temps | `sensors -j` | subprocess | 1 Hz (`--slow-interval 1.0`) |
 | GPU fan RPM | `nvidia-settings` | subprocess | 1 Hz |
 | CPU %/RAM/swap | `psutil`, `GetSystemTimes`, `/proc` | 0.1–3.6 ms | the row rate |
@@ -139,7 +140,7 @@ limit. Costs measured on a Windows box (nvidia-smi is the same command on Linux)
 | RAPL package power, PSI I/O | `/proc` | ~0.1 ms | the row rate |
 
 Temps have seconds of thermal mass and the GPU query carries util+temp+power in one
-call, so 2 Hz keeps the traces smooth. The A/B (same box, same sampler):
+call, so 1 Hz keeps the traces smooth. The A/B (same box, same sampler):
 
 | row interval | before | after |
 |---|---|---|
@@ -179,8 +180,8 @@ two runs, and prefer the total when the sizes differ.
   (`Monitors: 0`, e.g. a headless live box) FurMark's X probe segfaults and the
   phase falls back to a bounded glmark2 scene subset; on Windows it falls back to
   Valley only if FurMark is not installed.
-- Telemetry rows are written at 4 Hz (`--interval 0.25`), with the GPU query at
-  2 Hz and the `sensors`/`nvidia-settings` stats at 1 Hz; a 12-minute run is
+- Telemetry rows are written at 4 Hz (`--interval 0.25`), with the GPU query and
+  the `sensors`/`nvidia-settings` stats at 1 Hz; a 12-minute run is
   ~2900 rows. Each row is stored once — the end-of-run bulk upload skips what the
   live stream already sent.
 

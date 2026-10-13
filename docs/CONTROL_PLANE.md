@@ -126,7 +126,8 @@ UI-facing:
 | GET | `/runs/<id>/telemetry.csv?token=` | full telemetry as CSV (download) |
 | GET | `/runs/<id>/artifact/<name>?token=` | download an attached artifact (binary-safe) |
 | GET | `/trends?host=&metric=` | metric-over-time series + per-series median/p95/p99 |
-| GET | `/health` | public liveness + the control plane's commit (`git`) |
+| GET | `/health` | public liveness + the control plane's commit (`git`, `latest`) |
+| POST | `/server/update` | pull the control plane's own checkout + restart it (operator only; git deploy) |
 | GET | `/metrics` | the metric catalogue (key → label) |
 | GET/POST/DELETE | `/schedules` · `/schedules/<id>` | list / create / remove recurring runs (operator only) |
 | DELETE | `/runs/<id>` · `/runners/<id>` | delete a run (+data) / a runner (+its commands & schedules) |
@@ -137,9 +138,10 @@ Runner-scoped routes (`/register`, heartbeat, `/runners/<id>/commands`, command
 caller's own runner/run; the shared operator token may act on anything.
 
 **Who handles which command:** the headless agent implements every kind; the
-GUI/TUI dashboards implement `start`/`stop`/`fan_curve`/`shutdown`/`reboot` and
-the remote terminal (`exec`/`shell`), and fail `update`/`power_limit`/`restart`
-(it acks them as unsupported rather than pretending).
+GUI/TUI dashboards implement `start`/`stop`/`fan_curve`/`shutdown`/`reboot`, the
+update family (`update`/`update_toolkit`/`iso_*`), `restart` and the remote
+terminal (`exec`/`shell`); `power_limit` is agent-only (the dashboards ack it as
+unsupported rather than pretending).
 
 Telemetry sample order (10 floats): `elapsed, temp_c, fan_pct, power_w, gpu_util,
 gpu_fan_rpm, cpu_util, ram_used, sm_mhz` (plus `vram_used_mib` / `vram_total_mib`).
@@ -147,8 +149,16 @@ gpu_fan_rpm, cpu_util, ram_used, sm_mhz` (plus `vram_used_mib` / `vram_total_mib
 ### Command payloads
 
 ```jsonc
-{ "kind": "start", "payload": { "label": "Quick check", "skip": ["gfx"],
-    "gpu_soak": 60, "combined": 60, "fullsoak": 60, "gfx": 30 } }
+{ "kind": "start", "payload": {
+    "label": "Quick check (short soaks)", "preset": "Quick check (short soaks)",  // history label
+    "skip": ["llm", "fan"],                    // groups left off
+    "groups": { "gpu": 1, "cpu": 1, "ram": 1, "disk": 1, "combined": 1, "fullsoak": 1,
+                "net": 1, "nvenc": 1, "llm": 0, "fan": 0, "sys": 1, "gfx": 1 },
+    "gpu_soak": 60, "combined": 60, "fullsoak": 60, "gfx": 30,   // the four duration boxes
+    // the tune the four boxes do not cover - a preset sends these too:
+    "cpu_soak": 60, "ram_soak": 30, "disk_seconds": 15, "disk_size_mb": 256,
+    "gpu_size": 4096, "cpu_size": 2048, "ram_size_mb": 512, "passes": 1,
+    "steady_gb": 2, "stable": 0, "stable_hold": 60, "gfx_engine": "furmark" } }
 { "kind": "stop" }
 { "kind": "update" }                      // git pull --ff-only on the runner
 { "kind": "fan_curve", "payload": { "on": true } }
@@ -164,6 +174,14 @@ gpu_fan_rpm, cpu_util, ram_used, sm_mhz` (plus `vram_used_mib` / `vram_total_mib
                                          "confirm": true } }  // A/B: inactive slot + boot flag
 { "kind": "exec", "payload": { "cmd": "nvidia-smi -q | head", "timeout": 30 } }  // remote terminal
 ```
+
+**A `preset` name is a label, not a lookup.** The runner applies the payload's
+group selection (`groups` for the dashboards, `skip` for the agent), the four
+durations and the tune keys — nothing else. Send a preset's name without its tune
+and the run falls back to the runner's own values (the dashboards' current boxes;
+otherwise cpu 120 s, ram 120 s, gpu matrix 12288, 10 GiB steady write, disk
+2048 MB) — which is how a "Quick check" ran 600 s soaks. The web start dialog
+builds the full shape above.
 
 ## Deployment (Proxmox)
 
@@ -248,28 +266,49 @@ pct exec 108 -- systemctl mask tmp.mount run-lock.mount dev-mqueue.mount
   pulled something (a dirty tree or `BENCH_NO_UPDATE=1` skips it). A control-plane
   update also restarts the runner (deferred while a run is in progress, or forced
   with `payload.restart`), so it stops reporting the commit it started with.
+- **The control plane keeps itself current too.** When its commit differs from
+  `latest` (GitHub main), the web top bar shows an **update server** alert/button:
+  it confirms, POSTs `/api/v1/server/update`, and pulls its own checkout
+  (`git fetch` + `git pull --ff-only`), restarting `benchd` through systemd when
+  the commit changed. This is git-deploy only — a copy deploy gets a "refresh the
+  files and restart benchd" message instead. The scheduler can do the same
+  unattended: it re-checks every `BENCHD_AUTO_UPDATE_HOURS` (default 1) and skips
+  while any run is active (so the restart never costs a live run's view);
+  `BENCHD_AUTO_UPDATE=0` disables the automatic path (a copy deploy does nothing).
+- **The telemetry pipeline reports itself.** The dashboards' reporter pump keeps a
+  bounded queue (1200 samples ≈ five minutes at 4 Hz); when the server is
+  unreachable it drops the *oldest* sample and counts it, and every ~20 s writes
+  `[report] telemetry N produced, N sent, N dropped` to the run's console — lost
+  live telemetry is visible instead of silent.
 - A long job is never mistaken for a dropped one: the stale-command reaper gives
   `iso_fetch` a 3 h budget, `iso_write`/`iso_write_slot` an hour,
   `update_toolkit` 15 min and `exec` its own payload timeout, against 120 s for
   start/stop and friends.
-- SQLite uses WAL; a run at 4 Hz writes ~4.5 MB per 15 minutes. The scheduler sweeps
-  the per-sample tables (telemetry/logs/events) of **finished** runs older than
-  `BENCHD_RETENTION_DAYS` (default 30 days, `0` keeps everything) once an hour; the
-  run rows, phases, artifacts and summaries are never deleted, because that is what
-  History, Trends, Compare and Fleet read. See
+- SQLite uses WAL; a run at 4 Hz writes ~4.5 MB per 15 minutes. Once an hour the
+  scheduler sweeps the per-sample tables (**telemetry/logs/events only**) of
+  **finished** runs older than `BENCHD_RETENTION_DAYS` (default 30 days, `0` keeps
+  everything), materialising each run's stats into the run row first. It never
+  touches a running run; the run rows, phases, artifacts, commands and summaries
+  are kept, because that is what History, Trends, Compare and Fleet read. See
   [`DATA.md`](DATA.md#5-retention) for the runner-side knobs too.
 
 ## Tests
 
+Run it from the repo venv — the TUI tests import `curses` (needs
+`windows-curses` on Windows), a TUI check needs `psutil`, and a RAM-integrity
+check only runs when `numpy` is importable:
+
 ```bash
-python tests/run_all.py          # RESULT: PASS expected
+.venv/bin/python tests/run_all.py             # Linux / live USB
+.venv\Scripts\python.exe tests\run_all.py     # Windows — RESULT: PASS expected
 ```
 
-Stdlib only; each module starts an in-process `benchd` on an ephemeral port. It
-covers the API (auth, per-runner keys, runs/phases/telemetry/logs/artifacts/stats,
-commands, schedules, delete, reaper, SSE), the reporting client (Reporter,
-PhaseTracker, ReporterPump, exec, inventory/summary builders), preset parity
-across GUI/TUI/web, and the dashboard phase-table logic.
+The suite itself adds no dependencies; each module starts an in-process `benchd`
+on an ephemeral port. It covers the API (auth, per-runner keys,
+runs/phases/telemetry/logs/artifacts/stats, commands, schedules, delete, reaper,
+SSE), the reporting client (Reporter, PhaseTracker, ReporterPump, exec,
+inventory/summary builders), preset parity across GUI/TUI/web, and the dashboard
+phase-table logic.
 
 ## Measured phase durations
 
