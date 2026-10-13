@@ -59,27 +59,47 @@ jobs:
         id: ver
         run: echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
 
-      - name: Install upload credentials (optional secret)
+      - name: Install upload credentials (opt-in only)
         run: |
+          # SECRET-P1-002 / FINAL-P0-002: the repo and its ISO releases are public,
+          # so a write-capable upload token baked here is world-readable. Baking is
+          # opt-in via the repository variable BENCH_BAKE_UPLOAD_TOKEN=true; the
+          # image works without it (configure the token at runtime instead).
+          if [ "${{ vars.BENCH_BAKE_UPLOAD_TOKEN }}" != "true" ]; then
+            echo "not baking upload credentials (set the BENCH_BAKE_UPLOAD_TOKEN repo variable to opt in)"
+            exit 0
+          fi
           if [ -n "${{ secrets.BENCH_UPLOAD_CONF }}" ]; then
             mkdir -p live/private
             printf '%s\n' "${{ secrets.BENCH_UPLOAD_CONF }}" > live/private/bench-upload.conf
             chmod 600 live/private/bench-upload.conf
-            echo "upload credentials baked into the image"
+            echo "WARNING: upload credentials baked into a PUBLIC image (opt-in)"
           else
             echo "no BENCH_UPLOAD_CONF secret set - image carries no upload credentials"
           fi
 
-      - name: Install control-plane config (optional secret)
+      - name: Install control-plane config (registration-only join token)
         run: |
-          if [ -n "${{ secrets.BENCH_AGENT_CONF }}" ]; then
-            mkdir -p live/private
-            printf '%s\n' "${{ secrets.BENCH_AGENT_CONF }}" > live/private/bench-agent.conf
-            chmod 600 live/private/bench-agent.conf
-            echo "control-plane config baked into the image (auto check-in on boot)"
-          else
-            echo "no BENCH_AGENT_CONF secret set - image will not auto-connect"
+          # SEC-P0-001 / FINAL-P0-001: never bake the operator token into a public
+          # artifact. Prefer BENCH_AGENT_JOIN_CONF (BENCHD_JOIN_TOKEN=...); refuse a
+          # config that carries BENCHD_TOKEN=.
+          CONF="${{ secrets.BENCH_AGENT_JOIN_CONF }}"
+          if [ -z "$CONF" ]; then
+            CONF="${{ secrets.BENCH_AGENT_CONF }}"
           fi
+          if [ -z "$CONF" ]; then
+            echo "no control-plane config secret set - image will not auto-connect"
+            exit 0
+          fi
+          if printf '%s\n' "$CONF" | grep -qE '^[[:space:]]*BENCHD_TOKEN='; then
+            echo "ERROR: refusing to bake an operator token (BENCHD_TOKEN=) into a public ISO." >&2
+            echo "Create BENCH_AGENT_JOIN_CONF with BENCHD_JOIN_TOKEN=... instead." >&2
+            exit 1
+          fi
+          mkdir -p live/private
+          printf '%s\n' "$CONF" > live/private/bench-agent.conf
+          chmod 600 live/private/bench-agent.conf
+          echo "registration-only control-plane config baked into the image (auto check-in on boot)"
 
       - name: Requirements check
         run: |

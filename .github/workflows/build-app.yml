@@ -57,11 +57,18 @@ jobs:
       - name: Build bundles
         shell: bash
         env:
-          # bake the control-plane config into the bundles so a downloaded app
-          # auto-registers (same secret the live ISO uses). PUBLIC releases - use
-          # a limited, rotatable token.
-          BENCH_BAKE_AGENT_CONF: ${{ secrets.BENCH_AGENT_CONF }}
-        run: python packaging/build_app.py --out dist
+          # SEC-P0-001: public bundles must not carry the operator token. Prefer a
+          # registration-only config (BENCHD_JOIN_TOKEN=...); BENCH_AGENT_CONF is
+          # only used when it does not contain BENCHD_TOKEN=.
+          BENCH_BAKE_AGENT_CONF: ${{ secrets.BENCH_AGENT_JOIN_CONF || secrets.BENCH_AGENT_CONF }}
+        run: |
+          set -euo pipefail
+          if printf '%s\n' "${BENCH_BAKE_AGENT_CONF:-}" | grep -qE '^[[:space:]]*BENCHD_TOKEN='; then
+            echo "ERROR: refusing to bake an operator token (BENCHD_TOKEN=) into a public app bundle." >&2
+            echo "Create BENCH_AGENT_JOIN_CONF with BENCHD_JOIN_TOKEN=... instead." >&2
+            exit 1
+          fi
+          python packaging/build_app.py --out dist
 
       - name: Package
         shell: bash
