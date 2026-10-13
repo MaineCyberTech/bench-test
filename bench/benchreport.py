@@ -2148,7 +2148,14 @@ def _merge_into(s, j):
         phase = p.get("phase") or r.get("phase")
         grp = p.get("group") or r.get("group")
         if grp == "gfx" and isinstance(r, dict):
-            setd("gfx", r)
+            # several gfx records can exist: furmark "skipped" (no monitor) and then
+            # the glmark2 fallback that actually ran and scored. Keep the one with a
+            # score; a skipped record may only stand in until a scored one arrives.
+            have = out.get("gfx") or {}
+            new_scored = r.get("score") is not None and not r.get("skipped")
+            have_scored = have.get("score") is not None and not have.get("skipped")
+            if new_scored or not have_scored:
+                setd("gfx", r)
         if phase == "matmul" and isinstance(r.get("results"), dict):
             sub = r["results"]
             first = next(iter(sub.values()), {})
