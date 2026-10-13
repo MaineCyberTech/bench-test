@@ -1367,7 +1367,7 @@ async function powerRunner(id, kind) {
   const extra = busy ? "\n\nA run is in progress and will be stopped first." : "";
   if (!confirm(verb + " " + name + "?" + extra + "\n\nThis powers off the machine.")) return;
   try {
-    await api("/runners/" + id + "/commands", "POST", { kind, payload: {} });
+    await api("/runners/" + id + "/commands", "POST", { kind, payload: { confirm: true } });
     toast(verb.toLowerCase() + " sent to " + name);
     refresh();
   } catch (e) { toast(kind + " failed: " + e.message, "err"); }

@@ -246,7 +246,9 @@ def run():
     st, _ = cl.call("POST", "/api/v1/runners/%s/commands" % rid, {"kind": "nope"})
     c.check("unknown command rejected", st == 400, st)
     for kind in ("shutdown", "reboot"):
-        st, r = cl.call("POST", "/api/v1/runners/%s/commands" % rid, {"kind": kind})
+        # ADMIN-P2-002 (W24a): a destructive command needs an explicit confirm.
+        st, r = cl.call("POST", "/api/v1/runners/%s/commands" % rid,
+                        {"kind": kind, "payload": {"confirm": True}})
         c.check("%s command accepted" % kind, st == 200 and r.get("id"), (st, r))
 
     # ---- authorization: a runner key is scoped to its own runner + run ----

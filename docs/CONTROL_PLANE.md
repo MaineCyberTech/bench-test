@@ -133,7 +133,8 @@ UI-facing:
 | GET | `/audit?limit=N` | audit trail (newest first): `ts`, `actor`, `action`, `target`, `detail` (operator only) |
 | GET/POST/DELETE | `/schedules` · `/schedules/<id>` | list / create / remove recurring runs (operator only) |
 | DELETE | `/runs/<id>` · `/runners/<id>` | delete a run (+data) / a runner (+its runs and their data, commands & schedules) |
-| POST | `/runners/<id>/commands` | issue `start`/`stop`/`update`/`fan_curve`/`power_limit`/`restart`/`shutdown`/`reboot`/`exec`/`shell`/`update_toolkit`/`iso_fetch`/`iso_write`/`iso_write_slot` (operator only) |
+| POST | `/runners/<id>/commands` | issue `start`/`stop`/`update`/`fan_curve`/`power_limit`/`restart`/`shutdown`/`reboot`/`exec`/`shell`/`update_toolkit`/`iso_fetch`/`iso_write`/`iso_write_slot` (operator only; the four destructive kinds need `payload.confirm=true`) |
+| POST | `/runners/<id>/rotate` | mint a new `api_key` for that runner (its owner or the operator); the old key stops working at once, and the rotation is audited |
 
 Runner-scoped routes (`/register`, heartbeat, `/runners/<id>/commands`, command
 `ack`, and run writes) require a **per-runner API key** and are scoped to the
@@ -160,8 +161,8 @@ gpu_fan_rpm, cpu_util, ram_used, sm_mhz` (plus `vram_used_mib` / `vram_total_mib
 { "kind": "fan_curve", "payload": { "on": true } }
 { "kind": "power_limit", "payload": { "watts": 250 } }
 { "kind": "restart" }                       // re-exec the agent (fresh checkout)
-{ "kind": "reboot" }                        // power-cycle the machine
-{ "kind": "shutdown" }                      // power off the machine
+{ "kind": "reboot", "payload": { "confirm": true } }     // power-cycle the machine
+{ "kind": "shutdown", "payload": { "confirm": true } }   // power off the machine
 { "kind": "update_toolkit", "payload": { "ref": "main", "sha256": null } }   // live self-update
 { "kind": "iso_fetch", "payload": { "tag": "iso-nvidia-legacy-38", "gpu": "nvidia-legacy" } }
 { "kind": "iso_write", "payload": { "iso": "/mnt/benchdata/iso/bench-live-*.iso",
@@ -170,6 +171,25 @@ gpu_fan_rpm, cpu_util, ram_used, sm_mhz` (plus `vram_used_mib` / `vram_total_mib
                                          "confirm": true } }  // A/B: inactive slot + boot flag
 { "kind": "exec", "payload": { "cmd": "nvidia-smi -q | head", "timeout": 30 } }  // remote terminal
 ```
+
+`shutdown`, `reboot`, `iso_write` and `iso_write_slot` are **destructive** and are
+refused with `400` unless the payload carries an explicit `confirm: true` (the
+browser ticks its confirm box; a script must echo the flag). The API no longer
+relies on the browser's prompt alone.
+
+### Operator controls (all optional, off by default)
+
+| Flag / config key | Effect |
+|---|---|
+| `--exec-allowlist REGEX` / `BENCHD_EXEC_ALLOWLIST` | when set, only `exec`/`shell` commands that match are accepted (403 otherwise) |
+| `--exec-denylist REGEX` / `BENCHD_EXEC_DENYLIST` | any `exec`/`shell` command that matches is always refused (403) |
+| `--key-ttl-days N` / `BENCHD_KEY_TTL_DAYS` | a runner `api_key` older than N days is rejected with `401` on heartbeat / command poll (`0`, the default, never expires) |
+| `--artifact-max-bytes N` / `BENCHD_ARTIFACT_MAX_BYTES` | per-artifact size cap in bytes (default 25 MiB) |
+| `--artifact-quota N` / `BENCHD_ARTIFACT_QUOTA` | maximum artifacts per run (default 200) |
+
+A denied `exec`/`shell` command and every key rotation append an `audit` row
+(`command_denied` / `key_rotate`); so does an unconfirmed destructive command.
+An invalid allow/deny regex refuses to start (fail closed).
 
 ## Deployment (Proxmox)
 
@@ -239,7 +259,8 @@ reads `0.0.0+unknown`. The startup log line records which source was used, and
   limited. Counters are in memory and reset on restart.
 - **Audit trail.** Privileged actions append a row to the `audit` table (readable
   at `GET /api/v1/audit`, operator only, newest first): runner registration,
-  command issuance (with the kind), run/runner/schedule deletion, and auth
+  command issuance (with the kind), a denied `exec`/`shell` (`command_denied`), a
+  key rotation (`key_rotate`), run/runner/schedule deletion, and auth
   failures (`actor=anonymous`). Actors are `operator`, `join`, `runner:<id>` or
   `anonymous`; the shared operator token is one identity, so per-user attribution
   still needs per-user accounts (see Roadmap).
@@ -252,7 +273,20 @@ reads `0.0.0+unknown`. The startup log line records which source was used, and
   socket timeout rather than pinning a handler thread.
 - An attached artifact's `sha256` is **recomputed from the bytes received** and
   verified on upload; a mismatch is a `400` and the digest the server stores (and
-  serves) is its own recomputation, not the client's claim.
+  serves) is its own recomputation, not the client's claim. An upload is also
+  bounded by a per-artifact size cap (default 25 MiB) and a per-run quota (default
+  200), both `413` when exceeded, and its name must be a bare filename — an empty,
+  absolute or path-traversal (`../`) name is a `400`.
+- **Destructive commands are confirmed server-side.** `shutdown`, `reboot`,
+  `iso_write` and `iso_write_slot` require `payload.confirm=true`; without it the
+  API answers `400` (the browser's confirm dialog is unchanged, it just now also
+  sets the flag). `exec`/`shell` can be constrained with `--exec-allowlist` /
+  `--exec-denylist` (both unset = allow all, as before); a denied command is `403`
+  and audited.
+- **Runner keys can be rotated and expire.** `POST /runners/<id>/rotate` (owner or
+  operator) mints a new key and invalidates the old one immediately; only the
+  digest is stored. With `--key-ttl-days N`, a key older than N days is rejected
+  with `401` on heartbeat / command poll until it is rotated.
 - Put a TLS reverse proxy in front if it is ever exposed beyond the lab.
 - `server/benchd.conf`, `server/data/` and `~/.config/bench-agent.json` are
   git-ignored — never commit the token, keys or the database.
@@ -331,7 +365,10 @@ covers the API (auth, per-runner keys, runs/phases/telemetry/logs/artifacts/stat
 commands, schedules, delete, reaper, SSE), control-plane P3 hardening (malformed
 input → generic 4xx, the late-finish guard, command re-queue/expiry, artifact
 sha256 verification and per-artifact delete, hot-path indexes, static-asset
-caching, artifact retention, the version stamp), the reporting client
+caching, artifact retention, the version stamp), control-plane P2 enforcement
+(server-side destructive-command confirmation, the exec allow/deny lists, runner
+key rotation and TTL expiry, and the artifact size/quota/name limits), the
+reporting client
 (Reporter, PhaseTracker, ReporterPump, exec, inventory/summary builders), preset
 parity across GUI/TUI/web, and the dashboard phase-table logic.
 

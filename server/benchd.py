@@ -63,7 +63,8 @@ PROTOCOL = 1
 # PRAGMA user_version. Bump it whenever a change to SCHEMA below needs the code
 # to notice an older (upgrade in place) or newer (refuse to start) database.
 # There is deliberately no migration framework: one integer, checked on startup.
-SCHEMA_VERSION = 1
+# v2 adds runners.key_issued (ACM-P2-001/002: per-runner key age for --key-ttl-days).
+SCHEMA_VERSION = 2
 WEB_DIR = os.path.join(HERE, "web")
 DEFAULT_DB = os.path.join(HERE, "data", "benchd.sqlite")
 
@@ -71,6 +72,21 @@ DEFAULT_DB = os.path.join(HERE, "data", "benchd.sqlite")
 # never-sent Content-Length cannot pin a handler thread and its memory. Artifacts
 # (telemetry CSV, sensors dump, a screenshot) post separately and fit comfortably.
 MAX_BODY = 24 * 1024 * 1024
+
+# ADMIN-P2-002: destructive commands are gated in the browser only, so a script or
+# API client could power-cycle a machine or overwrite a disk in one request. These
+# kinds now require the caller to echo an explicit confirmation in the payload.
+DESTRUCTIVE_COMMANDS = ("shutdown", "reboot", "iso_write", "iso_write_slot")
+
+# ADMIN-P2-004 / ADMIN-P2-006: exec/shell is fleet-wide remote code execution with
+# no approval path. An operator may now constrain it with --exec-allowlist /
+# --exec-denylist (both unset by default = allow all, as before).
+EXEC_COMMANDS = ("exec", "shell")
+
+# FILE-P2-002: an artifact upload had no size, count or name validation. These are
+# the defaults; --artifact-max-bytes / --artifact-quota override them.
+DEFAULT_ARTIFACT_MAX_BYTES = 25 * 1024 * 1024
+DEFAULT_ARTIFACT_QUOTA = 200
 
 # RES-P3-003: bound how long a handler thread may block on the client socket.
 # Without it, a request that declares a Content-Length but never sends the body
@@ -401,7 +417,8 @@ CREATE TABLE IF NOT EXISTS runners (
   id TEXT PRIMARY KEY, name TEXT, os TEXT, kind TEXT, version TEXT,
   capabilities TEXT, first_seen REAL, last_seen REAL, status TEXT,
   current_run TEXT, addr TEXT, git TEXT, api_key TEXT,
-  machine_id TEXT, ephemeral INTEGER DEFAULT 0, instance TEXT
+  machine_id TEXT, ephemeral INTEGER DEFAULT 0, instance TEXT,
+  key_issued REAL
 );
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY, runner_id TEXT, host TEXT, label TEXT, profile TEXT,
@@ -569,6 +586,13 @@ class Store:
             self.conn.execute("ALTER TABLE runners ADD COLUMN ephemeral INTEGER DEFAULT 0")
         if "instance" not in cols:
             self.conn.execute("ALTER TABLE runners ADD COLUMN instance TEXT")
+        # ACM-P2-001/002: when a per-runner key was issued, so --key-ttl-days can
+        # expire it. A key of unknown age is given a fresh window on upgrade (an
+        # operator can rotate it); never break an existing key by guessing.
+        if "key_issued" not in cols:
+            self.conn.execute("ALTER TABLE runners ADD COLUMN key_issued REAL")
+            self.conn.execute("UPDATE runners SET key_issued=strftime('%s','now') "
+                              "WHERE key_issued IS NULL")
         tcols = {r[1] for r in self.conn.execute("PRAGMA table_info(telemetry)")}
         if "extra" not in tcols:
             self.conn.execute("ALTER TABLE telemetry ADD COLUMN extra TEXT")
@@ -1102,6 +1126,20 @@ def safe_filename(n):
     return re.sub(r"[^A-Za-z0-9._-]", "_", str(n or "artifact"))[:120]
 
 
+def bad_artifact_name(name):
+    """FILE-P2-002: True when an artifact name is empty or a path, not a bare name.
+
+    Rejects an empty/whitespace name, an absolute path, any directory separator
+    (``/`` or ``\\``) and any ``..`` segment, so an uploaded name can never escape
+    the per-run namespace it is stored and downloaded under.
+    """
+    if not isinstance(name, str) or not name.strip():
+        return True
+    if name in (".", "..") or "/" in name or "\\" in name or ".." in name:
+        return True
+    return os.path.isabs(name)
+
+
 def int_arg(q, key, default, lo=0, hi=100000):
     """Query-string int with a sane fallback (never raises on garbage)."""
     try:
@@ -1393,6 +1431,16 @@ class Handler(BaseHTTPRequestHandler):
     join_token = None
     cors_origin = None
     web_dir = WEB_DIR
+    # ADMIN-P2-004 / ADMIN-P2-006: optional exec/shell command gates. Both None
+    # (the default) keeps the previous allow-all behaviour; set by main() from
+    # --exec-allowlist / --exec-denylist (or the matching config keys).
+    exec_allowlist = None          # compiled regex: only a match is accepted
+    exec_denylist = None           # compiled regex: any match is rejected
+    # ACM-P2-001 / ACM-P2-002: per-runner key lifetime in days; 0 = never expires.
+    key_ttl_days = 0
+    # FILE-P2-002: artifact upload limits (bytes per artifact, count per run).
+    artifact_max_bytes = DEFAULT_ARTIFACT_MAX_BYTES
+    artifact_quota = DEFAULT_ARTIFACT_QUOTA
     # RES-P3-003: per-connection socket timeout (StreamRequestHandler applies it).
     timeout = REQUEST_TIMEOUT_S
 
@@ -1662,6 +1710,48 @@ class Handler(BaseHTTPRequestHandler):
         row = self.store.one("SELECT runner_id FROM runs WHERE id=?", (run_id,))
         return bool(row and row["runner_id"] == r["id"])
 
+    def _key_expired(self, r):
+        """ACM-P2-001 / ACM-P2-002: has this runner's key outlived --key-ttl-days?
+
+        Only consulted when a TTL is configured (0 = never expires). A row with no
+        recorded issue time (a legacy key) is treated as expired so a TTL fails
+        closed; the migration stamps such rows on upgrade.
+        """
+        ttl = self.key_ttl_days or 0
+        if ttl <= 0 or not r:
+            return False
+        try:
+            issued = float(r.get("key_issued") or 0)
+        except (TypeError, ValueError):
+            issued = 0.0
+        return (now() - issued) > ttl * 86400.0
+
+    def _expired_bearer(self):
+        """The runner row for this bearer when its key has expired, else None."""
+        if not self.key_ttl_days:
+            return None
+        r = self._runner_from_bearer()
+        return r if (r and self._key_expired(r)) else None
+
+    def _expired_deny(self, r):
+        """The 401 for an expired runner key (ACM-P2-001 / ACM-P2-002)."""
+        return self._deny(401, "api key expired (older than %d day(s)); rotate it "
+                          "with POST /api/v1/runners/%s/rotate"
+                          % (self.key_ttl_days, r["id"]))
+
+    def _exec_rejected(self, cmd):
+        """ADMIN-P2-004 / ADMIN-P2-006: the reason an exec/shell cmd is refused.
+
+        Returns None when the command is acceptable. The denylist always wins; the
+        allowlist (when set) requires a match. Both unset keeps allow-all.
+        """
+        text = cmd if isinstance(cmd, str) else ""
+        if self.exec_denylist is not None and self.exec_denylist.search(text):
+            return "command matches the exec denylist"
+        if self.exec_allowlist is not None and not self.exec_allowlist.search(text):
+            return "command does not match the exec allowlist"
+        return None
+
     # -- dispatch ----------------------------------------------------------
     def do_OPTIONS(self):
         self._metrics_obj().status(204)
@@ -1701,6 +1791,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._stream()
             m = re.match(r"^/api/v1/runners/([^/]+)/commands$", path)
             if m:
+                exp = self._expired_bearer()
+                if exp:
+                    return self._expired_deny(exp)
                 if not self._may_act_as(m.group(1)):
                     return self._err(403, "not your runner")
                 return self._runner_commands(m.group(1))
@@ -2201,6 +2294,9 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/v1/runners/([^/]+)/heartbeat$", path)
         if m:
             rid = m.group(1)
+            exp = self._expired_bearer()
+            if exp and exp["id"] == rid:
+                return self._expired_deny(exp)
             if not self._may_act_as(rid):
                 return self._err(403, "not your runner")
             if not S.one("SELECT id FROM runners WHERE id=?", (rid,)):
@@ -2221,6 +2317,9 @@ class Handler(BaseHTTPRequestHandler):
             pending = S.one("SELECT COUNT(*) c FROM commands WHERE runner_id=? AND status='queued'",
                             (rid,))["c"]
             return self._send(200, {"ok": True, "commands": pending, "server_time": now()})
+        m = re.match(r"^/api/v1/runners/([^/]+)/rotate$", path)
+        if m:
+            return self._rotate_key(m.group(1), q)
         m = re.match(r"^/api/v1/runners/([^/]+)/commands$", path)
         if m:
             if not self._is_operator(q):
@@ -2229,6 +2328,9 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/v1/runners/([^/]+)/commands/([^/]+)/ack$", path)
         if m:
             rid, cid = m.group(1), m.group(2)
+            exp = self._expired_bearer()
+            if exp and exp["id"] == rid:
+                return self._expired_deny(exp)
             if not self._may_act_as(rid):
                 return self._err(403, "not your command")
             cmd = S.one("SELECT runner_id FROM commands WHERE id=?", (cid,))
@@ -2362,16 +2464,28 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/v1/runs/([^/]+)/artifact$", path)
         if m:
             run_id = m.group(1)
-            name = field_str(b, "name", "artifact") or "artifact"
+            # FILE-P2-002: a name is now required and must be a bare filename, and
+            # the upload is bounded per artifact and per run.
+            name = field_str(b, "name")
+            if bad_artifact_name(name):
+                return self._err(400, "invalid artifact name")
             kind = field_str(b, "kind", "json") or "json"
             content = field_str(b, "content", "") or ""
             claimed = b.get("sha256")
             if claimed is not None and not isinstance(claimed, str):
                 raise BadInput("'sha256' must be a string")
+            existing = S.one("SELECT COUNT(*) c FROM artifacts WHERE run_id=?",
+                             (run_id,))["c"]
+            if existing >= self.artifact_quota:
+                return self._err(413, "artifact quota reached for this run "
+                                 "(%d)" % self.artifact_quota)
             try:
                 raw = base64.b64decode(content, validate=True) if content else b""
             except Exception:
                 return self._err(400, "invalid base64 content")
+            if len(raw) > self.artifact_max_bytes:
+                return self._err(413, "artifact too large (%d > %d bytes)"
+                                 % (len(raw), self.artifact_max_bytes))
             # FILE-P3-001: the client's sha256 was stored unverified. Recompute it
             # from the bytes we actually received, refuse a mismatch, and persist
             # (so the download serves) the value we computed.
@@ -2492,17 +2606,18 @@ class Handler(BaseHTTPRequestHandler):
             key = secrets.token_urlsafe(32)
         S.key_plain[rid] = key
         S.ex("INSERT INTO runners(id,name,os,kind,version,capabilities,first_seen,last_seen,"
-             "status,current_run,addr,git,api_key,machine_id,ephemeral,instance) "
-             "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+             "status,current_run,addr,git,api_key,machine_id,ephemeral,instance,key_issued) "
+             "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
              "ON CONFLICT(id) DO UPDATE SET name=excluded.name, os=excluded.os, kind=excluded.kind, "
              "version=excluded.version, capabilities=excluded.capabilities, last_seen=excluded.last_seen, "
              "status=excluded.status, addr=excluded.addr, git=excluded.git, "
-             "machine_id=excluded.machine_id, ephemeral=excluded.ephemeral, instance=excluded.instance",
+             "machine_id=excluded.machine_id, ephemeral=excluded.ephemeral, instance=excluded.instance, "
+             "key_issued=excluded.key_issued",
              (rid, field_str(b, "name"), field_str(b, "os"), kind, field_str(b, "version"),
               json.dumps(field_dict(b, "capabilities")), now(), now(),
               field_str(b, "status", "idle") or "idle", field_str(b, "current_run"),
               self.client_address[0], field_str(b, "git"), key_digest(key), mid,
-              1 if b.get("ephemeral") else 0, inst))
+              1 if b.get("ephemeral") else 0, inst, now()))
         r = runner_public(S.one("SELECT * FROM runners WHERE id=?", (rid,)))
         self.bus.publish({"event": "runner", "data": r})
         S.audit(self._actor(), "register", target=rid,
@@ -2518,16 +2633,56 @@ class Handler(BaseHTTPRequestHandler):
                 "shutdown", "reboot", "exec", "shell",
                 "update_toolkit", "iso_fetch", "iso_write", "iso_write_slot"):
             return self._err(400, "unknown command kind")
+        payload = field_dict(b, "payload")
+        # ADMIN-P2-002: a destructive command must carry an explicit confirmation,
+        # so a script or API client cannot power-cycle a machine or overwrite a disk
+        # in one unconfirmed request. The browser's confirm() dialog is unchanged.
+        if kind in DESTRUCTIVE_COMMANDS and payload.get("confirm") is not True:
+            S.audit(self._actor(), "command_denied", target=rid,
+                    detail="%s: payload.confirm!=true" % kind)
+            return self._err(400, "destructive command '%s' requires "
+                             "payload.confirm=true" % kind)
+        # ADMIN-P2-004 / ADMIN-P2-006: an optional operator allow/deny list can
+        # constrain fleet-wide exec/shell. A rejection is a 403 and is audited.
+        if kind in EXEC_COMMANDS:
+            reason = self._exec_rejected(payload.get("cmd"))
+            if reason:
+                S.audit(self._actor(), "command_denied", target=rid,
+                        detail="%s: %s" % (kind, reason))
+                return self._err(403, reason)
         cid = str(uuid.uuid4())
         # RES-P3-001: attempts counts how often a fetched-but-unacked command was
         # re-queued; 0 here, bumped by the stale-command reaper.
         S.ex("INSERT INTO commands(id,runner_id,kind,payload,status,created,attempts) "
              "VALUES(?,?,?,?,?,?,?)",
-             (cid, rid, kind, json.dumps(field_dict(b, "payload")), "queued", now(), 0))
+             (cid, rid, kind, json.dumps(payload), "queued", now(), 0))
         self.bus.publish({"event": "command", "data": {"id": cid, "runner_id": rid,
                                                        "kind": kind, "status": "queued"}})
         S.audit(self._actor(), "command", target=rid, detail=kind)
         return self._send(200, {"id": cid, "status": "queued"})
+
+    def _rotate_key(self, rid, q=None):
+        """ACM-P2-001 / ACM-P2-002: mint a new api_key for one runner.
+
+        The operator or the runner itself may rotate. Only the digest is stored,
+        so the old key stops authenticating the instant this returns; the new
+        plaintext is handed back once (the caller must persist it). Audited.
+        """
+        S = self.store
+        if not self._may_act_as(rid):
+            return self._err(403, "not your runner")
+        if not S.one("SELECT id FROM runners WHERE id=?", (rid,)):
+            return self._err(404, "no such runner")
+        key = secrets.token_urlsafe(32)
+        S.ex("UPDATE runners SET api_key=?, key_issued=? WHERE id=?",
+             (key_digest(key), now(), rid))
+        S.key_plain[rid] = key
+        S.audit(self._actor(q), "key_rotate", target=rid,
+                detail="ttl_days=%d" % (self.key_ttl_days or 0))
+        self.bus.publish({"event": "runner", "data": runner_public(
+            S.one("SELECT * FROM runners WHERE id=?", (rid,)))})
+        return self._send(200, {"runner_id": rid, "api_key": key,
+                                "key_ttl_days": self.key_ttl_days or 0})
 
     def _create_schedule(self, b):
         S = self.store
@@ -2875,6 +3030,51 @@ def find_alert_db_bytes(cli_val):
         return 0
 
 
+def find_exec_regex(cli_val, key):
+    """ADMIN-P2-004/006: the raw --exec-allowlist / --exec-denylist pattern.
+
+    CLI flag, then $<key>, then the config file; None/'' means unset (allow all
+    for the allowlist, no denial for the denylist).
+    """
+    return (cli_val if cli_val is not None
+            else os.environ.get(key) or find_conf_value(key))
+
+
+def find_key_ttl_days(cli_val):
+    """ACM-P2-001/002: per-runner key lifetime in days; 0 (the default) = never."""
+    raw = (cli_val if cli_val is not None
+           else os.environ.get("BENCHD_KEY_TTL_DAYS")
+           or find_conf_value("BENCHD_KEY_TTL_DAYS"))
+    try:
+        return max(0, int(str(raw).strip()))
+    except (TypeError, ValueError):
+        return 0
+
+
+def find_artifact_max_bytes(cli_val):
+    """FILE-P2-002: per-artifact size cap in bytes (default 25 MiB)."""
+    raw = (cli_val if cli_val is not None
+           else os.environ.get("BENCHD_ARTIFACT_MAX_BYTES")
+           or find_conf_value("BENCHD_ARTIFACT_MAX_BYTES"))
+    try:
+        v = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return DEFAULT_ARTIFACT_MAX_BYTES
+    return v if v > 0 else DEFAULT_ARTIFACT_MAX_BYTES
+
+
+def find_artifact_quota(cli_val):
+    """FILE-P2-002: max artifacts per run (default 200)."""
+    raw = (cli_val if cli_val is not None
+           else os.environ.get("BENCHD_ARTIFACT_QUOTA")
+           or find_conf_value("BENCHD_ARTIFACT_QUOTA"))
+    try:
+        v = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return DEFAULT_ARTIFACT_QUOTA
+    return v if v > 0 else DEFAULT_ARTIFACT_QUOTA
+
+
 def main():
     ap = argparse.ArgumentParser(description="bench-test control plane")
     ap.add_argument("--host", default="127.0.0.1")
@@ -2897,6 +3097,19 @@ def main():
     ap.add_argument("--alert-db-bytes", default=None,
                     help="database-size alert threshold in bytes (with "
                          "--alert-webhook); default 0 disables the capacity alert")
+    ap.add_argument("--exec-allowlist", default=None,
+                    help="ADMIN-P2-004/006: a regex; when set, only exec/shell "
+                         "commands matching it are accepted (default: allow all)")
+    ap.add_argument("--exec-denylist", default=None,
+                    help="ADMIN-P2-004/006: a regex; any exec/shell command matching "
+                         "it is refused with 403 (default: none)")
+    ap.add_argument("--key-ttl-days", default=None,
+                    help="ACM-P2-001/002: reject a runner api_key older than N days "
+                         "with 401; 0 (default) never expires")
+    ap.add_argument("--artifact-max-bytes", default=None,
+                    help="FILE-P2-002: per-artifact size cap in bytes (default 25 MiB)")
+    ap.add_argument("--artifact-quota", default=None,
+                    help="FILE-P2-002: maximum artifacts per run (default 200)")
     ap.add_argument("--web", default=WEB_DIR)
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--allow-anonymous", action="store_true",
@@ -2923,6 +3136,22 @@ def main():
     Handler.store, Handler.bus, Handler.token, Handler.web_dir = store, Bus(), token, a.web
     Handler.join_token = join_token
     Handler.cors_origin = cors_origin
+    # ADMIN-P2-004 / ADMIN-P2-006: optional exec/shell allow/deny lists. An invalid
+    # regex is a startup error (fail closed), never a silently ignored restriction.
+    allow_raw = find_exec_regex(a.exec_allowlist, "BENCHD_EXEC_ALLOWLIST")
+    deny_raw = find_exec_regex(a.exec_denylist, "BENCHD_EXEC_DENYLIST")
+    try:
+        Handler.exec_allowlist = re.compile(allow_raw) if allow_raw else None
+        Handler.exec_denylist = re.compile(deny_raw) if deny_raw else None
+    except re.error as exc:
+        print("[benchd] refusing to start: invalid exec allow/deny regex: %s" % exc,
+              flush=True)
+        return 2
+    # ACM-P2-001 / ACM-P2-002: per-runner key lifetime.
+    Handler.key_ttl_days = find_key_ttl_days(a.key_ttl_days)
+    # FILE-P2-002: artifact size cap and per-run quota.
+    Handler.artifact_max_bytes = find_artifact_max_bytes(a.artifact_max_bytes)
+    Handler.artifact_quota = find_artifact_quota(a.artifact_quota)
     # OBS-P2-001 / IR-P2-001 / NOTIF-P2-001: install the optional alert webhook.
     alert_url = find_alert_webhook(a.alert_webhook)
     store.alerter = Alerter(alert_url, db_bytes_limit=find_alert_db_bytes(a.alert_db_bytes))
@@ -2946,6 +3175,13 @@ def main():
     if alert_url:
         print("[benchd] alert webhook enabled (db_bytes limit %d)"
               % store.alerter.db_bytes_limit, flush=True)
+    if Handler.exec_allowlist is not None or Handler.exec_denylist is not None:
+        print("[benchd] exec gate: allowlist=%s denylist=%s"
+              % (allow_raw or "(none)", deny_raw or "(none)"), flush=True)
+    if Handler.key_ttl_days:
+        print("[benchd] runner key TTL: %d day(s)" % Handler.key_ttl_days, flush=True)
+    print("[benchd] artifact limits: %d bytes/artifact, %d/run"
+          % (Handler.artifact_max_bytes, Handler.artifact_quota), flush=True)
     if not token:
         print("[benchd] WARNING: no BENCHD_TOKEN set - anyone can register/control", flush=True)
     try:
