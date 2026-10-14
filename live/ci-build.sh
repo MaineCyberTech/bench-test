@@ -78,8 +78,14 @@ build_container() {
     # or long-lived host. If a future stage needs loop/overlay mounts, keep the
     # least-privilege shape: add only the specific capability, mount the repo
     # read-only, and keep the disposable-runner requirement.
+    #
+    # apparmor is explicitly off (2026-10-14): the lab runner is an LXC that cannot
+    # load docker-default (no policy admin in its apparmor namespace), so a
+    # non-privileged container fails to start there. The container is already
+    # least-privilege + disposable; drop this if the runner becomes a VM.
     docker run --rm \
         --cap-add=SYS_ADMIN \
+        --security-opt apparmor=unconfined \
         -v "$REPO:/work:ro" -w /work \
         -v "$WORKROOT:$WORKROOT" \
         -v "$WORKROOT/pip:/root/.cache/pip" \
