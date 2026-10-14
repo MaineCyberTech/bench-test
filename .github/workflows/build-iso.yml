@@ -221,7 +221,10 @@ jobs:
           cat "$iso".part.* > "$iso"
           size=$(stat -c %s "$iso")
           [ "$size" -gt 104857600 ] || { echo "::error::ISO is suspiciously small ($size bytes)"; exit 1; }
-          sha256sum -c dist/SHA256SUMS
+          # SHA256SUMS carries bare filenames (the documented reassembly happens in a
+          # download dir), so verify from dist/ - from the repo root sha256sum -c cannot
+          # find the file and every build failed here (2026-10-14).
+          (cd dist && sha256sum -c SHA256SUMS)
           echo "smoke ok: $iso ($size bytes) matches SHA256SUMS"
           rm -f "$iso"
 
