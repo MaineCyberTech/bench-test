@@ -34,6 +34,7 @@ server/benchd.conf, ~/.config/benchd.conf, /etc/benchd.conf   (key=value).
 """
 import argparse
 import base64
+import collections
 import csv
 import hashlib
 import io
@@ -78,15 +79,115 @@ MAX_BODY = 24 * 1024 * 1024
 MAX_SAMPLES = 5000
 MAX_LOG_LINES = 2000
 
-# ADMIN-P2-002: destructive commands are gated in the browser only, so a script or
-# API client could power-cycle a machine or overwrite a disk in one request. These
-# kinds now require the caller to echo an explicit confirmation in the payload.
-DESTRUCTIVE_COMMANDS = ("shutdown", "reboot", "iso_write", "iso_write_slot")
+# EVOL-P3-001: the command catalogue is a registry, not a hardcoded tuple. Each
+# kind carries whether it is destructive, whether it needs an explicit
+# confirmation, and a short description; the dispatcher derives the accepted set
+# and the confirm gate from it, and clients can discover it read-only at
+# GET /api/v1/commands (and in GET /state as `command_kinds`) instead of guessing
+# which kinds a server accepts.
+COMMAND_KINDS = collections.OrderedDict([
+    ("start", {"destructive": False, "needs_confirm": False,
+               "description": "start a benchmark run on the runner"}),
+    ("stop", {"destructive": False, "needs_confirm": False,
+              "description": "stop the runner's active run"}),
+    ("update", {"destructive": False, "needs_confirm": False,
+                "description": "git pull --ff-only on the runner"}),
+    ("fan_curve", {"destructive": False, "needs_confirm": False,
+                   "description": "install or remove the GPU fan curve"}),
+    ("power_limit", {"destructive": False, "needs_confirm": False,
+                     "description": "set the GPU power limit (watts)"}),
+    ("restart", {"destructive": False, "needs_confirm": False,
+                 "description": "re-exec the runner agent"}),
+    ("shutdown", {"destructive": True, "needs_confirm": True,
+                  "description": "power off the runner machine"}),
+    ("reboot", {"destructive": True, "needs_confirm": True,
+                "description": "power-cycle the runner machine"}),
+    ("exec", {"destructive": False, "needs_confirm": False,
+              "description": "run a shell command on the runner"}),
+    ("shell", {"destructive": False, "needs_confirm": False,
+               "description": "run an interactive shell on the runner"}),
+    ("update_toolkit", {"destructive": False, "needs_confirm": False,
+                        "description": "self-update the runner's toolkit"}),
+    ("iso_fetch", {"destructive": False, "needs_confirm": False,
+                   "description": "fetch a live ISO onto the runner"}),
+    ("iso_write", {"destructive": True, "needs_confirm": True,
+                   "description": "write an ISO to a block device (destructive)"}),
+    ("iso_write_slot", {"destructive": True, "needs_confirm": True,
+                        "description": "write an ISO to the inactive A/B slot"}),
+])
+
+# Derived so the accepted kinds and the confirm gate cannot drift from the
+# registry: shutdown/reboot/iso_write/iso_write_slot still need confirm=true
+# (ADMIN-P2-002), everything else does not.
+COMMAND_KIND_NAMES = tuple(COMMAND_KINDS)
+DESTRUCTIVE_COMMANDS = tuple(k for k, v in COMMAND_KINDS.items() if v["needs_confirm"])
 
 # ADMIN-P2-004 / ADMIN-P2-006: exec/shell is fleet-wide remote code execution with
 # no approval path. An operator may now constrain it with --exec-allowlist /
 # --exec-denylist (both unset by default = allow all, as before).
 EXEC_COMMANDS = ("exec", "shell")
+
+
+def command_kinds_public():
+    """EVOL-P3-001: the command catalogue as a JSON-safe list of copies.
+
+    Read-only: each caller gets fresh dicts, so nothing can mutate the registry.
+    """
+    return [dict(v, kind=k) for k, v in COMMAND_KINDS.items()]
+
+
+# API-P3-003: the control plane's route table - the machine-readable source of
+# truth for its HTTP surface. docs/openapi.json publishes it and
+# tests/test_contract.py checks both directions (every documented route is here,
+# every route here is documented) plus that the dispatcher really serves each one.
+# `auth` is one of:
+#   "public"   - no token required
+#   "operator" - the shared operator token (BENCHD_TOKEN)
+#   "runner"   - the operator, or the runner's own per-runner API key
+#   "join"     - the operator, a runner key, or the registration-only join token
+#   "owner"    - the operator, or the run's owning runner key
+# `internal` marks a route deliberately kept out of the published contract (none
+# today; the contract test keeps an explicit, commented exceptions list).
+API_ROUTES = (
+    {"method": "GET", "path": "/health", "auth": "public"},
+    {"method": "GET", "path": "/ready", "auth": "public"},
+    {"method": "GET", "path": "/metrics", "auth": "public"},
+    {"method": "GET", "path": "/api/v1/stream", "auth": "operator"},
+    {"method": "GET", "path": "/api/v1/runners/{runner_id}/commands", "auth": "runner"},
+    {"method": "GET", "path": "/api/v1/state", "auth": "operator"},
+    {"method": "GET", "path": "/api/v1/metrics", "auth": "operator"},
+    {"method": "GET", "path": "/api/v1/commands", "auth": "operator"},
+    {"method": "GET", "path": "/api/v1/audit", "auth": "operator"},
+    {"method": "GET", "path": "/api/v1/runners", "auth": "operator"},
+    {"method": "GET", "path": "/api/v1/schedules", "auth": "operator"},
+    {"method": "GET", "path": "/api/v1/runs", "auth": "operator"},
+    {"method": "GET", "path": "/api/v1/runs/{run_id}/telemetry.csv", "auth": "operator"},
+    {"method": "GET", "path": "/api/v1/runs/{run_id}/telemetry", "auth": "operator"},
+    {"method": "GET", "path": "/api/v1/runs/{run_id}/logs", "auth": "operator"},
+    {"method": "GET", "path": "/api/v1/runs/{run_id}/stats", "auth": "operator"},
+    {"method": "GET", "path": "/api/v1/runs/{run_id}/artifact/{name}", "auth": "operator"},
+    {"method": "GET", "path": "/api/v1/runs/{run_id}", "auth": "operator"},
+    {"method": "GET", "path": "/api/v1/trends", "auth": "operator"},
+    {"method": "POST", "path": "/api/v1/register", "auth": "join"},
+    {"method": "POST", "path": "/api/v1/server/update", "auth": "operator"},
+    {"method": "POST", "path": "/api/v1/runners/{runner_id}/heartbeat", "auth": "runner"},
+    {"method": "POST", "path": "/api/v1/runners/{runner_id}/rotate", "auth": "runner"},
+    {"method": "POST", "path": "/api/v1/runners/{runner_id}/commands", "auth": "operator"},
+    {"method": "POST", "path": "/api/v1/runners/{runner_id}/commands/{command_id}/ack",
+     "auth": "runner"},
+    {"method": "POST", "path": "/api/v1/schedules", "auth": "operator"},
+    {"method": "POST", "path": "/api/v1/runs", "auth": "runner"},
+    {"method": "POST", "path": "/api/v1/runs/{run_id}/phase", "auth": "owner"},
+    {"method": "POST", "path": "/api/v1/runs/{run_id}/telemetry", "auth": "owner"},
+    {"method": "POST", "path": "/api/v1/runs/{run_id}/event", "auth": "owner"},
+    {"method": "POST", "path": "/api/v1/runs/{run_id}/log", "auth": "owner"},
+    {"method": "POST", "path": "/api/v1/runs/{run_id}/artifact", "auth": "owner"},
+    {"method": "POST", "path": "/api/v1/runs/{run_id}/finish", "auth": "owner"},
+    {"method": "DELETE", "path": "/api/v1/runs/{run_id}/artifact/{name}", "auth": "owner"},
+    {"method": "DELETE", "path": "/api/v1/schedules/{schedule_id}", "auth": "operator"},
+    {"method": "DELETE", "path": "/api/v1/runs/{run_id}", "auth": "operator"},
+    {"method": "DELETE", "path": "/api/v1/runners/{runner_id}", "auth": "operator"},
+)
 
 # FILE-P2-002: an artifact upload had no size, count or name validation. These are
 # the defaults; --artifact-max-bytes / --artifact-quota override them.
@@ -2111,6 +2212,7 @@ class Handler(BaseHTTPRequestHandler):
                 "SELECT DISTINCT host FROM runs WHERE host IS NOT NULL ORDER BY host")]
             return self._send(200, {"runners": runners, "active": active, "recent": recent,
                                     "metrics": METRICS, "hosts": hosts,
+                                    "command_kinds": command_kinds_public(),
                                     "server_git": server_git(), "latest_git": latest_git(),
                             "version": server_version(),
                             "version_source": server_version_source(),
@@ -2118,6 +2220,10 @@ class Handler(BaseHTTPRequestHandler):
                                     "server_time": now()})
         if path == "/api/v1/metrics":
             return self._send(200, {"metrics": METRICS})
+        if path == "/api/v1/commands":
+            # EVOL-P3-001: the command catalogue, read-only, so a client can
+            # discover the accepted kinds and their confirm requirements.
+            return self._send(200, {"commands": command_kinds_public()})
         if path == "/api/v1/audit":
             # operator-only (the do_GET gate above), newest first
             lim = int_arg(q, "limit", 100, 1, 1000)
@@ -2834,10 +2940,9 @@ class Handler(BaseHTTPRequestHandler):
         if not S.one("SELECT id FROM runners WHERE id=?", (rid,)):
             return self._err(404, "no such runner")
         kind = b.get("kind")
-        if not isinstance(kind, str) or kind not in (
-                "start", "stop", "update", "fan_curve", "power_limit", "restart",
-                "shutdown", "reboot", "exec", "shell",
-                "update_toolkit", "iso_fetch", "iso_write", "iso_write_slot"):
+        # EVOL-P3-001: the accepted set is derived from COMMAND_KINDS, not a
+        # hardcoded tuple, so the registry and the dispatcher cannot drift.
+        if not isinstance(kind, str) or kind not in COMMAND_KINDS:
             return self._err(400, "unknown command kind")
         payload = field_dict(b, "payload")
         # ADMIN-P2-002: a destructive command must carry an explicit confirmation,
