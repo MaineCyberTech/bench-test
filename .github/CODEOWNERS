@@ -1,0 +1,18 @@
+# Review routing for bench-test.
+#
+# This file requests reviewers only; it does not by itself enforce review. To make
+# code-owner review required, a repository admin must enable "Require review from
+# Code Owners" in the branch protection / ruleset for `main`.
+#
+# UPDATE the handle below to the current maintainer or team before relying on it;
+# `@JulianB-MCT` is the default owner at the time this file was added.
+
+# Default owner for everything.
+*                       @JulianB-MCT
+
+# Highest-blast-radius paths: the control plane, the release/packaging inputs,
+# and CI (which can publish to public releases).
+/.github/               @JulianB-MCT
+/server/                @JulianB-MCT
+/packaging/             @JulianB-MCT
+/live/                  @JulianB-MCT
