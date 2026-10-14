@@ -37,8 +37,19 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Install the test venv
+        # The suite is stdlib-only, but two checks assert real behaviour that needs
+        # numpy (RAM integrity / random-IO timings) and psutil (TUI sampling).
+        # Installing them keeps a provisioning gap out of the skip register.
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --quiet --disable-pip-version-check numpy psutil
+
       - name: Run test suite
-        run: python tests/run_all.py
+        # xvfb supplies a display for the Tk dashboard checks; --allow-skips accepts
+        # the Windows-only checks, which record a skip on Linux rather than pretend
+        # to pass. Everything the platform *can* run is run.
+        run: xvfb-run -a .venv/bin/python tests/run_all.py --allow-skips
 
       - name: Byte-compile Python sources
         run: python -m py_compile bench/*.py server/*.py
