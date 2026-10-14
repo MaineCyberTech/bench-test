@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
 # Run-LinuxBench.sh - Linux runner for the bench-test Python phases
-# (GPU/CPU/RAM/disk + combined, full-system soak, network, NVENC, inventory).
+# (GPU/CPU/RAM/disk + combined, full-system soak, network, NVENC, LLM, inventory).
 # Writes results/<host>-linux-<stamp>.json and .md, mirroring the PowerShell invokers' metrics.
 #
 # Usage: ./Run-LinuxBench.sh [-o OutDir] [--gpu-soak S] [--cpu-soak S] [--ram-soak S]
 #   [--combined-seconds S] [--fullsoak-seconds S] [--gfx-seconds S] [--fan-seconds S]
 #   [--gpu-size N] [--cpu-size N] [--ram-size-mb N] [--fill-pct N] [--passes N]
 #   [--disk-path DIR] [--disk-size-mb N] [--disk-seconds S] [--steady-gb G]
-#   [--skip-gpu] [--skip-cpu] [--skip-ram] [--skip-disk]
+#   [--idle-seconds S] [--skip-gpu] [--skip-cpu] [--skip-ram] [--skip-disk]
 #   [--skip-combined] [--skip-fullsoak] [--skip-net] [--skip-nvenc] [--skip-sys]
-#   [--skip-gfx] [--skip-fan]
+#   [--skip-llm] [--skip-gfx] [--skip-fan] [--skip-idle]
 #   [--soak-until-stable] [--stable-hold S] [--gfx-engine furmark|glmark2]
 #
 # Env: BENCH_PY overrides the Python interpreter (default: .venv/bin/python, else python3).
 #      FURMARK overrides the FurMark 2 binary path (default: tools/furmark/FurMark_linux64/furmark).
 #      GPU phases need PyTorch CUDA; on pre-Turing NVIDIA use torch cu126 wheels.
+#      BENCH_OLLAMA_URL overrides the Ollama base URL (default: http://127.0.0.1:11434).
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -55,6 +56,7 @@ DISK_PATH="${TMPDIR:-/tmp}"; DISK_SIZE_MB=2048; DISK_SECONDS=15; STEADY_GB=10
 DISK_PATH_SET=0
 DO_GPU=1; DO_CPU=1; DO_RAM=1; DO_DISK=1
 DO_COMBINED=1; DO_FULLSOAK=1; DO_NET=1; DO_NVENC=1; DO_SYS=1; DO_GFX=1; DO_FAN=1
+DO_IDLE=1; DO_LLM=1; IDLE_SECONDS=60
 STABLE_ARG=""; STABLE_HOLD=60; GFX_ENGINE=furmark
 
 while [ $# -gt 0 ]; do
@@ -76,11 +78,12 @@ while [ $# -gt 0 ]; do
         --disk-size-mb)    DISK_SIZE_MB="$2"; shift 2 ;;
         --disk-seconds)    DISK_SECONDS="$2"; shift 2 ;;
         --steady-gb)       STEADY_GB="$2"; shift 2 ;;
+        --idle-seconds)    IDLE_SECONDS="$2"; shift 2 ;;
         --skip-gpu)        DO_GPU=0; shift ;;
         --skip-cpu)        DO_CPU=0; shift ;;
         --skip-ram)        DO_RAM=0; shift ;;
         --skip-disk)       DO_DISK=0; shift ;;
-        --skip-llm)        shift ;;  # no LLM phase on Linux (accepted for parity)
+        --skip-llm)        DO_LLM=0; shift ;;
         --skip-combined)   DO_COMBINED=0; shift ;;
         --skip-fullsoak)   DO_FULLSOAK=0; shift ;;
         --skip-net)        DO_NET=0; shift ;;
@@ -88,10 +91,11 @@ while [ $# -gt 0 ]; do
         --skip-sys)        DO_SYS=0; shift ;;
         --skip-gfx)        DO_GFX=0; shift ;;
         --skip-fan)        DO_FAN=0; shift ;;
+        --skip-idle)       DO_IDLE=0; shift ;;
     --soak-until-stable) STABLE_ARG="--until-stable --stable-hold $STABLE_HOLD"; shift ;;
     --stable-hold)     STABLE_HOLD="$2"; STABLE_ARG="--until-stable --stable-hold $STABLE_HOLD"; shift 2 ;;
     --gfx-engine)      GFX_ENGINE="$2"; shift 2 ;;
-        -h|--help)         sed -n '2,19p' "$0"; exit 0 ;;
+        -h|--help)         sed -n '2,18p' "$0"; exit 0 ;;
         *)                 echo "unknown option: $1" >&2; exit 1 ;;
     esac
 done
@@ -135,6 +139,71 @@ run_phase() {
     [ "$rc" -ne 0 ] && echo "    [warn] $group/$phase exited $rc"
     return 0
 }
+
+# ---- idle baseline ---------------------------------------------------------
+# The machine at rest, captured before any load runs: every telemetry row the
+# sampler has written so far is an idle row, which gives the soak thermals,
+# power, clocks and fan a floor to compare against. No load is started here.
+# --skip-idle omits it (a quick check does not need the baseline).
+# >>> idle baseline >>>
+if [ "$DO_IDLE" = 1 ]; then
+    echo "[idle] baseline (${IDLE_SECONDS}s, no load)"
+    sleep "$IDLE_SECONDS"
+    "$PY" - "$TELEMETRY" "$JSONL" "$IDLE_SECONDS" <<'PYEOF'
+import csv, json, sys
+
+telemetry, jsonl, seconds = sys.argv[1:4]
+
+
+def series(col):
+    """Every readable value of `col`; a blank cell is skipped, not averaged as 0."""
+    vals = []
+    try:
+        with open(telemetry, errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return vals
+    if text and not text.endswith("\n"):
+        text = text.rsplit("\n", 1)[0]      # the sampler's in-flight row
+    for row in csv.DictReader(text.splitlines()):
+        try:
+            vals.append(float(row.get(col)))
+        except (TypeError, ValueError):
+            pass
+    return vals
+
+
+# Linux sampler columns -> cross-platform idle_* keys. cpu_package_c is this
+# platform's CPU temp column; the summary names it cpu_temp_c like Windows.
+fields = (("temp_c", "temp_c"), ("fan_pct", "fan_pct"), ("power_w", "power_w"),
+          ("sm_mhz", "sm_mhz"), ("cpu_package_c", "cpu_temp_c"),
+          ("cpu_mhz", "cpu_mhz"), ("cpu_pkg_w", "cpu_pkg_w"),
+          ("gpu_fan_rpm", "gpu_fan_rpm"))
+res = {"phase": "baseline", "seconds": int(float(seconds))}
+for col, key in fields:
+    vals = series(col)
+    if vals:
+        res[key] = [min(vals), round(sum(vals) / len(vals), 1), max(vals)]
+        res[key + "_n"] = len(vals)
+res["samples"] = res.get("temp_c_n") or 0
+if not any(key in res for _col, key in fields):
+    res["skipped"] = True
+    res["reason"] = "no telemetry samples in the idle window"
+with open(jsonl, "a") as fh:
+    fh.write(json.dumps({"group": "idle", "phase": "baseline", "result": res}) + "\n")
+if res.get("skipped"):
+    print("    skipped: %s" % res["reason"])
+else:
+    bits = []
+    for key, unit in (("temp_c", "C"), ("fan_pct", "%"), ("power_w", "W"),
+                      ("sm_mhz", "MHz")):
+        v = res.get(key)
+        if v:
+            bits.append("%s %s/%s/%s %s" % (key, v[0], v[1], v[2], unit))
+    print("    %s samples: %s" % (res["samples"], ", ".join(bits) or "no readings"))
+PYEOF
+fi
+# <<< idle baseline <<<
 
 if [ "$DO_GPU" = 1 ]; then
     run_phase gpu gpu_bench.py info
@@ -213,6 +282,116 @@ fi
 if [ "$DO_SYS" = 1 ]; then
     run_phase sys linux_info.py info
 fi
+
+# ---- LLM inference (Ollama) ------------------------------------------------
+# Linux port of Invoke-LlmBench.ps1: a /api/tags readiness probe, bounded CLI
+# calls, and per-model tok/s from eval_count/eval_duration. Every failure mode
+# is a recorded skipped/error reason, never a zero, and no call can hang. Runs
+# only when the llm group is selected (--skip-llm turns it off). The server base
+# URL can be overridden with BENCH_OLLAMA_URL.
+# >>> llm bench >>>
+if [ "$DO_LLM" = 1 ]; then
+    echo "[llm] Ollama inference"
+    LLM_OUT="$("$PY" - "$JSONL" 2>&1 <<'PYEOF'
+import json, os, shutil, subprocess, sys, urllib.request
+
+jsonl = sys.argv[1]
+base = (os.environ.get("BENCH_OLLAMA_URL") or "http://127.0.0.1:11434").rstrip("/")
+TOKENS = 128
+PROBE_TIMEOUT = 5      # the readiness probe
+CLI_TIMEOUT = 30       # `ollama list`/`ps` block forever on a wedged server
+REQUEST_TIMEOUT = 600  # one generation; a hung server must not hang the battery
+
+
+def record(res):
+    with open(jsonl, "a") as fh:
+        fh.write(json.dumps({"group": "llm", "phase": "bench", "result": res}) + "\n")
+    if res.get("skipped"):
+        print("skipped: %s" % res.get("reason", ""))
+    for r in res.get("results") or []:
+        if r.get("tok_per_s") is not None:
+            print("%s: %s tok/s (%s tokens in %ss)" % (
+                r.get("model"), r["tok_per_s"], r.get("eval_tokens"), r.get("eval_seconds")))
+        else:
+            print("%s: error: %s" % (r.get("model"), r.get("error")))
+
+
+# fail fast with a reason when the server is not answering at all, instead of
+# discovering it one (bounded, but slow) generation at a time
+try:
+    with urllib.request.urlopen(base + "/api/tags", timeout=PROBE_TIMEOUT) as resp:
+        tags = json.loads(resp.read().decode("utf-8", "replace") or "{}")
+except Exception as e:
+    record({"skipped": True, "reason": "ollama server not responding on %s: %s" % (base, e)})
+    raise SystemExit(0)
+
+models = [str(m.get("name")) for m in (tags.get("models") or [])
+          if isinstance(m, dict) and m.get("name")]
+if not models:
+    # CLI-only installs / older servers: `ollama list` is the fallback, bounded
+    cli = shutil.which("ollama")
+    if cli:
+        try:
+            out = subprocess.run([cli, "list"], capture_output=True, text=True,
+                                 timeout=CLI_TIMEOUT).stdout
+        except Exception as e:
+            record({"skipped": True, "reason": "ollama list failed: %s" % e})
+            raise SystemExit(0)
+        models = [ln.split()[0] for ln in out.splitlines()[1:] if ln.split()]
+if not models:
+    record({"skipped": True, "reason": "no ollama models installed"})
+    raise SystemExit(0)
+
+results = []
+for m in models:
+    body = json.dumps({"model": m, "stream": False,
+                       "prompt": "Write a detailed paragraph about graphics processing.",
+                       "options": {"num_predict": TOKENS}}).encode()
+    req = urllib.request.Request(base + "/api/generate", data=body,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+            out = json.loads(resp.read().decode("utf-8", "replace") or "{}")
+    except Exception as e:
+        results.append({"model": m, "error": str(e)})
+        continue
+    count, dur_ns = out.get("eval_count"), out.get("eval_duration")
+    if not count or not dur_ns:
+        # a missing/zero counter is a reason, not a 0 tok/s "measurement"
+        results.append({"model": m, "error": "no eval_count/eval_duration in the response"})
+        continue
+    dur = float(dur_ns) / 1e9
+    results.append({"model": m, "tok_per_s": round(float(count) / dur, 1),
+                    "eval_tokens": count, "eval_seconds": round(dur, 2)})
+
+# `ollama ps` is best-effort: its failure is recorded, never fatal, and it
+# cannot lose the measurements above
+res = {"results": results, "tokens": TOKENS}
+cli = shutil.which("ollama")
+if cli:
+    try:
+        res["ps"] = [ln for ln in subprocess.run(
+            [cli, "ps"], capture_output=True, text=True,
+            timeout=CLI_TIMEOUT).stdout.splitlines() if ln.strip()]
+    except Exception as e:
+        res["ps_error"] = "ollama ps: %s" % e
+else:
+    res["ps_error"] = "ollama CLI not found"
+record(res)
+PYEOF
+)"; LLM_RC=$?
+    printf '%s\n' "$LLM_OUT" | grep -v '^$' | sed 's/^/    /'
+    printf '%s\n' "$LLM_OUT" > "$LOGDIR/llm-bench.log"
+    if [ "$LLM_RC" -ne 0 ]; then
+        echo "    [warn] llm exited $LLM_RC"
+        # fail closed: a phase that died without leaving a record still leaves a
+        # reason, so the summary can never read the llm group as "not run"
+        if ! grep -q '"group": "llm"' "$JSONL"; then
+            printf '{"group":"llm","phase":"bench","result":{"skipped":true,"reason":"llm phase exited %d"}}\n' "$LLM_RC" >> "$JSONL"
+        fi
+    fi
+fi
+# <<< llm bench <<<
 
 if [ "$DO_GFX" = 1 ]; then
     FM=""
@@ -515,6 +694,34 @@ with open(jsonl) as fh:
 if bad:
     print("[warn] skipped %d malformed record(s) in %s" % (bad, jsonl))
 
+
+def find(group, phase):
+    for r in recs:
+        if r.get("group") == group and r.get("phase") == phase:
+            return r
+    return None
+
+
+# idle baseline + LLM records, when their groups ran. The idle values become
+# flat idle_* summary fields so a reader can compute a soak delta.
+idle_rec = find("idle", "baseline")
+idle_res = idle_rec.get("result") if isinstance(idle_rec, dict) else None
+llm_rec = find("llm", "bench")
+llm_res = llm_rec.get("result") if isinstance(llm_rec, dict) else None
+
+
+def idle_fields(res):
+    out = {}
+    if isinstance(res, dict):
+        for k in ("seconds", "samples", "temp_c", "fan_pct", "power_w", "sm_mhz",
+                  "cpu_temp_c", "cpu_mhz", "cpu_pkg_w", "gpu_fan_rpm"):
+            if res.get(k) is not None:
+                out["idle_" + k] = res[k]
+    return out
+
+
+idle_flat = idle_fields(idle_res)
+
 env = {"python": py}
 try:
     import torch
@@ -575,6 +782,11 @@ report = {
     "log_dir": logdir,
     "phases": recs,
 }
+report.update(idle_flat)
+if idle_res is not None:
+    report["idle"] = idle_res
+if llm_res is not None:
+    report["llm"] = llm_res
 with open(json_out, "w") as fh:
     json.dump(report, fh, indent=2)
     fh.write("\n")
@@ -616,6 +828,18 @@ def fmt(x):
     if isinstance(x, float):
         return ("%g" % round(x, 2))
     return str(x)
+
+if idle_res and not idle_res.get("skipped"):
+    rows = []
+    for label, key, unit in (("gpu temp", "temp_c", "°C"), ("gpu fan", "fan_pct", "%"),
+                             ("gpu power", "power_w", "W"), ("sm clock", "sm_mhz", "MHz"),
+                             ("cpu temp", "cpu_temp_c", "°C"), ("cpu clock", "cpu_mhz", "MHz"),
+                             ("cpu package", "cpu_pkg_w", "W")):
+        v = idle_res.get(key)
+        if v:
+            rows.append("| %s | %s / %s / %s %s |" % (label, v[0], v[1], v[2], unit))
+    if rows:
+        table("Idle baseline (%ss, no load)" % idle_res.get("seconds", "?"), rows)
 
 gpu = {}
 for p in ("info", "matmul", "membw", "pcie", "conv", "integrity", "streams", "soak"):
@@ -810,6 +1034,22 @@ if nvenc and nvenc.get("result"):
             rows.append("| %s | %s fps |" % (codec, v.get("fps")))
     table("NVENC (%sx%s)" % (nv.get("width"), nv.get("height")), rows)
 
+if llm_res:
+    rows = []
+    if llm_res.get("skipped"):
+        rows.append("| ollama | skipped (%s) |" % llm_res.get("reason", ""))
+    for m in llm_res.get("results") or []:
+        if m.get("tok_per_s") is not None:
+            rows.append("| %s | %s tok/s (%s tokens / %ss) |" % (
+                m.get("model"), m.get("tok_per_s"), m.get("eval_tokens"),
+                m.get("eval_seconds")))
+        else:
+            rows.append("| %s | error (%s) |" % (m.get("model"), m.get("error", "")))
+    if llm_res.get("ps_error"):
+        rows.append("| ollama ps | %s |" % llm_res.get("ps_error"))
+    if rows:
+        table("LLM inference (Ollama)", rows)
+
 sysrec = by("sys", "info")
 if sysrec and sysrec.get("result"):
     r = sysrec["result"]; c = r.get("cpu") or {}; g = r.get("gpu") or {}
@@ -904,6 +1144,11 @@ idx = {
     "fullsoak": fs,
     "telemetry": telemetry,
 }
+idx.update(idle_flat)
+if idle_res is not None:
+    idx["idle"] = idle_res
+if llm_res is not None:
+    idx["llm"] = llm_res
 with open(os.path.join(os.path.dirname(json_out), "runs-index.jsonl"), "a") as fh:
     fh.write(json.dumps(idx) + "\n")
 

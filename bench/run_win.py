@@ -7,10 +7,12 @@ dashboards parse, and writes a telemetry CSV (<host>-win-<stamp>.telemetry.csv)
 at 4 Hz by default (`--interval`; nvidia-smi is cached at 1 Hz, sensors at 1 Hz).
 
     python bench/run_win.py [-o DIR] [--gpu-soak S] [--combined-seconds S]
-        [--fullsoak-seconds S] [--gfx-seconds S] [--skip-gpu] ... [--valley-bin DIR]
+        [--fullsoak-seconds S] [--gfx-seconds S] [--idle-seconds S] [--skip-idle]
+        [--skip-gpu] ... [--valley-bin DIR]
 """
 import argparse
 import csv
+import json
 import os
 import re
 import shutil
@@ -65,6 +67,11 @@ def parse_args():
     ap.add_argument("--gpu-interval", default="1.0",
                     help="nvidia-smi cadence: ~69ms/call, and those fields are thermal-mass, "
                          "util/temp/power traces smooth without polling it flat out")
+    ap.add_argument("--idle-seconds", default="60",
+                    help="idle baseline captured before the battery loads the machine "
+                         "(0 = skip); the sampler runs, no load is started")
+    ap.add_argument("--skip-idle", action="store_true",
+                    help="skip the idle baseline capture")
     ap.add_argument("-o", "--out-dir", default=os.path.join(REPO, "results"))
     ap.add_argument("--redact", action="store_true",
                     help="replace hardware identifiers and PII in the run's files "
@@ -599,6 +606,95 @@ def sampler(csv_path, stop_evt, interval=0.25, gpu_interval=0.5):
             stop_evt.wait(max(0.05, interval - (time.time() - tick)))
 
 
+# Idle baseline: the machine at rest before the battery loads it. The sampler
+# columns -> cross-platform idle_* summary keys; the Linux sampler names its CPU
+# package temp cpu_package_c, Windows uses cpu_temp_c, and the GPU temp is
+# temp_c on both. A blank cell stays absent rather than becoming a fake zero.
+IDLE_COLUMNS = (("temp_c", "temp_c"), ("fan_pct", "fan_pct"), ("power_w", "power_w"),
+                ("sm_mhz", "sm_mhz"), ("cpu_temp_c", "cpu_temp_c"),
+                ("cpu_mhz", "cpu_mhz"), ("cpu_pkg_w", "cpu_pkg_w"),
+                ("gpu_fan_rpm", "gpu_fan_rpm"))
+
+
+def idle_stats_from_csv(csv_path):
+    """min/avg/max per idle column from the telemetry CSV written so far.
+
+    The sampler is still appending, so a final line without its newline is
+    dropped before the parse (it may be an in-flight row), and an unreadable or
+    blank cell is skipped - an idle value that could not be read stays absent
+    instead of being averaged as zero.
+    """
+    try:
+        with open(csv_path, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return {}
+    if text and not text.endswith("\n"):
+        text = text.rsplit("\n", 1)[0]
+    vals = {}
+    for row in csv.DictReader(text.splitlines()):
+        for col, _key in IDLE_COLUMNS:
+            try:
+                vals.setdefault(col, []).append(float(row.get(col)))
+            except (TypeError, ValueError):
+                continue
+    out = {}
+    for col, key in IDLE_COLUMNS:
+        v = vals.get(col) or []
+        if v:
+            out[key] = [min(v), round(sum(v) / len(v), 1), max(v)]
+            out[key + "_n"] = len(v)
+    return out
+
+
+def _idle_line(rec):
+    """One human line: temp/fan/power/clock min/avg/max, or the skip reason."""
+    if rec.get("skipped"):
+        return "skipped: %s" % rec.get("reason", "")
+    bits = []
+    for key, unit in (("temp_c", "C"), ("fan_pct", "%"), ("power_w", "W"),
+                      ("sm_mhz", "MHz")):
+        v = rec.get(key)
+        if v:
+            bits.append("%s %s/%s/%s %s" % (key, v[0], v[1], v[2], unit))
+    return ", ".join(bits) if bits else "no telemetry readings"
+
+
+def idle_baseline(csv_path, out_dir, host, stamp, seconds):
+    """Capture the machine at rest before the battery starts loading it.
+
+    No load is started here: the sampler threads are already running, so every
+    row written so far is an idle row. The stats become an `idle` phase (printed
+    for the dashboards) and are written to `<host>-win-<stamp>.idle.json` with
+    top-level `idle_*` fields, so the run's summary carries the floor the soak
+    temperatures/power are compared against.
+    """
+    print("[idle] baseline (%ss, no load)" % seconds, flush=True)
+    time.sleep(max(0.0, float(seconds)))
+    stats = idle_stats_from_csv(csv_path)
+    rec = {"phase": "baseline", "seconds": int(float(seconds)),
+           "samples": stats.get("temp_c_n") or 0}
+    rec.update(stats)
+    if not stats:
+        rec["skipped"] = True
+        rec["reason"] = "no telemetry samples in the idle window"
+    print("[idle] %s" % _idle_line(rec), flush=True)
+    report = {"host": host, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+              "phase": "baseline", "group": "idle", "result": rec}
+    for key in ("seconds", "samples") + tuple(k for _c, k in IDLE_COLUMNS):
+        if rec.get(key) is not None:
+            report["idle_" + key] = rec[key]
+    path = os.path.join(out_dir, "%s-win-%s.idle.json" % (host, stamp))
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(report, fh, indent=2)
+            fh.write("\n")
+        print("[idle] wrote %s" % path, flush=True)
+    except OSError as e:
+        print("[idle] could not write %s: %s" % (path, e), flush=True)
+    return rec
+
+
 def main():
     a = parse_args()
     if a.redact:
@@ -621,6 +717,11 @@ def main():
         # library fills what it has no answer for (VRAM total, CPU package
         # watts/clock, storage temperature, per-core load).
         threading.Thread(target=lhm_thread, args=(stop_evt,), daemon=True).start()
+
+    # The baseline runs before the PowerShell battery starts, so the sampler
+    # has only idle rows when it is parsed; --skip-idle (or 0 seconds) omits it.
+    if not a.skip_idle and float(a.idle_seconds) > 0:
+        idle_baseline(csv_path, a.out_dir, host, stamp, a.idle_seconds)
 
     ps = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", BATTERY,
           "-OutDir", a.out_dir,

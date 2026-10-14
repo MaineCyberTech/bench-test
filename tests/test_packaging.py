@@ -5,10 +5,13 @@ Stdlib only, side-effect free: no PyInstaller, no network. We check that a
 up by load_conf(), and that write_agent_conf() writes it from the build env.
 """
 import importlib.util
+import json
 import os
 import re
 import shutil
+import socket
 import subprocess
+import sys
 import tempfile
 
 from harness import Checker, BENCH, REPO, skip
@@ -322,6 +325,156 @@ def run():
                 r.stdout.strip()[-160:])
     else:
         skip("the bounded-CLI behaviour check", "no powershell/pwsh on this host")
+
+    # ---- the Linux LLM phase (Ollama): group-gated, bounded, reason-only ----
+    # The llm group was Windows-only by implementation; the same bounded probe +
+    # per-model eval_count/eval_duration logic now runs on Linux behind the llm
+    # group flag (--skip-llm). Every failure is a recorded reason, never a zero.
+    lm = re.search(r"# >>> llm bench >>>\n(.*?)\n# <<< llm bench <<<", lsrc, re.S)
+    c.check("the shipped Linux LLM block is the one under test", bool(lm), "")
+    c.check("the Linux LLM phase is behind the llm group flag",
+            "DO_LLM=1" in lsrc and re.search(r"--skip-llm\)\s*DO_LLM=0", lsrc)
+            and 'if [ "$DO_LLM" = 1 ]' in lsrc, "")
+    c.check("the Linux LLM phase bounds every call (probe, CLI, request)",
+            "timeout=PROBE_TIMEOUT" in lsrc and "timeout=CLI_TIMEOUT" in lsrc
+            and "timeout=REQUEST_TIMEOUT" in lsrc, "")
+    c.check("and it probes /api/tags and derives tok/s from the eval counters",
+            "/api/tags" in lsrc and "eval_count" in lsrc and "eval_duration" in lsrc, "")
+    if lm and bash:
+        # a dead server is a recorded skip with the reason (the probe fails
+        # before any CLI call), never a hang and never a zero
+        _s = socket.socket()
+        _s.bind(("127.0.0.1", 0))
+        _port = _s.getsockname()[1]
+        _s.close()
+        d = tempfile.mkdtemp(prefix="bench-llm-")
+        jl = os.path.join(d, "records.jsonl")
+        env = dict(os.environ, BENCH_OLLAMA_URL="http://127.0.0.1:%d" % _port,
+                   JSONL=jl, LOGDIR=d, PY=sys.executable, DO_LLM="1")
+        r = subprocess.run([bash, "-s"], input=lm.group(1), capture_output=True,
+                           text=True, timeout=90, env=env)
+        rec = {}
+        if os.path.isfile(jl):
+            with open(jl) as fh:
+                lines = [ln for ln in fh.read().splitlines() if ln.strip()]
+            rec = json.loads(lines[-1]) if lines else {}
+        c.check("an absent Ollama server is a recorded skip with the reason",
+                r.returncode == 0 and rec.get("result", {}).get("skipped") is True
+                and "not responding" in rec.get("result", {}).get("reason", ""),
+                (r.returncode, rec, r.stderr[:120]))
+        # no models: a recorded skip with the reason instead of a zero
+        py = re.search(r"<<'PYEOF'\n(.*?)\nPYEOF", lm.group(1), re.S)
+        c.check("the Linux LLM python body is the one under test", bool(py), "")
+        if py:
+            d2 = tempfile.mkdtemp(prefix="bench-llm-empty-")
+            os.makedirs(os.path.join(d2, "api"))
+            with open(os.path.join(d2, "api", "tags"), "w") as fh:
+                fh.write('{"models": []}')
+            jl2 = os.path.join(d2, "records.jsonl")
+            env2 = dict(os.environ, BENCH_OLLAMA_URL="file:///" + d2.replace(os.sep, "/"),
+                        PATH="")
+            r2 = subprocess.run([sys.executable, "-", jl2], input=py.group(1),
+                                capture_output=True, text=True, timeout=60, env=env2)
+            with open(jl2) as fh:
+                rec2 = json.loads([ln for ln in fh.read().splitlines() if ln.strip()][-1])
+            c.check("no Ollama models is a recorded skip with the reason, not a zero",
+                    r2.returncode == 0 and rec2["result"].get("skipped") is True
+                    and "no ollama models installed" in rec2["result"].get("reason", ""),
+                    (r2.returncode, rec2, r2.stderr[:120]))
+        else:
+            skip("the Linux LLM no-models check", "no LLM python body found")
+    else:
+        skip("the Linux LLM failure-mode behaviour checks", "no bash here")
+
+    # ---- the idle baseline: skippable, its own phase, idle_* in the summary ----
+    # Every soak/headroom number had no floor: the machine at rest was never
+    # captured. It now runs before the first load group on both platforms.
+    c.check("the Linux runner captures an idle baseline by default",
+            "DO_IDLE=1" in lsrc and "[idle] baseline" in lsrc, "")
+    c.check("the idle baseline is skippable and tunable",
+            re.search(r"--skip-idle\)\s*DO_IDLE=0", lsrc)
+            and re.search(r"--idle-seconds\)\s*IDLE_SECONDS=", lsrc), "")
+    c.check("the idle baseline runs before the first load group",
+            "# >>> idle baseline >>>" in lsrc
+            and lsrc.index("# >>> idle baseline >>>") < lsrc.index('if [ "$DO_GPU" = 1 ]'), "")
+    c.check("the Linux summary carries the ambient values as idle_* fields",
+            '"idle_" + k' in lsrc and "Idle baseline" in lsrc, "")
+    m = re.search(r"# >>> idle baseline >>>\n(.*?)\n# <<< idle baseline <<<", lsrc, re.S)
+    c.check("the shipped Linux idle block is the one under test", bool(m), "")
+    if m and bash:
+        d = tempfile.mkdtemp(prefix="bench-idle-")
+        csvp = os.path.join(d, "t.telemetry.csv")
+        with open(csvp, "w", newline="") as fh:
+            fh.write("elapsed_s,temp_c,fan_pct,power_w,sm_mhz,cpu_package_c,cpu_mhz,cpu_pkg_w\n")
+            fh.write("0.0,45.0,30.0,8.0,210,50.0,3000,20.0\n")
+            fh.write("1.0,46.0,31.0,10.0,300,52.0,3100,22.0\n")
+            fh.write("2.0,47.0,,,,,,\n")
+        jl = os.path.join(d, "records.jsonl")
+        env = dict(os.environ, DO_IDLE="1", IDLE_SECONDS="0", TELEMETRY=csvp,
+                   JSONL=jl, PY=sys.executable)
+        r = subprocess.run([bash, "-s"], input=m.group(1), capture_output=True,
+                           text=True, timeout=60, env=env)
+        with open(jl) as fh:
+            rec = json.loads([ln for ln in fh.read().splitlines() if ln.strip()][-1])
+        c.check("the idle phase records its own group and min/avg/max values",
+                r.returncode == 0 and rec.get("group") == "idle"
+                and rec.get("phase") == "baseline"
+                and rec["result"]["temp_c"] == [45.0, 46.0, 47.0]
+                and rec["result"]["fan_pct"] == [30.0, 30.5, 31.0]
+                and rec["result"]["power_w"] == [8.0, 9.0, 10.0]
+                and rec["result"]["sm_mhz"] == [210.0, 255.0, 300.0]
+                and rec["result"]["cpu_temp_c"] == [50.0, 51.0, 52.0],
+                (r.returncode, rec, r.stderr[:120]))
+        c.check("a blank idle cell is skipped, not averaged as zero",
+                rec.get("result", {}).get("temp_c_n") == 3
+                and rec.get("result", {}).get("fan_pct_n") == 2, rec)
+    else:
+        skip("the Linux idle baseline behaviour check", "no bash here")
+
+    # the Windows side: run_win.py captures the baseline itself (the battery
+    # script is untouched) and writes the idle_* fields into its own report
+    rwmod = _load("run_win_idle", os.path.join(BENCH, "run_win.py"))
+    d = tempfile.mkdtemp(prefix="bench-win-idle-")
+    csvp = os.path.join(d, "t.telemetry.csv")
+    with open(csvp, "w", newline="") as fh:
+        fh.write("elapsed_s,temp_c,fan_pct,power_w,sm_mhz,cpu_temp_c\r\n")
+        fh.write("0.0,45.0,30,8.0,210,50.0\r\n")
+        fh.write("1.0,46.0,31,10.0,300,52.0\r\n")
+        fh.write("2.0,47.0,32,12.0,330,54.0")      # in-flight row: no newline yet
+    st = rwmod.idle_stats_from_csv(csvp)
+    c.check("run_win idle stats are min/avg/max with the in-flight row dropped",
+            st["temp_c"] == [45.0, 45.5, 46.0] and st["fan_pct"] == [30.0, 30.5, 31.0]
+            and st["power_w"] == [8.0, 9.0, 10.0] and st["sm_mhz"] == [210.0, 255.0, 300.0]
+            and st["temp_c_n"] == 2 and "cpu_temp_c" in st, st)
+    with open(csvp, "w", newline="") as fh:
+        fh.write("elapsed_s,temp_c,fan_pct,power_w,sm_mhz,cpu_temp_c\r\n")
+        fh.write("0.0,45.0,,8.0,210,50.0\r\n")
+        fh.write("1.0,46.0,31,10.0,300,52.0\r\n")
+    st2 = rwmod.idle_stats_from_csv(csvp)
+    c.check("a blank Windows idle cell is skipped, not averaged as zero",
+            st2["fan_pct"] == [31.0, 31.0, 31.0] and st2["fan_pct_n"] == 1
+            and st2["temp_c_n"] == 2, st2)
+    out = tempfile.mkdtemp(prefix="bench-win-idle-out-")
+    rwmod.idle_baseline(csvp, out, "idlebox", "20260101-000000", 0)
+    with open(os.path.join(out, "idlebox-win-20260101-000000.idle.json")) as fh:
+        repj = json.load(fh)
+    c.check("the Windows idle phase writes the idle_* summary fields",
+            repj.get("group") == "idle" and repj.get("phase") == "baseline"
+            and repj.get("idle_temp_c") == [45.0, 45.5, 46.0]
+            and repj.get("idle_fan_pct") == [31.0, 31.0, 31.0]
+            and repj.get("idle_power_w") == [8.0, 9.0, 10.0]
+            and repj.get("idle_sm_mhz") == [210.0, 255.0, 300.0]
+            and repj.get("idle_samples") == 2, repj)
+    old_argv = sys.argv
+    sys.argv = ["run_win.py", "--skip-idle", "--idle-seconds", "5"]
+    try:
+        wa = rwmod.parse_args()
+    finally:
+        sys.argv = old_argv
+    c.check("run_win --skip-idle / --idle-seconds parse",
+            wa.skip_idle is True and wa.idle_seconds == "5", (wa.skip_idle, wa.idle_seconds))
+    c.check("run_win runs the idle baseline before the battery (source)",
+            "if not a.skip_idle" in rw and "idle_baseline(csv_path" in rw, "")
 
     # ---- a bad remote start must not kill the runner ----
     # Both dashboards dispatched a remote start straight into _apply_profile/start with
