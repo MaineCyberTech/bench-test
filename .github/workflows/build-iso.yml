@@ -54,7 +54,7 @@ jobs:
     # so the hybrid variant (~100G+ scratch) fits too. Override runner_labels with
     # ubuntu-latest when the lab is unavailable.
     runs-on: ${{ fromJSON(inputs.runner_labels || '["self-hosted","linux","x64","lab-iso"]') }}
-    timeout-minutes: 120
+    timeout-minutes: 180
     # This single job both builds and attaches the release, so the write scope has
     # to live here; splitting the release out would move the multi-GB ISO through
     # artifact storage, which is deliberately avoided. Everything else is read-only.
