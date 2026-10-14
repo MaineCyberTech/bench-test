@@ -40,12 +40,14 @@ if [ -n "$conf" ]; then
         key=${line%%=*}
         # Only keys a reader actually consumes are honoured (INFRA-P3-001 /
         # SECRET-P3-002): BENCHD_SERVER/BENCHD_TOKEN (benchreport.load_conf),
-        # BENCH_AGENT_NAME (benchreport.Reporter.name) and BENCH_AGENT_INSTANCE
+        # BENCHD_JOIN_TOKEN (the registration-only token a baked release carries;
+        # load_conf uses it as the initial bearer for /register), BENCH_AGENT_NAME
+        # (benchreport.Reporter.name) and BENCH_AGENT_INSTANCE
         # (Reporter.instance / bench-tui@.service). BENCHD_INSECURE was dropped:
         # no client implements a TLS-verify toggle, so accepting it advertised an
         # insecure escape hatch that silently did nothing.
         case "$key" in
-            BENCHD_SERVER|BENCHD_TOKEN|BENCH_AGENT_NAME|BENCH_AGENT_INSTANCE)
+            BENCHD_SERVER|BENCHD_TOKEN|BENCHD_JOIN_TOKEN|BENCH_AGENT_NAME|BENCH_AGENT_INSTANCE)
                 # FAT files carry CRLF; values may be quoted
                 val=$(printf '%s' "${line#*=}" | tr -d '\r' \
                       | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")
