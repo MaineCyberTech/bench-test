@@ -434,7 +434,7 @@ def _web(c):
                             {"kind": "exec", "payload": {"cmd": "true"}})
             c.check("the commands API accepts an exec for an idle runner (no live run)",
                     st == 200 and q.get("status") == "queued" and q.get("id"), (st, q))
-            st2, a = cl.call("POST", "/api/v1/runners/w24b-runner/commands/%s/ack" % q["id"],
+            st2, a = cl.call("POST", "/api/v1/runners/%s/commands/%s/ack" % (_rid, q["id"]),
                              {"status": "failed", "result": {"error": "boom"}})
             c.check("the ack endpoint records the outcome the UI surfaces",
                     st2 == 200 and a.get("ok") is True, (st2, a))
