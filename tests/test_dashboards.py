@@ -428,7 +428,9 @@ def _web(c):
         srv = Server()
         try:
             cl = srv.client()
-            st, q = cl.call("POST", "/api/v1/runners/w24b-runner/commands",
+            _st, reg = cl.call("POST", "/api/v1/register", {"name": "w24b", "kind": "agent"})
+            _rid = reg.get("runner_id")
+            st, q = cl.call("POST", "/api/v1/runners/%s/commands" % _rid,
                             {"kind": "exec", "payload": {"cmd": "true"}})
             c.check("the commands API accepts an exec for an idle runner (no live run)",
                     st == 200 and q.get("status") == "queued" and q.get("id"), (st, q))
