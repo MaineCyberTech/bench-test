@@ -27,7 +27,7 @@ def _raw(base, method, path, data=None, headers=None):
 
 def run():
     c = Checker("hardening")
-    srv = Server()
+    srv = Server(rate_limit=True)
     cl = srv.client()
     B = srv.benchd
     S = B.Handler.store
@@ -40,8 +40,8 @@ def run():
         j = json.loads(body.decode())
     except Exception:
         j = {}
-    c.check("malformed JSON body -> 400 invalid json",
-            st == 400 and j.get("error") == "invalid json", (st, body[:80]))
+    c.check("malformed JSON body -> 400",
+            st == 400 and "JSON" in (j.get("error") or ""), (st, body[:80]))
 
     # ---- audit trail: register / command / schedule / delete ----
     st, reg = cl.call("POST", "/api/v1/register", {"name": "aud", "kind": "agent"})

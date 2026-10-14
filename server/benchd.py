@@ -1047,7 +1047,7 @@ class Handler(BaseHTTPRequestHandler):
         """Who is making this request, for the audit trail."""
         if self.token is None:
             return "operator"
-        if self._is_operator(q):
+        if self._is_operator():
             return "operator"
         if self._is_join():
             return "join"
