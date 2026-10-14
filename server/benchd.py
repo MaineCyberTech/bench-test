@@ -35,6 +35,7 @@ server/benchd.conf, ~/.config/benchd.conf, /etc/benchd.conf   (key=value).
 import argparse
 import base64
 import csv
+import hashlib
 import io
 import json
 import math
@@ -57,6 +58,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # Wire format this control plane speaks. Runners advertise theirs; a mismatch is
 # flagged in the fleet view instead of silently producing wrong data.
 PROTOCOL = 1
+# DATA-P2-003 / DR-P2-002 / EVOL-P2-003: the schema marker stored in SQLite's
+# PRAGMA user_version. Bump it whenever a change to SCHEMA below needs the code
+# to notice an older (upgrade in place) or newer (refuse to start) database.
+# There is deliberately no migration framework: one integer, checked on startup.
+SCHEMA_VERSION = 1
 WEB_DIR = os.path.join(HERE, "web")
 DEFAULT_DB = os.path.join(HERE, "data", "benchd.sqlite")
 
@@ -199,6 +205,14 @@ class BadJSON(Exception):
     """A write request body was present but not a JSON object."""
 
 
+class SchemaVersionError(RuntimeError):
+    """The database on disk was written by a newer build than this one.
+
+    Raised on startup so the process exits non-zero rather than reading (and
+    possibly corrupting) a schema it does not understand.
+    """
+
+
 class TokenBucket:
     """Tiny token bucket: `capacity` tokens refilled evenly over `window` seconds."""
 
@@ -327,26 +341,32 @@ CREATE TABLE IF NOT EXISTS runs (
   preset TEXT, stats TEXT
 );
 CREATE TABLE IF NOT EXISTS phases (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, seq INTEGER, grp TEXT,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT REFERENCES runs(id) ON DELETE CASCADE, seq INTEGER, grp TEXT,
   label TEXT, status TEXT, t0 REAL, t1 REAL, detail TEXT
 );
 CREATE TABLE IF NOT EXISTS telemetry (
-  run_id TEXT, ts REAL, elapsed REAL, temp_c REAL, fan_pct REAL, power_w REAL,
+  run_id TEXT REFERENCES runs(id) ON DELETE CASCADE, ts REAL, elapsed REAL,
+  temp_c REAL, fan_pct REAL, power_w REAL,
   gpu_util REAL, gpu_fan_rpm REAL, cpu_util REAL, ram_used REAL,
   sm_mhz REAL, extra TEXT
 );
 CREATE TABLE IF NOT EXISTS logs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, ts REAL, stream TEXT, line TEXT
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT REFERENCES runs(id) ON DELETE CASCADE, ts REAL, stream TEXT, line TEXT
 );
 CREATE TABLE IF NOT EXISTS commands (
-  id TEXT PRIMARY KEY, runner_id TEXT, run_id TEXT, kind TEXT, payload TEXT,
+  id TEXT PRIMARY KEY, runner_id TEXT,
+  run_id TEXT REFERENCES runs(id) ON DELETE CASCADE, kind TEXT, payload TEXT,
   status TEXT, created REAL, sent REAL, acked REAL, result TEXT
 );
 CREATE TABLE IF NOT EXISTS events (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, ts REAL, level TEXT, message TEXT
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT REFERENCES runs(id) ON DELETE CASCADE, ts REAL, level TEXT, message TEXT
 );
 CREATE TABLE IF NOT EXISTS artifacts (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, name TEXT, kind TEXT,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT REFERENCES runs(id) ON DELETE CASCADE, name TEXT, kind TEXT,
   size INTEGER, sha256 TEXT, content TEXT
 );
 CREATE TABLE IF NOT EXISTS schedules (
@@ -375,21 +395,94 @@ CREATE INDEX IF NOT EXISTS idx_runs_host ON runs(host);
 RUN_DEPENDENT_TABLES = ("phases", "telemetry", "logs", "events", "artifacts", "commands")
 
 
+# PRIV-P2-005: a per-runner API key is only ever stored as its sha256 digest.
+# What a client presents (body or bearer) is hashed before it is compared, so a
+# stolen database cannot be replayed as a credential.
+_KEY_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def key_digest(key):
+    """The sha256 hex digest of a per-runner API key."""
+    return hashlib.sha256(str(key).encode("utf-8")).hexdigest()
+
+
+def is_key_digest(value):
+    """True when value is already a stored digest (64 lowercase hex chars)."""
+    return bool(value) and bool(_KEY_DIGEST_RE.match(str(value)))
+
+
 # --------------------------------------------------------------------- store --
 class Store:
     def __init__(self, path):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         self.lock = threading.RLock()
         self.path = path
+        # PRIV-P2-005: plaintext keys minted in THIS process, so an operator that
+        # re-registers a machine_id it just created still gets the same key back.
+        # Never persisted - the database only ever holds key_digest(key).
+        self.key_plain = {}
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         with self.lock:
+            # DATA-P2-002: enforce the REFERENCES in SCHEMA on this connection.
+            self.conn.execute("PRAGMA foreign_keys=ON")
             self.conn.executescript("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
+            fresh = not self.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1").fetchone()
+            if not fresh:
+                try:
+                    self._check_schema_version()
+                except SchemaVersionError:
+                    self.conn.close()
+                    raise
             self.conn.executescript(SCHEMA)
             self._migrate()
+            self.conn.execute("PRAGMA user_version=%d" % SCHEMA_VERSION)
             self.conn.commit()
+            self._ensure_phase_index()
         # OBS-P2-004: prime the cheap /health cache and start its refresher.
         start_health_refresher(self)
+
+    def _schema_version(self):
+        return self.conn.execute("PRAGMA user_version").fetchone()[0]
+
+    def _check_schema_version(self):
+        """DATA-P2-003 / DR-P2-002 / EVOL-P2-003: fail closed on a newer schema.
+
+        PRAGMA user_version is the only marker (no migration framework). A newer
+        database may hold columns this build does not understand, so starting
+        would risk writing it back in a lossy way; an older one is upgraded in
+        place and noted.
+        """
+        cur = self._schema_version()
+        if cur > SCHEMA_VERSION:
+            raise SchemaVersionError(
+                "database schema version %d is newer than this build supports (%d); "
+                "upgrade benchd or point --db at a matching database"
+                % (cur, SCHEMA_VERSION))
+        if cur < SCHEMA_VERSION:
+            print("[benchd] schema version %d -> %d: upgrading in place"
+                  % (cur, SCHEMA_VERSION), flush=True)
+
+    def _ensure_phase_index(self):
+        """DATA-P2-004: make (run_id, seq) unique so a replayed phase is idempotent.
+
+        A legacy database may already hold duplicate (run_id, seq) rows; the
+        index then cannot be built, and phase writes keep the old behaviour. That
+        is a warning, never a startup failure.
+        """
+        try:
+            self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_phases_run_seq "
+                              "ON phases(run_id, seq)")
+            self.conn.commit()
+        except sqlite3.Error as exc:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            log_json("warning", "could not create the unique phase index; duplicate "
+                     "(run_id, seq) rows exist, phase writes stay non-idempotent",
+                     error=str(exc))
 
     def _migrate(self):
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(runners)")}
@@ -442,6 +535,13 @@ class Store:
         # cannot live in SCHEMA (a legacy table would not have it yet)
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_runners_machine "
                           "ON runners(machine_id)")
+        # PRIV-P2-005: replace any plaintext api_key left by an older build with
+        # its digest, so the runner's existing key keeps authenticating.
+        for r in self.conn.execute("SELECT id, api_key FROM runners "
+                                   "WHERE api_key IS NOT NULL AND api_key!=''").fetchall():
+            if not is_key_digest(r["api_key"]):
+                self.conn.execute("UPDATE runners SET api_key=? WHERE id=?",
+                                  (key_digest(r["api_key"]), r["id"]))
 
     def ex(self, sql, args=()):
         with self.lock:
@@ -1279,7 +1379,8 @@ class Handler(BaseHTTPRequestHandler):
         b = self._bearer()
         if not b:
             return None
-        return self.store.one("SELECT * FROM runners WHERE api_key=?", (b,))
+        # PRIV-P2-005: only the digest is stored, so hash what was presented.
+        return self.store.one("SELECT * FROM runners WHERE api_key=?", (key_digest(b),))
 
     def _is_operator(self):
         """The shared operator token as a bearer header only.
@@ -2066,17 +2167,20 @@ class Handler(BaseHTTPRequestHandler):
         rid = b.get("runner_id")
         if rid and not safe_id(rid):
             rid = None
+        # PRIV-P2-005: `key` is the plaintext the caller presented (or None);
+        # what is stored below is always key_digest(key).
         key = b.get("api_key")
         kind = b.get("kind", "agent")
         mid = (b.get("machine_id") or "").strip() or None
         inst = (b.get("instance") or "").strip()
         existing = None
+        rotate = False
         if rid:
             existing = S.one("SELECT * FROM runners WHERE id=?", (rid,))
             # ownership may be proved by the body's api_key or by the bearer that
             # authenticated this request; either must match THIS row's key
             proof = key or self._bearer()
-            if existing and not self._token_eq(proof, existing["api_key"]) \
+            if existing and not (proof and secrets.compare_digest(key_digest(proof), str(existing["api_key"]))) \
                     and not self._is_operator():
                 # An explicit runner_id is only honoured by its own key or an
                 # operator. Any valid runner bearer passes the POST gate, so
@@ -2086,7 +2190,7 @@ class Handler(BaseHTTPRequestHandler):
                 # persisted config reclaims its own row).
                 existing = None
                 rid = None
-            elif existing and key and not self._token_eq(key, existing["api_key"]):
+            elif existing and key and existing["api_key"] != key_digest(key):
                 existing = None  # stale/wrong key -> treat as new
         if not existing and mid:
             # Stable identity: adopt the row this machine already owns for this
@@ -2106,16 +2210,27 @@ class Handler(BaseHTTPRequestHandler):
                          "AND COALESCE(instance,'')=?", (mid, kind, inst))
             if cand:
                 proof = key or self._bearer()
-                if proof and secrets.compare_digest(str(proof), str(cand["api_key"])):
+                if proof and secrets.compare_digest(key_digest(proof), str(cand["api_key"])):
                     existing = cand
                 elif self._is_operator():
                     existing = cand
                 elif not online(cand["last_seen"]):
                     existing = dict(cand)
-                    existing["api_key"] = secrets.token_urlsafe(32)
+                    rotate = True
         if existing:
             rid = existing["id"]
-            key = existing["api_key"]
+            proof = key or self._bearer()
+            if proof and secrets.compare_digest(key_digest(proof), str(existing["api_key"])):
+                key = proof                       # the caller's own key, handed back
+            elif rotate:
+                key = secrets.token_urlsafe(32)   # reclaim an offline row with a new key
+            elif S.key_plain.get(rid):
+                # An operator re-registering a row this process just created: the
+                # plaintext is still in memory, so the same key is returned and
+                # the caller is not surprised by a rotation.
+                key = S.key_plain[rid]
+            else:
+                key = secrets.token_urlsafe(32)
         else:
             rid = rid or str(uuid.uuid4())
             key = secrets.token_urlsafe(32)
@@ -2123,6 +2238,7 @@ class Handler(BaseHTTPRequestHandler):
         # changed either must actually store what it returns (an operator rotation
         # used to mint a key that was never persisted, so it 401ed) and a stale
         # current_run must not survive it
+        S.key_plain[rid] = key
         S.ex("INSERT INTO runners(id,name,os,kind,version,capabilities,first_seen,last_seen,"
              "status,current_run,addr,git,api_key,machine_id,ephemeral,instance) "
              "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
@@ -2135,7 +2251,7 @@ class Handler(BaseHTTPRequestHandler):
               _json_dumps(b.get("capabilities") if isinstance(b.get("capabilities"), dict) else {}),
               now(), now(),
               b.get("status", "idle"), b.get("current_run"), self.client_address[0],
-              b.get("git"), key, mid, 1 if b.get("ephemeral") else 0, inst))
+              b.get("git"), key_digest(key), mid, 1 if b.get("ephemeral") else 0, inst))
         r = runner_public(S.one("SELECT * FROM runners WHERE id=?", (rid,)))
         self.bus.publish_runner(r)
         S.audit(self._actor(), "register", target=rid,
@@ -2650,7 +2766,12 @@ def main():
     if refusal:
         print("[benchd] %s" % refusal, file=sys.stderr, flush=True)
         return 2
-    store = Store(a.db)
+    try:
+        store = Store(a.db)
+    except SchemaVersionError as exc:
+        # DATA-P2-003 / DR-P2-002 / EVOL-P2-003: fail closed, do not start.
+        print("[benchd] refusing to start: %s" % exc, flush=True)
+        return 3
     Handler.store, Handler.bus, Handler.token, Handler.web_dir = store, Bus(), token, a.web
     Handler.join_token = join_token
     Handler.cors_origin = cors_origin

@@ -1055,7 +1055,8 @@ def run():
     _legacy_store = B.Store(_legacy)
     _keys = {r["id"]: r["api_key"] for r in _legacy_store.q("SELECT id, api_key FROM runners")}
     c.check("a legacy database with duplicate api_keys migrates to the unique index",
-            sum(1 for k in _keys.values() if k == "dupkey") == 1, _keys)
+            sum(1 for k in _keys.values() if k == B.key_digest("dupkey")) == 1
+            and all(k != "dupkey" for k in _keys.values()), _keys)
     c.check("a blank api_key is cleared, not left to collide", _keys.get("c") is None, _keys)
     _legacy_store.conn.close()
 
