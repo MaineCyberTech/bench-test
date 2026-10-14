@@ -31,11 +31,9 @@ def run():
     root = bs.cache_root()
     c.check("cache_root is an absolute path ending in bench-test",
             os.path.isabs(root) and os.path.basename(root) == "bench-test", root)
-    # Windows puts it at <root>\python\python.exe, POSIX at <root>/python/bin/python3:
-    # the invariant is that it lives under <root>/python, not the exact layout.
-    _bp = bs.base_python_path()
     c.check("base python lives under the cache root",
-            _bp.startswith(os.path.join(root, "python") + os.sep), _bp)
+            os.path.dirname(bs.base_python_path()) == os.path.join(root, "python"),
+            bs.base_python_path())
     c.check("env python lives under the cache root",
             root in bs.env_python_path(), bs.env_python_path())
 

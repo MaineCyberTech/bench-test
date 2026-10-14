@@ -1,2 +1,0 @@
-ram integrity filled=6.5GiB chunks=26 passes=1 bad=0
-RESULT_JSON:{"phase": "integrity", "giB": 6.5, "chunks": 26, "passes": 1, "bad_elements": 0}

@@ -1,2 +1,0 @@
-Oct 13 18:18:58 bench-live kernel: logitech-hidpp-device 0003:046D:4069.000B: HID++ 4.5 device connected.
-Oct 13 18:19:04 bench-live kernel: logitech-hidpp-device 0003:046D:4069.000B: hidpp_devicenametype_get_device_name: received protocol error 0x09

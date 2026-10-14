@@ -311,13 +311,10 @@ def run():
     if ps:
         m = re.search(r"^function Invoke-OllamaCli \{.*?^\}", llm, re.S | re.M)
         c.check("the bounded CLI helper is the one under test", bool(m), "")
-        # run the helper with the interpreter we actually found (pwsh on Linux CI,
-        # powershell on Windows): hardcoding 'powershell' made the check pass or
-        # fail by accident wherever that name does not exist.
         snippet = (m.group(0) + "\n"
-                   "try { Invoke-OllamaCli -Exe '%s' -CliArgs "
+                   "try { Invoke-OllamaCli -Exe 'powershell' -CliArgs "
                    "@('-NoProfile','-Command','Start-Sleep -Seconds 30') -TimeoutSec 2; "
-                   "'NO-TIMEOUT' } catch { 'TIMED-OUT' }" % ps.replace("'", "''"))
+                   "'NO-TIMEOUT' } catch { 'TIMED-OUT' }")
         r = subprocess.run([ps, "-NoProfile", "-NonInteractive", "-Command", snippet],
                            capture_output=True, text=True, timeout=180)
         c.check("a wedged CLI call times out instead of hanging",

@@ -1,3 +1,0 @@
-[backend] cuda
-streams skipped (pre-Volta GPU)
-RESULT_JSON:{"phase": "streams", "backend": "cuda", "skipped": true, "reason": "pre-Volta GPU"}

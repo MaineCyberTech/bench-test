@@ -2190,7 +2190,6 @@ async function deleteSchedule(id) {
 }
 
 /* -------------------------------------------------------------- modal --- */
-let _lastFocus = null;
 function openModal(html) {
   const m = $("#modal");
   if (!modalOpen()) _lastFocus = document.activeElement;
