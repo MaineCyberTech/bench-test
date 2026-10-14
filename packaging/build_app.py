@@ -41,7 +41,14 @@ LAUNCHER = os.path.join(REPO, "packaging", "launcher.py")
 # wheel installed at build time (CPython on Windows ships no _curses).
 # `extra` lists what each app imports but the launcher does not, so PyInstaller
 # still bundles it (the app code itself runs from `bench/` on disk, on purpose).
-APPS = [("bench-gui", "gui.py", True, ["tkinter"]),
+APPS = [("bench-gui", "gui.py", True,
+         # the launcher runs the app from bench/, so PyInstaller never analyses
+         # gui.py's own imports: every tkinter submodule it uses must be listed or
+         # the bundle ships a partial tkinter (ImportError for filedialog/font/
+         # messagebox/ttk - and, in the windowed exe, a modal error dialog that
+         # hangs a headless smoke test instead of failing it).
+         ["tkinter", "tkinter.filedialog", "tkinter.font", "tkinter.messagebox",
+          "tkinter.ttk"]),
         ("bench-tui", "tui.py", False, ["curses", "_curses"]),
         ("bench-agent", "agent.py", False, [])]
 
