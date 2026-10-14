@@ -197,8 +197,11 @@ you add behaviour. Never commit with a failing suite.
 - **Never bake the operator token into a public artifact.** The repo is **public**
   and ISO/app releases are **public downloads** — anything baked into the image is
   world-readable. Bake the **join token** for one-click onboarding; keep
-  `BENCHD_TOKEN` operator-only. The bake secrets (`BENCH_AGENT_CONF` /
-  `BENCH_UPLOAD_CONF`) are applied by `.github/workflows/build-iso.yml`; rotate
+  `BENCHD_TOKEN` operator-only. The client honours a baked `BENCHD_JOIN_TOKEN`
+  exactly like `BENCHD_TOKEN` for its first `POST /register`, then switches to the
+  per-runner api_key. The bake secrets (`BENCH_AGENT_JOIN_CONF` — preferred —
+  and `BENCH_UPLOAD_CONF`) are applied by the `build-app` / `build-iso`
+  workflows, whose bake guard refuses any config carrying `BENCHD_TOKEN=`; rotate
   the operator token if it ever leaks or an ISO is shared outside the lab.
 - `server/benchd.conf`, `server/data/`, `live/private/`, `~/.config/bench-agent.conf`
   are git-ignored. Never commit a token, key, or the SQLite db.

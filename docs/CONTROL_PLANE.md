@@ -340,6 +340,10 @@ reads `0.0.0+unknown`. The startup log line records which source was used, and
   ISO/app releases are public downloads, so anything baked in is world-readable.
   Bake the **join token** (`BENCHD_JOIN_TOKEN`) into public releases for one-click
   onboarding; keep `BENCHD_TOKEN` operator-only and rotate it if it ever leaks.
+  The client honours a baked `BENCHD_JOIN_TOKEN` exactly like `BENCHD_TOKEN` for
+  its first `POST /register`, then switches to the per-runner api_key, so the
+  baked config is `BENCHD_SERVER=...` + `BENCHD_JOIN_TOKEN=...` (and the workflows'
+  bake guard refuses a config that carries `BENCHD_TOKEN=`).
 - Bind to the LAN/lab address only. On the lab overlay it is reachable over the
   `wgaudit0` WireGuard network — keep `wg0` untouched.
 - **CORS is same-origin by default.** No wildcard `Access-Control-Allow-Origin` is
@@ -423,7 +427,8 @@ reads `0.0.0+unknown`. The startup log line records which source was used, and
   heartbeating.
 - **`bench-agent.conf` is an allow-list.** The live launcher
   (`live/airootfs/usr/local/bin/bench-agent-env`) honours exactly
-  `BENCHD_SERVER` / `BENCHD_TOKEN` (client config), `BENCH_AGENT_NAME` (the
+  `BENCHD_SERVER` / `BENCHD_TOKEN` (client config), `BENCHD_JOIN_TOKEN` (the
+  registration-only token a baked release carries), `BENCH_AGENT_NAME` (the
   runner label; default the hostname) and `BENCH_AGENT_INSTANCE` (the instance
   suffix `bench-tui@.service` sets); every other key is ignored. There is **no**
   `BENCHD_INSECURE` toggle: the client never disables TLS verification, so use a

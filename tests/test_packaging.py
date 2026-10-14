@@ -32,7 +32,7 @@ def run():
     os.makedirs(here)
     with open(os.path.join(root, "bench-agent.conf"), "w", encoding="utf-8") as fh:
         fh.write("BENCHD_SERVER=http://lab.test:8722\nBENCHD_TOKEN=tok123\n")
-    env_keys = ("BENCH_AGENT_CONF", "BENCHD_SERVER", "BENCHD_TOKEN")
+    env_keys = ("BENCH_AGENT_CONF", "BENCHD_SERVER", "BENCHD_TOKEN", "BENCHD_JOIN_TOKEN")
     saved = {k: os.environ.pop(k, None) for k in env_keys}
     # point HOME at a clean dir so a real ~/.config can't shadow the baked copy
     saved.update({k: os.environ.get(k) for k in ("HOME", "USERPROFILE")})
@@ -42,6 +42,14 @@ def run():
         server, token = rep.load_conf(here=here)
         c.check("load_conf reads the baked bench-agent.conf next to the toolkit",
                 server == "http://lab.test:8722" and token == "tok123", (server, token))
+        # a baked release carries the registration-only join token instead
+        with open(os.path.join(root, "bench-agent.conf"), "w", encoding="utf-8") as fh:
+            fh.write("BENCHD_SERVER=http://lab.test:8722\nBENCHD_JOIN_TOKEN=join456\n")
+        server, token = rep.load_conf(here=here)
+        c.check("load_conf honours a baked BENCHD_JOIN_TOKEN (the one-click join config)",
+                server == "http://lab.test:8722" and token == "join456", (server, token))
+        with open(os.path.join(root, "bench-agent.conf"), "w", encoding="utf-8") as fh:
+            fh.write("BENCHD_SERVER=http://lab.test:8722\nBENCHD_TOKEN=tok123\n")
         # an explicit config wins over the baked default
         cwd2 = tempfile.mkdtemp(prefix="bench-cwd-")
         with open(os.path.join(cwd2, "bench-agent.conf"), "w", encoding="utf-8") as fh:

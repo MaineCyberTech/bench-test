@@ -212,6 +212,10 @@ def load_conf(here=None):
         /etc/bench-agent.conf, /mnt/benchdata/bench-agent.conf,
         <toolkit>/bench-agent.conf (baked app default), <bench>/bench-agent.conf
     `$BENCHD_SERVER` / `$BENCHD_TOKEN` in the environment override everything.
+    A baked release carries a registration-only **join token** instead
+    (`BENCHD_JOIN_TOKEN=`, see the bake guard in the workflows): it is the
+    initial bearer for `POST /register` only, and the client switches to the
+    per-runner api_key the server returns. `BENCHD_TOKEN` wins when both are set.
     `here` (the bench/ dir) is a test seam; callers use the default.
     """
     here = here or os.path.dirname(os.path.abspath(__file__))  # .../bench
@@ -229,7 +233,9 @@ def load_conf(here=None):
             conf = _parse_conf(c)
             break
     server = os.environ.get("BENCHD_SERVER") or conf.get("BENCHD_SERVER") or ""
-    token = os.environ.get("BENCHD_TOKEN") or conf.get("BENCHD_TOKEN") or ""
+    token = (os.environ.get("BENCHD_TOKEN") or conf.get("BENCHD_TOKEN")
+             or os.environ.get("BENCHD_JOIN_TOKEN") or conf.get("BENCHD_JOIN_TOKEN")
+             or "")
     return server, token
 
 
