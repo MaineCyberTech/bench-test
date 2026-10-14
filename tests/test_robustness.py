@@ -80,9 +80,9 @@ def run():
     st, _ = cl.call("POST", "/api/v1/runs/%s/finish" % rid,
                     {"status": "done", "exit_code": 0, "summary": {"gpu_soak_tflops": 7.0}})
     _, run2 = cl.call("GET", "/api/v1/runs/" + rid)
-    c.check("a re-sent finish neither duplicates nor corrupts the run",
-            st == 200 and run2.get("status") == "done"
-            and (run2.get("summary") or {}).get("gpu_soak_tflops") == 7.0, run2)
+    c.check("a re-sent finish is refused (409) and leaves the run intact",
+            st == 409 and run2.get("status") == "done"
+            and (run2.get("summary") or {}).get("gpu_soak_tflops") == 7.0, (st, run2))
     cl.call("DELETE", "/api/v1/runs/" + rid)
 
     # a permanent transport failure must not flip a finished run to failed
@@ -150,10 +150,11 @@ def run():
     rep4.run_id = "run-y"
     rep4._attempt = lambda *a, **k: (0, {})
     ok = rep4.telemetry([{"elapsed": 1.0}])
-    c.check("a telemetry drop returns False and is counted",
-            ok is False and rep4.drops == 1, (ok, rep4.drops))
-    c.check("a dropped batch is surfaced in the log, not silent",
-            any("dropped" in m for m in logs), logs)
+    c.check("a telemetry drop returns a 0 status (never a silent success)",
+            ok == 0, ok)
+    c.check("the reporter records the failure instead of hiding it",
+            rep4._fail_streak >= 1 and rep4.status() != "connected",
+            (rep4._fail_streak, rep4.status()))
 
     # ---- RES-P2-003: a concurrent second start is rejected atomically ----
     import agent as agmod

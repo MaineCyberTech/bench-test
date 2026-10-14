@@ -980,8 +980,7 @@ class ReporterPump:
                 pass
 
     def _drain(self):
-        batch = self._pending
-        self._pending = []
+        batch = []
         while len(batch) < 120:
             try:
                 batch.append(self.samples.get_nowait())
