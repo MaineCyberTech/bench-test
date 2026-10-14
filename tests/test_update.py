@@ -9,6 +9,7 @@ import http.server
 import io
 import json
 import os
+import re
 import socketserver
 import subprocess
 import sys
@@ -653,6 +654,20 @@ def run():
             [m for m in ("glob", "http", "ssl", "email", "urllib") if m not in _std])
     c.check("the frozen stdlib does not include the toolkit itself",
             not any(m in _std for m in ("benchreport", "bootstrap", "tui", "gui")), "")
+    # the launcher runs the app from bench/, so PyInstaller cannot see gui.py's own
+    # imports: every tkinter submodule it uses must be a hidden import, or the
+    # bundle ships a partial tkinter (filedialog/font/messagebox/ttk ImportError).
+    _gui_src = open(os.path.join(BENCH, "gui.py"), encoding="utf-8").read()
+    _tk_names = set()
+    for _m in re.finditer(r"from tkinter import ([^\n]+)", _gui_src):
+        for _part in _m.group(1).split(","):
+            _part = _part.strip()
+            if _part:
+                _tk_names.add(_part.split()[0])          # "font as tkfont" -> font
+    _gui_extra = [extra for name, _s, _n, extra in _bm.APPS if name == "bench-gui"][0]
+    c.check("the GUI bundle hidden-imports every tkinter submodule gui.py uses",
+            bool(_tk_names)
+            and all(("tkinter." + n) in _gui_extra for n in _tk_names), sorted(_tk_names))
 
     # ---- the restart command line ----
     # It re-passed the whole argv, so a launcher bundle handed its successor the
