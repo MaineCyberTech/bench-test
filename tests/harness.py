@@ -53,7 +53,7 @@ def cleanup_tmpdirs():
 
 
 class Server:
-    def __init__(self, token=TOKEN):
+    def __init__(self, token=TOKEN, rate_limit=False):
         import benchd
         self.benchd = benchd
         self.db = os.path.join(tmpdir(), "benchd.sqlite")
@@ -63,6 +63,11 @@ class Server:
         benchd.Handler.web_dir = WEB
         self.prev_token = token  # Handler.token is process-global; restored on stop()
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), benchd.Handler)
+        # The suite makes many register/auth calls from one IP; every server gets a
+        # permissive bucket unless a test asks for the shipped defaults.
+        self.httpd._bench_rate = (
+            benchd.RateLimiter() if rate_limit
+            else benchd.RateLimiter({"auth": (10 ** 6, 60.0), "register": (10 ** 6, 60.0)}))
         self.httpd.quiet = True
         self.httpd.daemon_threads = True
         self._thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
