@@ -2180,8 +2180,20 @@ document.addEventListener("click", (e) => {
 });
 
 /* keyboard activation for the click-only controls: sortable headers, history /
-   fleet rows, runner panels (Enter or Space) */
+   fleet rows, runner panels (Enter or Space); the tab strip gets roving focus */
 document.addEventListener("keydown", (e) => {
+  const tab = e.target.closest && e.target.closest('#tabs [role="tab"]');
+  if (tab) {
+    const tabs = $$('#tabs [role="tab"]');
+    const i = tabs.indexOf(tab);
+    let j = null;
+    if (e.key === "ArrowRight") j = (i + 1) % tabs.length;
+    else if (e.key === "ArrowLeft") j = (i - 1 + tabs.length) % tabs.length;
+    else if (e.key === "Home") j = 0;
+    else if (e.key === "End") j = tabs.length - 1;
+    if (j != null) { e.preventDefault(); tabs[j].focus(); tabs[j].click(); }
+    return;
+  }
   if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
   if (!e.target.closest || e.target.closest("button,input,select,textarea,a,form,label")) return;
   const t = e.target.closest("th.sortable,[data-detail],[data-runner]");
