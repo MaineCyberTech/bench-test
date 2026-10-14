@@ -95,9 +95,12 @@ else; a local battery needs a toolkit checkout (`$BENCH_REPO`).
 
 ## Control plane (benchd)
 
-- **Auth:** operators use the shared join token (`BENCHD_TOKEN`) as a bearer or
-  `?token=`; runners get a **per-runner API key** at `/register` and reuse it
-  (stored in `~/.config/bench-agent.json`).
+- **Auth:** operators use the shared **operator** token (`BENCHD_TOKEN`) as a
+  bearer or `?token=`; runners get a **per-runner API key** at `/register` and
+  reuse it (stored in `~/.config/bench-agent.json`). A separate **join token**
+  (`BENCHD_JOIN_TOKEN`) is registration-only — accepted by `POST /api/v1/register`
+  and nothing else — so public releases can ship one-click onboarding without
+  carrying the operator token.
 - **Runner identity:** a runner also sends a `machine_id` (`machine_id()` in
   `benchreport.py` — Windows `MachineGuid`, Linux DMI uuid / `/etc/machine-id`,
   else a random id persisted next to the config) and the server **adopts the row
@@ -186,17 +189,17 @@ you add behaviour. Never commit with a failing suite.
 
 ## Security
 
-- The repo is **public**, and app-bundle **and** ISO releases are **public
-  downloads** — anything baked into either artifact is world-readable. The
-  control-plane config is baked via the `BENCH_AGENT_CONF` secret by **both**
-  `.github/workflows/build-iso.yml` (live ISO) and
-  `.github/workflows/build-app.yml` (GUI/TUI/agent bundles), and the GitHub upload
-  token via `BENCH_UPLOAD_CONF` by `build-iso.yml`; rotate the token if a release
-  is shared outside the lab. That baked value is the shared join token (also the
-  operator bearer) today; when the registration-only join-token model lands it
-  should replace it, so a downloaded artifact cannot act as an operator (see
-  `docs/CONTROL_PLANE.md` § Roadmap). Report a leaked or baked credential
-  privately — see `SECURITY.md`.
+- **Two tokens, two roles.** `BENCHD_TOKEN` is the **operator** token (bearer or
+  `?token=`) and authorizes everything — state, commands, delete, schedules,
+  `exec`/`shell`, SSE. `BENCHD_JOIN_TOKEN` is the **registration-only join
+  token**: `POST /api/v1/register` accepts it and nothing else, so it mints a
+  runner but never satisfies an operator check and is not a runner api_key.
+- **Never bake the operator token into a public artifact.** The repo is **public**
+  and ISO/app releases are **public downloads** — anything baked into the image is
+  world-readable. Bake the **join token** for one-click onboarding; keep
+  `BENCHD_TOKEN` operator-only. The bake secrets (`BENCH_AGENT_CONF` /
+  `BENCH_UPLOAD_CONF`) are applied by `.github/workflows/build-iso.yml`; rotate
+  the operator token if it ever leaks or an ISO is shared outside the lab.
 - `server/benchd.conf`, `server/data/`, `live/private/`, `~/.config/bench-agent.conf`
   are git-ignored. Never commit a token, key, or the SQLite db.
 - The remote `exec` command is a real shell on the runner — it's gated by the
