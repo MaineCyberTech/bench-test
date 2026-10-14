@@ -523,6 +523,35 @@ class Store:
             self.conn.execute("ALTER TABLE runs ADD COLUMN preset TEXT")
         if "stats" not in rcols:
             self.conn.execute("ALTER TABLE runs ADD COLUMN stats TEXT")
+        # A retried artifact upload used to leave the old copy in place (the
+        # download then served stale content) and phases were SELECT-then-INSERT
+        # with no uniqueness, so a race could double them. Collapse any existing
+        # duplicates to the newest row, then enforce the invariant with unique
+        # indexes the upload paths can use as ON CONFLICT targets.
+        self.conn.execute("DELETE FROM artifacts WHERE id NOT IN "
+                          "(SELECT MAX(id) FROM artifacts GROUP BY run_id, name)")
+        self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_run_name "
+                          "ON artifacts(run_id, name)")
+        self.conn.execute("DELETE FROM phases WHERE id NOT IN "
+                          "(SELECT MAX(id) FROM phases GROUP BY run_id, seq)")
+        self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_phases_run_seq "
+                          "ON phases(run_id, seq)")
+        # runners.api_key is looked up on every authenticated request (and the
+        # machine_id+kind+instance adoption on every register); both were full
+        # table scans. The unique index also enforces one key per runner. A
+        # legacy database can carry blank/duplicate keys (which never
+        # authenticated unambiguously): clear the extras first so the index can
+        # be created - the runner re-registers and gets a fresh key.
+        self.conn.execute("UPDATE runners SET api_key=NULL WHERE api_key=''")
+        dups = [r[0] for r in self.conn.execute(
+            "SELECT id FROM runners WHERE api_key IS NOT NULL AND id NOT IN "
+            "(SELECT MIN(id) FROM runners WHERE api_key IS NOT NULL GROUP BY api_key)")]
+        for rid in dups:
+            self.conn.execute("UPDATE runners SET api_key=NULL WHERE id=?", (rid,))
+        self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_runners_api_key "
+                          "ON runners(api_key)")
+        # after the ALTERs above: machine_id is a migrated column, so the index
+        # cannot live in SCHEMA (a legacy table would not have it yet)
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_runners_machine "
                           "ON runners(machine_id)")
         # RES-P3-001: how many times a fetched-but-unacked command was re-queued.
@@ -2035,6 +2064,10 @@ class Handler(BaseHTTPRequestHandler):
             run_id = b.get("id") or str(uuid.uuid4())
             if not safe_id(run_id):
                 return self._err(400, "bad run id")
+            if "profile" in b and not isinstance(b["profile"], dict):
+                return self._err(400, "profile must be an object")
+            if "system" in b and not isinstance(b["system"], dict):
+                return self._err(400, "system must be an object")
             started = b.get("started")
             if started is None:
                 started = now()
