@@ -1586,6 +1586,27 @@ def persist_root():
     return tempfile.gettempdir()
 
 
+def work_dir():
+    """A per-user directory to run the app and its children from.
+
+    Never the bundle/download folder: a surviving child (a telemetry PowerShell
+    loop, an `ollama` server started by the LLM phase) keeps its working directory
+    open, which locks the folder the user later wants to delete. Running from here
+    keeps the download folder free. Created on demand.
+    """
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    else:
+        base = (os.environ.get("XDG_STATE_HOME")
+                or os.path.join(os.path.expanduser("~"), ".local", "state"))
+    d = os.path.join(base, "bench-test", "work")
+    try:
+        os.makedirs(d, exist_ok=True)
+        return d
+    except OSError:
+        return os.path.expanduser("~")
+
+
 def _download(url, dest, log=None, timeout=180, every=100 << 20):
     """Stream a URL to a path or an open binary file object."""
     req = urllib.request.Request(url, headers={"User-Agent": UA})

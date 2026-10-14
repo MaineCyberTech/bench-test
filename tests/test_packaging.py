@@ -532,6 +532,23 @@ def run():
     else:
         print("  SKIP the telemetry-average behaviour check (no powershell/pwsh here)")
 
+    # ---- the app runs from a per-user work dir, never the download folder ----
+    # A surviving child (a telemetry PowerShell loop, an ollama server started by
+    # the LLM phase) keeps its working directory open, which locks the folder the
+    # user later wants to delete. The launcher chdirs, and the battery is spawned
+    # there too, so the bundle folder is never any process's cwd.
+    with open(os.path.join(BENCH, "benchreport.py"), encoding="utf-8") as fh:
+        rep_src = fh.read()
+    c.check("benchreport.work_dir exists", "def work_dir(" in rep_src, "")
+    with open(os.path.join(REPO, "packaging", "launcher.py"), encoding="utf-8") as fh:
+        launcher = fh.read()
+    c.check("launcher runs the app from the per-user work dir",
+            "work_dir()" in launcher and "os.chdir" in launcher, "")
+    for f in ("gui.py", "tui.py", "agent.py"):
+        with open(os.path.join(BENCH, f), encoding="utf-8") as fh:
+            src = fh.read()
+        c.check("%s spawns the battery from the work dir" % f, "cwd=work_dir()" in src, "")
+
     return c.fails
 
 

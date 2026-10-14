@@ -51,7 +51,7 @@ from benchreport import (Reporter, PhaseTracker, TelemetryTail,  # noqa: E402
                          toolkit_version, is_live, update_needs_restart,
                          auto_update, venv_python, upload_telemetry_csv, upload_run_files,
                          extra_runner_args, expand_preset, apply_sampler_liveness,
-                         version_string, drop_stray_script_arg)
+                         version_string, drop_stray_script_arg, work_dir)
 import bootstrap  # stdlib-only local env helper (see bench/bootstrap.py)
 
 # Derived from the benchreport registry (EVOL-P2-001), not a second copy.
@@ -165,7 +165,7 @@ class Agent:
                            preset=(profile or {}).get("preset") or label)
         self.run_t0 = time.time()
         self.rep.event("run started: %s" % label)
-        self.proc = subprocess.Popen(cmd, cwd=REPO, env=env, stdout=subprocess.PIPE,
+        self.proc = subprocess.Popen(cmd, cwd=work_dir(), env=env, stdout=subprocess.PIPE,
                                      stderr=subprocess.STDOUT, text=True, bufsize=1,
                                      creationflags=(getattr(subprocess, "CREATE_NO_WINDOW", 0)
                                                     if os.name == "nt" else 0))

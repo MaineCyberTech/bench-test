@@ -67,7 +67,7 @@ try:
                              self_update, restart_self,
                              toolkit_version, is_live, update_needs_restart, hardware_line,
                              DASH_FIELDS, auto_update, should_restart_after_update, venv_python,
-                         upload_telemetry_csv, persist_root, upload_run_files,
+                         upload_telemetry_csv, persist_root, upload_run_files, work_dir,
                          extra_runner_args, tune_summary, presets, bench_version, version_string,
                          drop_stray_script_arg)
 except Exception:  # reporting is optional
@@ -451,7 +451,7 @@ class BenchTUI:
             if py:
                 env.setdefault("BENCH_PY", py)
                 env["PATH"] = os.path.dirname(py) + os.pathsep + env.get("PATH", "")
-            self.proc = subprocess.Popen(cmd, cwd=REPO, env=env,
+            self.proc = subprocess.Popen(cmd, cwd=work_dir(), env=env,
                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                          text=True, bufsize=1, start_new_session=True,
                                          creationflags=(getattr(subprocess, "CREATE_NO_WINDOW", 0)
