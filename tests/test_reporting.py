@@ -854,6 +854,177 @@ def run():
         c.check("the sequential write flushes as it goes, not once at the end",
                 calls["n"] >= 4, calls)
 
+    # ---- the CPU soak plateau decision (mirrors gpu_bench) ----
+    try:
+        import cpu_bench as _cb
+    except Exception as e:
+        print("  SKIP the CPU plateau check (%s)" % e)
+    else:
+        flat = [70.0 + (0.2 if i % 2 else -0.2) for i in range(8)]
+        climb = [60.0 + i for i in range(8)]
+        c.check("cpu plateau: flat temps are stable", _cb._temp_stable(flat) is True, "")
+        c.check("cpu plateau: climbing temps are not stable", _cb._temp_stable(climb) is False, "")
+        c.check("cpu plateau: needs a full window", _cb._temp_stable(flat[:7]) is False, "")
+
+        class _SoakArgs:
+            seconds = 300
+            until_stable = True
+            stable_hold = 60.0
+
+        class _NoStable:
+            seconds = 300
+            until_stable = False
+            stable_hold = 60.0
+
+        t0 = time.time() - 50
+        keep, ss = _cb._soak_decision(t0, _SoakArgs(), flat, None)
+        c.check("cpu soak: a plateau starts the hold, it does not stop the soak",
+                keep is True and ss is not None, (keep, ss))
+        c.check("cpu soak: keeps going through the hold",
+                _cb._soak_decision(t0, _SoakArgs(), flat, ss) == (True, ss), "")
+        c.check("cpu soak: stops once the hold has elapsed",
+                _cb._soak_decision(t0, _SoakArgs(), flat, ss - 60)[0] is False, "")
+        c.check("cpu soak: moving temps reset the hold",
+                _cb._soak_decision(t0, _SoakArgs(), climb, ss) == (True, None), "")
+        c.check("cpu soak: honours the ceiling",
+                _cb._soak_decision(time.time() - 400, _SoakArgs(), flat, None)[0] is False, "")
+        c.check("cpu soak: no early stop when not requested",
+                _cb._soak_decision(t0, _NoStable(), flat, None) == (True, None), "")
+        c.check("cpu soak: never stops before the minimum",
+                _cb._soak_decision(time.time() - 10, _SoakArgs(), flat, None) == (True, None), "")
+        _cbsrc = open(os.path.join(BENCH, "cpu_bench.py"), encoding="utf-8").read()
+        c.check("the CPU soak records whether the plateau was reached and the hold",
+                all(k in _cbsrc for k in ('"until_stable"', '"stable":', '"stable_at_s"',
+                                          '"stable_hold_s"')), "")
+
+    # ---- the sustained write keeps every fsync-bounded window ----
+    try:
+        import disk_bench as _sdb
+    except Exception as e:
+        print("  SKIP the sustained-write check (%s)" % e)
+    else:
+        wb = 64 << 20
+        st = _sdb._window_stats([1.0, 1.0, 2.0, 8.0], wb)
+        c.check("sustained windows: one throughput per flush-bounded window",
+                st["windows"] == 4 and st["windows_mbps"] == [67.1, 67.1, 33.6, 8.4], st)
+        c.check("sustained windows: first/last are the window edges, not the average",
+                st["first_mbps"] == 67.1 and st["last_mbps"] == 8.4, st)
+        c.check("sustained windows: the post-cache collapse shows as a drop",
+                st["drop_pct"] == 87.5 and st["min_mbps"] == 8.4, st)
+        c.check("sustained windows: an empty run has no fabricated numbers",
+                _sdb._window_stats([], wb) == {} and _sdb._window_stats([0.0], wb) == {}, "")
+        # off by default: the phase refuses to run without --sustain-gb
+        recs = []
+        real_jline = _sdb.jline
+        _sdb.jline = recs.append
+        try:
+            class _Off:
+                sustain_gb = 0.0
+                path = tmpdir()
+            _sdb.phase_sustainwrite(_Off())
+        finally:
+            _sdb.jline = real_jline
+        c.check("sustained write is opt-in (off by default)",
+                bool(recs) and recs[-1].get("skipped") is True
+                and "sustain-gb" in (recs[-1].get("reason") or ""), recs[-1:])
+
+    # ---- the thread-scaling curve: GFLOPS per count + efficiency vs 1 thread ----
+    try:
+        import cpu_bench as _sb
+    except Exception as e:
+        print("  SKIP the scaling-curve check (%s)" % e)
+    else:
+        c.check("scaling efficiency: linear scaling is 1.0",
+                _sb._scaling_efficiency(100.0, 4, 25.0) == 1.0, "")
+        c.check("scaling efficiency: half-linear is 0.5",
+                _sb._scaling_efficiency(50.0, 4, 25.0) == 0.5, "")
+        c.check("scaling efficiency: no 1-thread baseline is None, not zero",
+                _sb._scaling_efficiency(50.0, 4, None) is None, "")
+
+        class _FakeTime:
+            def __init__(self):
+                self.t = 0.0
+
+            def time(self):
+                self.t += 1.0
+                return self.t
+
+        real_time = _sb.time
+        _sb.time = _FakeTime()
+        try:
+            r = _sb.timed(3.0, lambda: None, flops=3e9)
+        finally:
+            _sb.time = real_time
+        c.check("scaling curve maths: a fake timer gives iters/seconds/GFLOPS",
+                r["iters"] == 2 and r["seconds"] == 4.0 and r["gflops"] == 1.5, r)
+
+        fake = {1: 20.0, 2: 38.0, 4: 40.0}
+        real_child, real_jline = _sb._run_scaling_child, _sb.jline
+        recs = []
+        _sb._run_scaling_child = lambda n, seconds, k: {
+            "phase": "scaling-one", "threads": k, "n": n, "gflops": fake.get(k)}
+        _sb.jline = recs.append
+        try:
+            class _Sc:
+                size = 1024
+                seconds = 1.0
+            _sb.phase_scaling(_Sc())
+        finally:
+            _sb._run_scaling_child, _sb.jline = real_child, real_jline
+        rec = recs[-1]
+        c.check("scaling curve: per-count GFLOPS are recorded with the size",
+                rec["n"] == 1024 and rec["results"]["2"]["gflops"] == 38.0
+                and rec["all_cores"] == (os.cpu_count() or 1), rec)
+        c.check("scaling curve: efficiency is relative to the 1-thread run",
+                rec["efficiency"]["1"] == 1.0 and rec["efficiency"]["2"] == 0.95
+                and rec["efficiency"]["4"] == 0.5, rec.get("efficiency"))
+
+    # ---- a gfx tail reaches the summary; a missing tail is missing, not zero ----
+    td = tmpdir()
+    with open(os.path.join(td, "host-furmark-20260101-000000.json"), "w") as fh:
+        json.dump({"host": "h", "timestamp": "x", "engine": "furmark",
+                   "result": {"phase": "furmark", "score": 900, "fps_min": 18.5,
+                              "fps_avg": 44.0, "fps_max": 61.0}}, fh)
+    g = build_summary_dir(td).get("gfx") or {}
+    c.check("the FurMark min/avg/max tail reaches the summary",
+            (g.get("fps_min"), g.get("fps_avg"), g.get("fps_max")) == (18.5, 44.0, 61.0), g)
+    td2 = tmpdir()
+    with open(os.path.join(td2, "host-linux-20260101-000000.json"), "w") as fh:
+        json.dump({"host": "h", "phases": [
+            {"group": "gfx", "phase": "furmark",
+             "result": {"phase": "furmark", "score": 500, "fps_min": 10.0,
+                        "fps_avg": 30.0, "fps_max": 45.0}}]}, fh)
+    g2 = build_summary_dir(td2).get("gfx") or {}
+    c.check("the Linux-shaped gfx record keeps the tail too",
+            (g2.get("fps_min"), g2.get("fps_max")) == (10.0, 45.0), g2)
+    # an engine that reports only an average must not gain a fabricated tail
+    td3 = tmpdir()
+    with open(os.path.join(td3, "host-valley-20260101-000000.json"), "w") as fh:
+        json.dump({"host": "h", "phases": [
+            {"group": "gfx", "phase": "valley",
+             "result": {"phase": "valley", "score": 100, "fps_avg": 30.0}}]}, fh)
+    g3 = build_summary_dir(td3).get("gfx") or {}
+    c.check("an average-only engine records no tail rather than zero",
+            g3.get("fps_min") is None and g3.get("min_fps") is None and "min_fps" not in g3, g3)
+    c.check("the average it does have is still kept", g3.get("fps_avg") == 30.0, g3)
+
+    # ---- the runners wire the new switches through ----
+    cb = open(os.path.join(BENCH, "Invoke-CpuBench.ps1"), encoding="utf-8").read()
+    c.check("the CPU runner offers the plateau switch",
+            "-UntilStable" in cb and "-StableHold" in cb
+            and "--until-stable" in cb and "--stable-hold" in cb, "")
+    c.check("the CPU runner runs the scaling curve", "$phases.scaling" in cb, "")
+    wsb = open(os.path.join(BENCH, "Run-WorkstationBench.ps1"), encoding="utf-8").read()
+    c.check("the battery forwards the plateau flags to the CPU bench",
+            "-UntilStable:$SoakUntilStable -StableHold $StableHold" in wsb, "")
+    db = open(os.path.join(BENCH, "Invoke-DiskBench.ps1"), encoding="utf-8").read()
+    c.check("the disk runner exposes -SustainGB as an opt-in",
+            "$SustainGB" in db and "--sustain-gb" in db and "sustainwrite" in db, "")
+    c.check("the battery manifest carries the gfx frame-time tail",
+            "fps_min = $gr.fps_min" in wsb and "min/avg/max" in wsb, "")
+    c.check("an average-only engine is marked, not given a tail",
+            "unavailable (average only)" in wsb, "")
+
     # ---- the telemetry pipeline must not lose rows silently ----
     import queue as _q
 

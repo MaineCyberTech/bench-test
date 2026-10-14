@@ -1,12 +1,14 @@
 ﻿# Invoke-DiskBench.ps1 - disk (HDD/SSD/NVMe) throughput + SMART health report.
 # Usage: .\Invoke-DiskBench.ps1 [-Drive C] [-SizeMB 2048] [-Seconds 15] [-OutDir .\results]
 #        .\Invoke-DiskBench.ps1 -Path 'D:\bench' -SizeMB 4096
+#        .\Invoke-DiskBench.ps1 -SustainGB 40    # opt-in sustained write past the SLC cache
 param(
     [string]$Path = '',
     [string]$Drive = 'C',
     [int]$SizeMB = 2048,
     [int]$Seconds = 15,
     [int]$SteadyGB = 10,
+    [double]$SustainGB = 0,
     [string]$OutDir = '',
     [switch]$Keep
 )
@@ -71,6 +73,10 @@ $phases += Invoke-Phase 'randwrite' @()
 $phases += Invoke-Phase 'randmix' @()
 $phases += Invoke-Phase 'latency' @()
 $phases += Invoke-Phase 'steadywrite' @('--steady-gb', "$SteadyGB")
+# Opt-in: the steady write can sit inside an SLC cache. -SustainGB N writes N
+# GiB in flush-bounded windows and keeps every window's throughput, so the
+# post-cache collapse is visible instead of averaged away.
+if ($SustainGB -gt 0) { $phases += Invoke-Phase 'sustainwrite' @('--sustain-gb', $SustainGB.ToString([System.Globalization.CultureInfo]::InvariantCulture)) }
 
 if (-not $Keep) { Remove-Item (Join-Path $Path 'benchtest_disk.tmp') -Force -ErrorAction SilentlyContinue }
 
@@ -91,6 +97,7 @@ foreach ($p in $phases) { if (-not $p) { continue }
         'randmix' { $md += "| rand 4K mix (70/30) | $($p.iops) IOPS, $($p.mbps) MB/s |" }
         'latency' { $md += "| 4K latency | $($p.iops) IOPS, p50 $($p.us_p50)/p99 $($p.us_p99)/p99.9 $($p.us_p999) us$cs |" }
         'steadywrite' { $md += "| steady-state write ($($p.gib) GiB) | first $($p.first10_mbps) -> last $($p.last10_mbps) MB/s (drop $($p.drop_pct)%) |" }
+        'sustainwrite' { $md += "| sustained write ($($p.gib) GiB, $($p.windows) windows) | first $($p.first_mbps) -> last $($p.last_mbps) MB/s (min $($p.min_mbps), p50 $($p.p50_mbps), drop $($p.drop_pct)%) |" }
     }
 }
 $md += ""; $md += "_Buffered I/O: on Windows a file that fits in RAM is read from the page cache; those phases carry cache_served in the JSON. Use a file larger than RAM for truer reads._"

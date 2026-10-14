@@ -79,7 +79,7 @@ if (-not $SkipGpu) {
 if (-not $SkipCpu) {
     Write-Host "=== [3/11] CPU compute battery ===" -ForegroundColor Yellow
     try {
-        & "$PSScriptRoot\Invoke-CpuBench.ps1" -OutDir $OutDir -SoakSeconds $CpuSoakSeconds -Size $CpuSize | Out-Null
+        & "$PSScriptRoot\Invoke-CpuBench.ps1" -OutDir $OutDir -SoakSeconds $CpuSoakSeconds -Size $CpuSize -UntilStable:$SoakUntilStable -StableHold $StableHold | Out-Null
         $f = Get-NewestArtifact "$($env:COMPUTERNAME)-cpu-*.json"
         if ($f) { $summary.artifacts.cpu = $f.FullName }
     } catch { Write-Host "  cpu skipped: $($_.Exception.Message)" }
@@ -113,7 +113,22 @@ if (-not $SkipValley) {
         try {
             & "$PSScriptRoot\Invoke-FurMarkBench.ps1" -FurMarkBin $FurMarkBin -Seconds $GfxSeconds -OutDir $OutDir | Out-Null
             $f = Get-NewestArtifact "$($env:COMPUTERNAME)-furmark-*.json"
-            if ($f) { $summary.artifacts.gfx = $f.FullName; $gfxDone = $true }
+            if ($f) {
+                $summary.artifacts.gfx = $f.FullName
+                $gfxDone = $true
+                # The frame-time tail must survive into the battery summary: FurMark
+                # reports min/avg/max. When the engine gives only an average, record
+                # that explicitly instead of letting the average read as the tail.
+                try {
+                    $gr = (Get-Content $f.FullName -Raw | ConvertFrom-Json).result
+                    $tail = if ($gr.skipped) { "unavailable (skipped: $($gr.reason))" }
+                            elseif ($null -ne $gr.fps_min) { 'min/avg/max' }
+                            else { 'unavailable (average only)' }
+                    $summary.gfx = [ordered]@{ engine = 'furmark'; fps_min = $gr.fps_min; fps_avg = $gr.fps_avg; fps_max = $gr.fps_max; tail = $tail }
+                } catch {
+                    $summary.gfx = [ordered]@{ engine = 'furmark'; tail = 'unavailable (report unreadable)' }
+                }
+            }
         } catch { Write-Host "  furmark unavailable: $($_.Exception.Message)" }
         if (-not $gfxDone) { Write-Host "  falling back to Unigine Valley (-GfxEngine valley uses it directly)" -ForegroundColor DarkGray }
     }
@@ -121,6 +136,9 @@ if (-not $SkipValley) {
         try {
             & "$PSScriptRoot\Invoke-ValleyBench.ps1" -ValleyBin $ValleyBin -OutDir $OutDir | Out-Null
             $summary.artifacts.valley = "see screenshot in $OutDir"; $gfxDone = $true
+            # Unigine leaves only screenshots (no machine-readable score), so no
+            # frame-time tail can be recorded - say so rather than stay silent.
+            $summary.gfx = [ordered]@{ engine = 'valley'; tail = 'not captured (screenshot only)' }
         } catch { Write-Host "  valley skipped: $($_.Exception.Message)" }
     }
     if (-not $gfxDone) {

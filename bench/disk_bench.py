@@ -9,6 +9,8 @@ Phases (human lines + one "RESULT_JSON:" line):
   randwrite  - random 4 KiB write IOPS + MB/s
   randmix    - 70% read / 30% write 4 KiB mixed
   soak       - alternate seq r/w + random r/w for N seconds
+  steadywrite- 10-20 GiB steady write in flush-bounded windows
+  sustainwrite - opt-in sustained write (--sustain-gb N) with per-window throughput
 
 CAVEAT: uses OS-buffered I/O, so sequential *reads* of a just-written file can be
 served from cache. Where the OS allows it the read phases drop the page cache
@@ -23,6 +25,7 @@ import json
 import os
 import random
 import shutil
+import statistics
 import sys
 import time
 
@@ -257,6 +260,26 @@ def phase_soak(a):
     jline(out)
 
 
+def _window_stats(window_secs, window_bytes):
+    """Per-window throughput summary for the flush-bounded write phases.
+
+    Every window's MB/s is kept (not just deciles), so a post-SLC-cache collapse
+    is visible in the result instead of averaged away. ``window_secs`` are the
+    fsync-bounded durations, one per window.
+    """
+    mbps = [round(window_bytes / dt / 1e6, 1) for dt in window_secs if dt > 0]
+    if not mbps:
+        return {}
+    first, last = mbps[0], mbps[-1]
+    return {"windows": len(mbps),
+            "windows_mbps": mbps,
+            "first_mbps": first,
+            "last_mbps": last,
+            "min_mbps": min(mbps),
+            "p50_mbps": round(statistics.median(mbps), 1),
+            "drop_pct": round((1 - last / first) * 100, 1) if first else None}
+
+
 def phase_steadywrite(a):
     f = datafile(a)
     chunk = 64 * BLK           # 64 MiB fsync-bounded windows
@@ -282,6 +305,44 @@ def phase_steadywrite(a):
            "drop_pct": round((1 - last / first) * 100, 1) if first else None}
     print("disk steadywrite %.0f GiB: first10=%.0f last10=%.0f overall=%.0f MB/s (drop %.0f%%)" % (
         out["gib"], first, last, overall, out["drop_pct"] or 0))
+    jline(out)
+
+
+def phase_sustainwrite(a):
+    """Sustained write: N GiB in 64 MiB fsync-bounded windows.
+
+    The steady write's 10-20 GiB can fit inside an SLC cache, so its average is
+    cache speed; the per-window list shows where the device falls off once the
+    cache is full. Opt-in (--sustain-gb N, default off).
+    """
+    total = int(a.sustain_gb * 1024 ** 3)
+    if total <= 0:
+        out = {"phase": "sustainwrite", "skipped": True,
+               "reason": "--sustain-gb N is required (default off)"}
+        print("disk sustainwrite skipped (pass --sustain-gb N)")
+        jline(out)
+        return
+    f = datafile(a)
+    chunk = 64 * BLK           # 64 MiB fsync-bounded windows
+    buf = randbytes(chunk)
+    secs = []
+    written = 0
+    t0 = time.time()
+    with open(f, "wb", buffering=0) as fh:
+        while written < total:
+            bt = time.perf_counter()
+            fh.write(buf)
+            os.fsync(fh.fileno())   # window = data actually on stable storage
+            secs.append(time.perf_counter() - bt)
+            written += chunk
+    dt = time.time() - t0
+    out = {"phase": "sustainwrite", "gib": round(written / 1024 ** 3, 2),
+           "seconds": round(dt, 1), "window_mib": chunk // BLK,
+           "overall_mbps": round(written / dt / 1e6, 1)}
+    out.update(_window_stats(secs, chunk))
+    print("disk sustainwrite %.2f GiB in %s windows: first=%.0f last=%.0f min=%.0f overall=%.0f MB/s (drop %s%%)" % (
+        out["gib"], out.get("windows"), out.get("first_mbps"), out.get("last_mbps"),
+        out.get("min_mbps"), out["overall_mbps"], out.get("drop_pct")))
     jline(out)
 
 
@@ -314,7 +375,8 @@ def phase_latency(a):
 
 PHASES = {"info": phase_info, "seqwrite": phase_seqwrite, "seqread": phase_seqread,
           "randread": phase_randread, "randwrite": phase_randwrite, "randmix": phase_randmix,
-          "steadywrite": phase_steadywrite, "latency": phase_latency, "soak": phase_soak}
+          "steadywrite": phase_steadywrite, "sustainwrite": phase_sustainwrite,
+          "latency": phase_latency, "soak": phase_soak}
 
 
 def main():
@@ -324,6 +386,8 @@ def main():
     ap.add_argument("--size-mb", type=int, default=2048)
     ap.add_argument("--seconds", type=float, default=15.0)
     ap.add_argument("--steady-gb", type=float, default=20.0, help="steadywrite size (GiB)")
+    ap.add_argument("--sustain-gb", type=float, default=0.0,
+                    help="sustainwrite size (GiB); 0 = off")
     ap.add_argument("--keep", action="store_true", help="keep the test file")
     ap.add_argument("--force", action="store_true")
     a = ap.parse_args()
