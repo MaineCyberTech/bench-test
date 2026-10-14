@@ -214,18 +214,15 @@ jobs:
           subject-path: dist/bench-live-*.iso.part.*
 
       - name: Attach to release
+        # MEM-1 (2026-10-14): the previous action buffered each ~1.9 GiB part in memory
+        # (RSS ~4 GiB on the 4 GiB lab guest) and the upload hung the runner on testnuc;
+        # uploads now stream from disk via the release API with curl (flat memory use).
         if: ${{ inputs.upload_release == '' || inputs.upload_release }}
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
-        with:
-          tag_name: iso-${{ inputs.gpu || 'nvidia-legacy' }}-${{ github.run_number }}
-          name: "ISO ${{ inputs.gpu || 'nvidia-legacy' }} v${{ steps.ver.outputs.version }} #${{ github.run_number }} (${{ steps.ver.outputs.sha7 }})"
-          files: |
-            dist/bench-live-${{ inputs.gpu || 'nvidia-legacy' }}.iso.part.*
-            dist/SHA256SUMS
-            dist/README-ASSEMBLE.txt
-            dist/bench-version.txt
-          make_latest: false
-          body: |
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REL_TAG: iso-${{ inputs.gpu || 'nvidia-legacy' }}-${{ github.run_number }}
+          REL_NAME: "ISO ${{ inputs.gpu || 'nvidia-legacy' }} v${{ steps.ver.outputs.version }} #${{ github.run_number }} (${{ steps.ver.outputs.sha7 }})"
+          REL_BODY: |
             bench-test **v${{ steps.ver.outputs.version }}** live ISO — self-hosted build of the `${{ inputs.gpu || 'nvidia-legacy' }}` variant (run ${{ github.run_number }}, ${{ inputs.compression || 'zstd' }} squashfs).
             - **Version:** `${{ steps.ver.outputs.version }}` (VERSION)
             - **Commit:** `${{ steps.ver.outputs.sha }}`
@@ -233,5 +230,45 @@ jobs:
             - **Built:** ${{ steps.ver.outputs.date }} (UTC)
             The tag's run number alone does **not** map to a commit - use the commit above (also in `bench-version.txt`) to tie this build to a source revision.
             Assets are <2 GiB parts (GitHub's release asset cap):
-            `cat bench-live-${{ inputs.gpu }}.iso.part.* > bench-live-${{ inputs.gpu }}.iso && sha256sum -c SHA256SUMS`
-            then flash with `sudo dd if=bench-live-${{ inputs.gpu }}.iso of=/dev/sdX bs=4M conv=fsync status=progress`.
+            `cat bench-live-${{ inputs.gpu || 'nvidia-legacy' }}.iso.part.* > bench-live-${{ inputs.gpu || 'nvidia-legacy' }}.iso && sha256sum -c SHA256SUMS`
+            then flash with `sudo dd if=bench-live-${{ inputs.gpu || 'nvidia-legacy' }}.iso of=/dev/sdX bs=4M conv=fsync status=progress`.
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          # Reuse the release when a re-run already created it (idempotent).
+          rel_json="$(curl -sf -H "Authorization: Bearer $GH_TOKEN" "$api/releases/tags/$REL_TAG" || true)"
+          if [ -z "$rel_json" ]; then
+            payload="$(python3 -c 'import json, os, sys; print(json.dumps({"tag_name": sys.argv[1], "name": sys.argv[2], "make_latest": "false", "body": os.environ.get("REL_BODY", "")}))' "$REL_TAG" "$REL_NAME")"
+            rel_json="$(printf '%s' "$payload" | curl -sf -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/json" \
+              --data @- "$api/releases")"
+          fi
+          rel_id="$(printf '%s' "$rel_json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["id"])')"
+          upload_url="$(printf '%s' "$rel_json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["upload_url"].split("{")[0])')"
+          echo "release $REL_TAG -> id=$rel_id"
+          # Drop stale assets from a previous attempt so re-uploads cannot conflict.
+          curl -sf -H "Authorization: Bearer $GH_TOKEN" "$api/releases/$rel_id/assets" 2>/dev/null | \
+            python3 -c 'import json, sys
+          try:
+              for a in json.load(sys.stdin):
+                  print(a["id"])
+          except Exception:
+              pass' | while read -r aid; do
+              curl -sf -X DELETE -H "Authorization: Bearer $GH_TOKEN" "$api/releases/assets/$aid" >/dev/null || true
+            done
+          for f in dist/bench-live-*.iso.part.* dist/SHA256SUMS dist/README-ASSEMBLE.txt dist/bench-version.txt; do
+            [ -f "$f" ] || { echo "missing asset: $f" >&2; exit 1; }
+            name="$(basename "$f")"
+            echo "uploading $name ($(du -h "$f" | cut -f1))"
+            curl -sf --retry 3 --retry-delay 15 -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary @"$f" \
+              "$upload_url?name=$name" >/dev/null
+          done
+          if [ "$(printf '%s' "$rel_json" | python3 -c 'import json, sys; print(str(json.load(sys.stdin).get("draft", False)).lower())')" = "true" ]; then
+            curl -sf -X PATCH -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/json" \
+              --data '{"draft": false}' "$api/releases/$rel_id" >/dev/null
+            echo "published draft release $REL_TAG"
+          fi
+          echo "attached assets to $REL_TAG"
