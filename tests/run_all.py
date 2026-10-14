@@ -4,9 +4,10 @@
     python tests/run_all.py
 
 Covers the control-plane API, the reporting client, preset parity across the
-GUI/TUI/web, the dashboard phase-table logic, and the web UI's structural
-accessibility invariants. Each module starts its own in-process benchd on an
-ephemeral port, so nothing external is needed.
+GUI/TUI/web, the dashboard phase-table logic, the web UI's structural
+accessibility invariants, and control-plane observability (structured logs,
+request ids, /health vs /ready, /metrics). Each module starts its own
+in-process benchd on an ephemeral port, so nothing external is needed.
 """
 import os
 import sys
@@ -27,10 +28,12 @@ import test_sbom  # noqa: E402
 import test_a11y  # noqa: E402
 import test_lifecycle  # noqa: E402
 import test_hardening  # noqa: E402
+import test_observability  # noqa: E402
 
 MODULES = [test_control_plane, test_reporting, test_import, test_update,
            test_presets, test_dashboards, test_soak, test_version, test_bootstrap,
-           test_packaging, test_sbom, test_a11y, test_lifecycle, test_hardening]
+           test_packaging, test_sbom, test_a11y, test_lifecycle, test_hardening,
+           test_observability]
 
 
 def main():
