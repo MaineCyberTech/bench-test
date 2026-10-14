@@ -1,0 +1,23 @@
+# Base runtime dependencies for bench-test (the battery runner).
+#
+# These mirror what the toolkit installs at run time and MUST stay in sync with:
+#   bench/bootstrap.py  - BASE_PACKAGES and packages_for() (the platform extras)
+#   bench-gui.cmd / bench-tui.cmd / live/ci-build.sh / README.md
+#
+# How they are installed: bench/bootstrap.py provisions a per-user interpreter
+# and virtualenv and pip-installs this set into it on first run (a repo .venv or
+# $BENCH_REPO takes precedence). The dashboards/agent themselves are stdlib-only
+# and need none of these; only a *battery* does. See docs/DEPENDENCIES.md.
+#
+# bootstrap.py installs these UNPINNED (bare names, no version specifier), so no
+# version is invented here. Pin/hash hardening is tracked separately.
+#
+# --- base runtime (always installed by bootstrap.ensure_env) ---
+numpy
+psutil
+cryptography
+
+# --- platform extra ---
+# CPython on Windows ships no _curses; the TUI dashboard needs this. bootstrap
+# adds it when os.name == "nt" (bootstrap.packages_for).
+windows-curses ; sys_platform == "win32"
