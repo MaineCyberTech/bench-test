@@ -103,9 +103,10 @@ def run():
     with redirect_stderr(io.StringIO()):
         ds = benchd.Store(dup)
     c.check("a legacy database with duplicate phases still starts", ds is not None, "")
-    c.check("no unique phase index is built while duplicates exist",
+    c.check("legacy duplicate phases are collapsed and the unique index is built",
             ds.one("SELECT name FROM sqlite_master WHERE type='index' "
-                   "AND name='idx_phases_run_seq'") is None, "")
+                   "AND name='idx_phases_run_seq'") is not None
+            and ds.one("SELECT COUNT(*) c FROM phases WHERE run_id='r' AND seq=1")["c"] == 1, "")
     ds.conn.close()
 
     # ---- PRIV-P2-005 + DATA-P2-004 over the real API ----
