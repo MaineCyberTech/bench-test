@@ -1,2 +1,0 @@
-fan check: ok (temp 32.0 -> 63.0 °C, fan 27.0 -> 55.0 %, rpm max 2322.0)
-RESULT_JSON:{"cmd": "check", "seconds": 90, "vendor": "nvidia", "temp_start": 32.0, "temp_max": 63.0, "fan_start_pct": 27.0, "fan_max_pct": 55.0, "fan_max_rpm": 2322.0, "verdict": "ok"}

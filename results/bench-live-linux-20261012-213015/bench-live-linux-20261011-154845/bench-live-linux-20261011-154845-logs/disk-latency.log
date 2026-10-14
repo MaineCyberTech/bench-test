@@ -1,2 +1,0 @@
-disk 4K latency 312706 IOPS: p50=2 p90=2 p99=3 p99.9=11 us
-RESULT_JSON:{"phase": "latency", "ops": 300000, "iops": 312706.0, "us_p50": 2.3, "us_p90": 2.4, "us_p99": 2.9, "us_p999": 11.0}

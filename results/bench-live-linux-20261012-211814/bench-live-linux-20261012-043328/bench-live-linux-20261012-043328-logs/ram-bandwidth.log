@@ -1,5 +1,0 @@
-ram bandwidth copy   17 GB/s
-ram bandwidth scale  11 GB/s
-ram bandwidth add    13 GB/s
-ram bandwidth triad  10 GB/s
-RESULT_JSON:{"phase": "bandwidth", "elements": 134217728, "gib_per_array": 1.0, "results": {"copy": 17.4, "scale": 11.4, "add": 12.7, "triad": 10.4}}

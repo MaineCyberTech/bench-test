@@ -1,2 +1,0 @@
-compress zlib c/d=43/1502  lzma c/d=6/6 MB/s
-RESULT_JSON:{"phase": "compress", "zlib_compress_mbps": 43.0, "zlib_decompress_mbps": 1502.0, "lzma_compress_mbps": 6.0, "lzma_decompress_mbps": 6.0}

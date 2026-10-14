@@ -1,3 +1,0 @@
-membw fp32  add=146 GB/s reduce=153 GB/s
-membw bf16  add=146 GB/s reduce=152 GB/s
-RESULT_JSON:{"phase": "membw", "results": {"fp32": {"add_gbps": 146.0, "reduce_gbps": 153.0}, "bf16": {"add_gbps": 146.0, "reduce_gbps": 152.0}}}

@@ -1,2 +1,0 @@
-disk randmix   12910 IOPS, 52.9 MB/s (r=2457907 w=1054079)
-RESULT_JSON:{"phase": "randmix", "seconds": 272.0, "ops": 3511986, "reads": 2457907, "writes": 1054079, "iops": 12910.0, "mbps": 52.9}

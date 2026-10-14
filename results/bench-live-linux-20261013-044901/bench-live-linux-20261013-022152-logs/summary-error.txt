@@ -1,2 +1,0 @@
-Run-LinuxBench.sh: summary step exited 1
-results dir: /mnt/benchdata/results

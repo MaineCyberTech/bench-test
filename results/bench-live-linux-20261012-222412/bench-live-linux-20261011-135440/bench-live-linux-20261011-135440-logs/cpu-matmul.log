@@ -1,3 +1,0 @@
-matmul fp32 N=4096 iters=1 GFLOPS=3.3
-matmul fp64 N=4096 iters=1 GFLOPS=2.8
-RESULT_JSON:{"phase": "matmul", "n": 4096, "results": {"fp32": {"iters": 1, "seconds": 42.13, "gflops": 3.3}, "fp64": {"iters": 1, "seconds": 49.15, "gflops": 2.8}}}

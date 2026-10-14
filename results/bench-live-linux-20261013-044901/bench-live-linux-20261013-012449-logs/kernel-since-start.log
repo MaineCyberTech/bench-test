@@ -1,4 +1,0 @@
-Oct 13 01:24:59 bench-live kernel: furmark[66629]: segfault at 0 ip 00007fe063a33efa sp 00007ffda9abeb38 error 4 in libc.so.6[baefa,7fe06399d000+17b000] likely on CPU 4 (core 0, socket 0)
-Oct 13 01:24:59 bench-live kernel: Code: f3 0f 1e fa 66 0f ef c0 66 0f ef c9 66 0f ef d2 66 0f ef db 48 89 f8 48 89 f9 48 81 e1 ff 0f 00 00 48 81 f9 cf 0f 00 00 77 66 <f3> 0f 6f 20 66 0f 74 e0 66 0f d7 d4 85 d2 74 04 0f bc c2 c3 48 83
-Oct 13 01:24:59 bench-live kernel: audit: type=1701 audit(1791854699.425:134): auid=4294967295 uid=0 gid=0 ses=4294967295 pid=66629 comm="furmark" exe="/mnt/benchdata/tools/FurMark_linux64/furmark" sig=11 res=1
-Oct 13 01:24:59 bench-live kernel: audit: type=1701 audit(1791854699.559:135): auid=4294967295 uid=0 gid=0 ses=4294967295 pid=66628 comm="timeout" exe="/usr/bin/timeout" sig=11 res=1

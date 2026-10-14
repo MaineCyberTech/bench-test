@@ -1,2 +1,0 @@
-soak 60.7s matmuls=51 convs=51 matmul_TFLOPS=1.8
-RESULT_JSON:{"phase": "soak", "seconds": 60.7, "matmuls": 51, "convs": 51, "matmul_tflops": 1.8, "peak_vram_gib": 1.0, "telemetry": {"samples": 29, "temp_c": [62.0, 66.6, 70.0], "fan_pct": [35.0, 37.1, 39.0], "power_w": [151.2, 153.56], "sm_mhz": [1180]}}

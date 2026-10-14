@@ -1,2 +1,0 @@
-disk seqwrite 73 MB/s (28.1 s for 2048 MiB)
-RESULT_JSON:{"phase": "seqwrite", "size_mb": 2048, "seconds": 28.15, "mbps": 72.8}

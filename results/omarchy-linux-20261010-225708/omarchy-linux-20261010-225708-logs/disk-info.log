@@ -1,2 +1,0 @@
-disk path=/var/tmp total=929.5GiB free=822.1GiB
-RESULT_JSON:{"phase": "info", "path": "/var/tmp", "total_gib": 929.5, "free_gib": 822.1}
