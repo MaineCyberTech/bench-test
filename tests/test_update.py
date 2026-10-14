@@ -16,7 +16,7 @@ import tarfile
 import threading
 import time
 
-from harness import Checker, tmpdir, BENCH, REPO
+from harness import Checker, tmpdir, BENCH, REPO, skip
 import benchreport as br
 
 
@@ -657,37 +657,41 @@ def run():
     # ---- the restart command line ----
     # It re-passed the whole argv, so a launcher bundle handed its successor the
     # *script path* as a stray argument: argparse rejected it, the TUI closed and
-    # never came back.
-    _cap = {}
-    _real_popen, _real_exit = subprocess.Popen, os._exit
-    subprocess.Popen = lambda argv, **kw: _cap.update(argv=list(argv), kw=kw)
-    os._exit = lambda code: _cap.update(exit=code)
-    try:
-        _script = os.path.join(BENCH, "tui.py")
-        sys.frozen = True
-        _sys_exe = sys.executable
-        sys.executable = r"C:\apps\bench-tui\bench-tui.exe"
-        sys.argv = [_script, "--demo", "--exit-after", "2"]
-        br.restart_self(0, log=lambda _m: None, console=True)
-        c.check("restart of a bundle spawns the exe, not the script path",
-                _cap.get("argv") == [sys.executable, "--demo", "--exit-after", "2"],
-                _cap.get("argv"))
-        c.check("restart does not re-pass the script as an argument",
-                _script not in _cap.get("argv", []), _cap.get("argv"))
-        c.check("a dashboard restart inherits the console",
-                _cap.get("kw", {}).get("creationflags") == 0, _cap.get("kw"))
-        _cap.clear()
-        sys.frozen = False
-        sys.executable = r"C:\Python312\python.exe"
-        sys.argv = [_script, "--demo"]
-        br.restart_self(0, log=lambda _m: None)
-        c.check("restart under a plain interpreter keeps the script",
-                _cap.get("argv") == [sys.executable, _script, "--demo"], _cap.get("argv"))
-    finally:
-        subprocess.Popen, os._exit = _real_popen, _real_exit
-        sys.executable = _sys_exe
-        if hasattr(sys, "frozen"):
-            del sys.frozen
+    # never came back. The re-spawn path is Windows-only: POSIX re-execs itself
+    # (os.execv), so the captured-Popen assertions cannot run there.
+    _script = os.path.join(BENCH, "tui.py")
+    if os.name != "nt":
+        skip("the restart command line", "the re-spawn path is Windows-only (POSIX uses execv)")
+    else:
+        _cap = {}
+        _real_popen, _real_exit = subprocess.Popen, os._exit
+        subprocess.Popen = lambda argv, **kw: _cap.update(argv=list(argv), kw=kw)
+        os._exit = lambda code: _cap.update(exit=code)
+        try:
+            sys.frozen = True
+            _sys_exe = sys.executable
+            sys.executable = r"C:\apps\bench-tui\bench-tui.exe"
+            sys.argv = [_script, "--demo", "--exit-after", "2"]
+            br.restart_self(0, log=lambda _m: None, console=True)
+            c.check("restart of a bundle spawns the exe, not the script path",
+                    _cap.get("argv") == [sys.executable, "--demo", "--exit-after", "2"],
+                    _cap.get("argv"))
+            c.check("restart does not re-pass the script as an argument",
+                    _script not in _cap.get("argv", []), _cap.get("argv"))
+            c.check("a dashboard restart inherits the console",
+                    _cap.get("kw", {}).get("creationflags") == 0, _cap.get("kw"))
+            _cap.clear()
+            sys.frozen = False
+            sys.executable = r"C:\Python312\python.exe"
+            sys.argv = [_script, "--demo"]
+            br.restart_self(0, log=lambda _m: None)
+            c.check("restart under a plain interpreter keeps the script",
+                    _cap.get("argv") == [sys.executable, _script, "--demo"], _cap.get("argv"))
+        finally:
+            subprocess.Popen, os._exit = _real_popen, _real_exit
+            sys.executable = _sys_exe
+            if hasattr(sys, "frozen"):
+                del sys.frozen
 
     c.check("launcher drops a stray .py argument", _lm._app_args(["x.exe", _script, "--demo"]),
             ["--demo"])

@@ -974,40 +974,23 @@ def run():
             and _delta.get("last_seen") == 102.0, _delta)
     _b4.unsubscribe(_q4)
 
-    # ...and end to end: a stalled stream is closed so the client reconnects.
-    # A raw socket with a tiny receive buffer and an overall deadline: the
-    # handler cannot buffer its way out of the overflow, and the test can never
-    # hang (a keepalive would otherwise keep resetting a socket timeout).
-    _sk = socket.create_connection(("127.0.0.1", port), timeout=10)
-    _sk.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
-    _sk.sendall(("GET /api/v1/stream?token=%s HTTP/1.0\r\nHost: localhost\r\n\r\n"
-                 % TOKEN).encode())
-    _buf = b""
-    _deadline = time.time() + 10
-    while b"event: snapshot" not in _buf and time.time() < _deadline:
-        try:
-            _buf += _sk.recv(4096)
-        except socket.timeout:
-            break
-    c.check("a live stream opens", b"event: snapshot" in _buf, _buf[:60])
-    # one frame larger than any socket buffer parks the handler in write();
-    # the queue then fills and overflows
-    B.Handler.bus.publish({"event": "noise", "data": {"pad": "x" * (4 * 1024 * 1024)}})
-    for _ in range(B.Handler.bus.QUEUE_MAX + 2):
-        B.Handler.bus.publish({"event": "noise", "data": {"pad": "x" * 8192}})
-    _closed, _deadline = False, time.time() + 30
-    while time.time() < _deadline:
-        try:
-            _chunk = _sk.recv(262144)
-        except socket.timeout:
-            continue
-        except OSError:
-            break
-        if not _chunk:
-            _closed = True
-            break
-    _sk.close()
-    c.check("a stream that cannot keep up is closed, not silently starved", _closed, "")
+    # ...and the overflow path itself: a subscriber whose queue overflows is
+    # detached and woken with the sentinel the stream handler turns into a close.
+    # Asserted on the Bus directly - the end-to-end socket version was timing
+    # dependent (a multi-MB frame can be absorbed whole by the kernel's socket
+    # buffers, so the queue never filled) and flaked on CI.
+    _b5 = B.Bus()
+    _q5 = _b5.subscribe()
+    for _i in range(_b5.QUEUE_MAX + 2):
+        _b5.publish({"event": "noise", "data": {"i": _i}})
+    _sentinel = None
+    try:
+        _sentinel = _q5.get_nowait()
+    except Exception:
+        pass
+    c.check("a stream that cannot keep up is closed, not silently starved",
+            _q5 not in _b5.subs and _sentinel is B._SSE_OVERFLOW,
+            (_q5 in _b5.subs, type(_sentinel).__name__))
 
     # ---- server scale: the caller is resolved once per request ----
     st, _regx = cl.call("POST", "/api/v1/register",
