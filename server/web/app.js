@@ -97,12 +97,15 @@ const FOCUS_MINI = [
 
 let SHOW_OFFLINE = localStorage.getItem("benchd_show_offline") === "1";
 let SORT = { key: "started", dir: -1 };
+// PERF-P1-002: the list view only needs a small page, the heavy views (run rows,
+// trends) are only fetched while their tab is on screen, polling pauses while the
+// tab is hidden, and repeated failures back off exponentially up to a cap.
+const HIST_LIMIT = 50;
+const REFRESH_MS = 1200;
+const POLL_MS = 5000;
+const BACKOFF_MAX_MS = 60000;
 
-let TOKEN = new URLSearchParams(location.search).get("token") || localStorage.getItem("benchd_token") || "";
-// the token is a bearer secret: drop it from the address bar once it is in memory
-if (new URLSearchParams(location.search).has("token")) {
-  history.replaceState(null, "", location.pathname + location.hash);
-}
+let TOKEN = readToken();
 let STATE = { runners: [], active: [], recent: [], metrics: [] };
 const TEL_MAX = 4000;       // rows the server returns for one telemetry read
 let TEL = {};               // run_id -> server-downsampled base rows
@@ -116,6 +119,13 @@ let SCHEDULES = [];
 let SKEW = 0;               // server_time - browser clock, so elapsed/ago match the server
 let DETAIL_REDRAW = null;   // redraw hook for the open run-detail modal's chart
 let es = null;
+let _pollPaused = document.hidden;  // pause polling while the tab is hidden
+let _refreshPending = false;        // a fetch was skipped while hidden
+let _failCount = 0;                 // consecutive refresh failures (backoff)
+const _etags = {};                  // path -> last ETag (conditional GET)
+const _histCache = {};              // history cache key -> { ver }
+const _trendsCache = {};            // trends cache key -> { ver }
+let _lastFocus = null;              // element focused before a modal opened
 
 /* ------------------------------------------------------------------ dom -- */
 const $ = (s, r = document) => r.querySelector(s);
@@ -166,18 +176,116 @@ function toast(msg, kind) {
   t.textContent = msg;
   clearTimeout(window._toast); window._toast = setTimeout(() => { t.className = "toast"; }, 4000);
 }
+// Push a short message to the visually-hidden aria-live region so assistive tech
+// hears the live SSE updates it cannot otherwise see.
+function announce(msg) {
+  const el = $("#liveRegion");
+  if (!el) return;
+  el.textContent = "";                       // reset so a repeated message re-announces
+  setTimeout(() => { el.textContent = msg; }, 20);
+}
+
+/* ------------------------------------------------- completion notify --- */
+/* USE-P3-002: a long run can finish while the operator is looking at another
+   tab, so announce it. Use the Notification API only once the operator has
+   granted permission (the request is fired from the "notify" button, never on
+   load), and always flash the tab title as a no-permission fallback. */
+const BASE_TITLE = document.title;
+let _titleTimer = null;
+function flashTitle(msg) {
+  if (_titleTimer) { clearInterval(_titleTimer); _titleTimer = null; }
+  document.title = msg;
+  let n = 0;
+  _titleTimer = setInterval(() => {
+    n++;
+    document.title = (n % 2) ? BASE_TITLE : msg;
+    if (n >= 8) { clearInterval(_titleTimer); _titleTimer = null; document.title = BASE_TITLE; }
+  }, 1200);
+}
+function notifyDone(r) {
+  const body = (r.host || "runner") + " · " + (r.label || "run") + " · "
+    + (r.status || "finished") + " · " + runDur(r);
+  if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+    try { new Notification("bench-test run finished", { body, tag: "benchd-run-" + r.id }); }
+    catch (e) { /* some browsers require a service worker; the title flash still fires */ }
+  }
+  flashTitle("✓ " + body);
+}
+// Explicit user action only: this is the sole caller of requestPermission.
+function enableNotifications() {
+  if (typeof Notification === "undefined") return toast("this browser has no notification support", "err");
+  if (Notification.permission === "granted") return toast("completion notifications are on");
+  if (Notification.permission === "denied") return toast("notifications are blocked in the browser", "err");
+  Notification.requestPermission().then((p) => {
+    toast(p === "granted" ? "completion notifications on" : "notifications not enabled");
+  }).catch(() => {});
+}
+// Fire once when a run that was active on the previous refresh is gone. The first
+// refresh only seeds the set, so runs that finished before the page loaded stay quiet.
+let _activeSeen = null;
+function checkCompletions() {
+  const now = new Set(STATE.active.map((a) => a.id));
+  if (_activeSeen === null) { _activeSeen = now; return; }
+  for (const id of _activeSeen) {
+    if (now.has(id)) continue;
+    const r = STATE.recent.find((x) => x.id === id);
+    if (r) notifyDone(r);
+  }
+  _activeSeen = now;
+}
 
 /* ------------------------------------------------------------------ api -- */
-async function api(path, method = "GET", body) {
-  const opt = { method, headers: { Authorization: "Bearer " + TOKEN } };
-  if (body) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
-  const r = await fetch("/api/v1" + path, opt);
+async function api(path, method = "GET", body, opt = {}) {
+  const o = { method, headers: { Authorization: "Bearer " + TOKEN } };
+  if (body) { o.headers["Content-Type"] = "application/json"; o.body = JSON.stringify(body); }
+  // Conditional GET: the server may answer 304 when nothing changed. benchd sends
+  // no ETag yet, so the cheap state version probe below is the effective path.
+  if (method === "GET" && opt.conditional && _etags[path]) o.headers["If-None-Match"] = _etags[path];
+  const r = await fetch("/api/v1" + path, o);
   if (r.status === 401) { askToken(); throw new Error("unauthorized"); }
+  if (r.status === 304) return { __notModified: true };
   if (!r.ok) throw new Error("HTTP " + r.status);
+  const et = r.headers.get("ETag");
+  if (et) _etags[path] = et;
   return r.json();
 }
 
 /* -------------------------------------------------------------- token --- */
+/* PRIV-P3-001 / SECRET-P3-001: the operator token is a secret, so it must not
+   linger where it can leak. Read a ?token= from the URL exactly once and strip it
+   from the address bar (history/referrer leak), default to sessionStorage (cleared
+   when the tab closes), and only persist to localStorage when the operator ticks
+   "remember on this device". */
+const REMEMBER_KEY = "benchd_remember";
+function rememberOn() {
+  try { return localStorage.getItem(REMEMBER_KEY) === "1"; } catch (e) { return false; }
+}
+function readToken() {
+  const fromUrl = new URLSearchParams(location.search).get("token");
+  if (fromUrl) {
+    try { history.replaceState(null, "", location.pathname + location.hash); } catch (e) { /* ignore */ }
+    // keep it for this session only, unless the operator already opted into
+    // remembering on this device
+    try {
+      if (rememberOn()) localStorage.setItem("benchd_token", fromUrl);
+      else sessionStorage.setItem("benchd_token", fromUrl);
+    } catch (e) { /* ignore */ }
+    return fromUrl;
+  }
+  try {
+    return sessionStorage.getItem("benchd_token") || localStorage.getItem("benchd_token") || "";
+  } catch (e) { return ""; }
+}
+function storeToken() {
+  try {
+    if (rememberOn()) {
+      localStorage.setItem("benchd_token", TOKEN);
+    } else {
+      localStorage.removeItem("benchd_token");
+      sessionStorage.setItem("benchd_token", TOKEN);
+    }
+  } catch (e) { /* storage may be blocked; the token still works for this page */ }
+}
 function askToken() {
   // a 401 storm must not rebuild the modal while the operator is typing in it
   if (modalOpen()) return;
@@ -186,11 +294,17 @@ function askToken() {
     <div class="formrow"><label for="tokInput">token</label>
       <input id="tokInput" style="flex:1" placeholder="paste token"
       value="${esc(TOKEN)}"/></div>
+    <div class="formrow"><label class="chk"><input type="checkbox" id="tokRemember"
+      ${rememberOn() ? "checked" : ""}/> remember on this device</label></div>
     <div class="formrow" style="justify-content:flex-end">
       <button class="accent" id="tokSave">save</button></div>`);
   $("#tokSave").onclick = () => {
     TOKEN = $("#tokInput").value.trim();
-    localStorage.setItem("benchd_token", TOKEN);
+    try {
+      if ($("#tokRemember").checked) localStorage.setItem(REMEMBER_KEY, "1");
+      else localStorage.removeItem(REMEMBER_KEY);
+    } catch (e) { /* ignore */ }
+    storeToken();
     closeModal(); connect(); refresh();
   };
 }
@@ -207,8 +321,12 @@ function connect() {
   };
   es.onerror = () => setConn(false);
   es.addEventListener("snapshot", () => { setConn(true); refresh(); });
-  es.addEventListener("runner", () => queueRefresh());
-  es.addEventListener("run", () => queueRefresh());
+  es.addEventListener("runner", () => { announce("runner update"); queueRefresh(); });
+  es.addEventListener("run", (e) => {
+    try { const d = JSON.parse(e.data); announce(d && d.deleted ? "run deleted" : "run update"); }
+    catch (err) { announce("run update"); }
+    queueRefresh();
+  });
   es.addEventListener("phase", (e) => onPhase(JSON.parse(e.data)));
   es.addEventListener("telemetry", (e) => onTelemetry(JSON.parse(e.data)));
   es.addEventListener("command", () => queueRefresh());
@@ -255,15 +373,30 @@ function _restoreScroll(st) {
   requestAnimationFrame(apply);  // again after the browser re-lays out
 }
 let _refreshTimer = null;
+// exponential, capped retry delay after repeated failures
+function backoffDelay(base) {
+  return _failCount ? Math.min(BACKOFF_MAX_MS, base * Math.pow(2, _failCount)) : base;
+}
 function queueRefresh(delay) {
   if (_refreshTimer) return;
-  _refreshTimer = setTimeout(() => { _refreshTimer = null; refresh(); }, delay || 1200);
+  const d = delay != null ? delay : backoffDelay(REFRESH_MS);
+  _refreshTimer = setTimeout(() => { _refreshTimer = null; refresh(); }, d);
 }
-async function refresh() {
+// Cheap probe of everything the heavy list/trends views read: if it is unchanged
+// there is nothing to refetch, so the request is skipped entirely.
+function stateVersion() {
+  const recent = STATE.recent.map((r) => r.id + ":" + (r.status || "") + ":" + (r.ended || 0)).join(",");
+  const active = STATE.active.map((a) => a.id + ":" + ((a.phases || []).length)).join(",");
+  return recent + "|" + active;
+}
+async function refresh(force) {
+  if (_pollPaused && !force) { _refreshPending = true; return; }
   try {
     const s = await api("/state");
     STATE = s;
     if (s.server_time != null) SKEW = s.server_time - Date.now() / 1000;
+    _failCount = 0;
+    checkCompletions();
     HOSTS = (s.hosts && s.hosts.length) ? s.hosts
       : [...new Set(STATE.recent.map((r) => r.host).filter(Boolean))].sort();
     for (const a of STATE.active) {
@@ -282,7 +415,10 @@ async function refresh() {
     const st = _scrollState();
     renderAll();
     _restoreScroll(st);
-  } catch (e) { /* offline */ }
+  } catch (e) {
+    _failCount++;                       // offline: retry later, backing off each time
+    queueRefresh(backoffDelay(POLL_MS));
+  }
 }
 
 function ensureTel(id) {
@@ -345,6 +481,7 @@ function onTelemetry(d) {
 
 function onPhase(p) {
   const card = document.querySelector(`[data-active="${p.run_id}"]`);
+  if (p && p.grp) announce("phase " + p.grp + (p.label ? ": " + p.label : ""));
   if (card) queueRefresh(300);
 }
 
@@ -355,14 +492,15 @@ function paneActive(name) {
 }
 function renderAll() {
   renderTop(); renderRunners(); renderActive();
-  // only the visible pane is rendered (and fetched) on a refresh; clicking a tab
-  // renders its pane (see the tab handler)
-  if (paneActive("history")) renderHistory();
-  if (paneActive("trends")) renderTrends();
-  if (paneActive("compare")) renderCompareOptions();
-  if (paneActive("fleet")) renderFleet();
-  if (paneActive("schedules")) renderSchedules();
-  renderFocus();
+  renderCompareOptions(); renderSchedules(); renderFocus();
+  // PERF-P1-002: the heavy views (a page of run rows, an unbounded trends scan)
+  // are only fetched while their tab is actually on screen.
+  const hp = $("#tab-history");
+  if (hp && hp.classList.contains("active")) renderHistory();
+  const tp = $("#tab-trends");
+  if (tp && tp.classList.contains("active")) renderTrends();
+  const fp = $("#tab-fleet");
+  if (fp && fp.classList.contains("active")) renderFleet();
 }
 
 function machineKey(r) { return r.machine_id || ("name:" + (r.name || "")); }
@@ -463,9 +601,10 @@ function runnerCard(r) {
   ].join("");
   const dev = [caps.gpu || "no GPU", caps.cpu, caps.ram_gib ? caps.ram_gib + " GiB" : "",
                caps.driver ? "driver " + caps.driver : ""].filter(Boolean).join(" · ");
-  return `<div class="runner ${r.online ? "" : "off"} ${r.status === "busy" ? "busy" : ""}" data-runner="${esc(r.id)}" tabindex="0">
-      <div class="rhead">
-        <span class="statusp ${cls}" role="img" aria-label="status: ${cls}"></span>
+  return `<div class="runner ${r.online ? "" : "off"} ${r.status === "busy" ? "busy" : ""}" data-runner="${esc(r.id)}">
+      <div class="rhead" tabindex="0" role="button"
+           aria-label="Open live view for ${esc(r.label || r.name)}">
+        <span class="statusp ${cls}"></span>
         <div style="flex:1;min-width:0"><div class="rname">${esc(r.label || r.name)}</div></div>
       </div>
       <div class="rmeta row">${badges}</div>
@@ -927,10 +1066,16 @@ function sortArrow(key) {
   if (SORT.key !== key) return "";
   return `<span class="arw">${SORT.dir < 0 ? "▼" : "▲"}</span>`;
 }
-async function renderHistory() {
+async function renderHistory(force) {
+  const host = $("#histHost").value;
+  const key = host + "|" + ($("#histSearch").value || "") + "|" + $("#histStatus").value
+    + "|" + SORT.key + SORT.dir;
+  const ver = stateVersion();
+  if (!force && _histCache[key] && _histCache[key].ver === ver) return;
   try {
-    const host = $("#histHost").value;
-    const d = await api("/runs?limit=300" + (host ? "&host=" + encodeURIComponent(host) : ""));
+    const d = await api("/runs?limit=" + HIST_LIMIT + (host ? "&host=" + encodeURIComponent(host) : ""),
+                        "GET", null, { conditional: true });
+    if (d && d.__notModified) return;
     const q = ($("#histSearch").value || "").toLowerCase();
     const st = $("#histStatus").value;
     let rows = d.runs.filter((r) => !q || JSON.stringify(r).toLowerCase().includes(q));
@@ -949,8 +1094,15 @@ async function renderHistory() {
       if (typeof x === "string" || typeof y === "string") return String(x).localeCompare(String(y)) * SORT.dir;
       return (x - y) * SORT.dir;
     });
-    $("#histCount").textContent = `${rows.length} run${rows.length === 1 ? "" : "s"}`
-      + (d.total > d.runs.length ? ` · latest ${d.runs.length} of ${d.total}` : "");
+    // PERF-P3-002: never hide the cap — show what was loaded against the server's
+    // total. SEARCH-P3-001: the search/status filter is client-side over this page
+    // only (the API has no query param), so say so instead of implying a full scan.
+    const loaded = d.runs.length;
+    const total = typeof d.total === "number" ? d.total : loaded;
+    let count = `showing ${rows.length} of ${total} run${total === 1 ? "" : "s"}`;
+    if (rows.length !== loaded) count += ` (filtered from ${loaded} on this page)`;
+    if (total > loaded) count += ` · newest ${loaded} loaded`;
+    $("#histCount").textContent = count;
     $$("#histTable th.sortable").forEach((th) => {
       th.innerHTML = th.textContent.replace(/[▲▼]\s*$/, "").trim() + sortArrow(th.dataset.sort);
       th.setAttribute("aria-sort", SORT.key === th.dataset.sort
@@ -989,6 +1141,7 @@ async function renderHistory() {
         <td class="num">${fmt(peak, 0)}</td></tr>`;
     }).join("") || `<tr><td colspan="11" class="empty">No matching runs.</td></tr>`;
     fillSelect("#histHost", HOSTS, "all hosts");
+    _histCache[key] = { ver };
   } catch (e) { /* ignore */ }
 }
 
@@ -998,7 +1151,7 @@ async function renderFleet() {
   try {
     const d = await api("/runs?limit=500");
     runs = d.runs || [];
-    total = d.total || runs.length;
+    total = typeof d.total === "number" ? d.total : runs.length;
   } catch (e) { return; }
   const done = runs.filter((r) => r.status !== "running");
   const byHost = {}, byGpu = {};
@@ -1035,8 +1188,11 @@ async function renderFleet() {
     }
     return seen || "—";
   };
+  // PERF-P3-002: the medians below come from a capped page of runs — show how many
+  // that is against the server total instead of implying it is all of history.
   $("#fleetCount").textContent = `${Object.keys(byHost).length} machines · ${done.length} finished runs`
-    + (total > runs.length ? ` · latest ${runs.length} of ${total}` : "")
+    + ` · showing ${runs.length} of ${total} runs`
+    + (total > runs.length ? ` (newest ${runs.length} loaded)` : "")
     + (STATE.server_git ? ` · control plane ${STATE.server_git}` : "");
   $("#fleetHosts tbody").innerHTML = Object.entries(byHost).sort().map(([h, rs]) => {
     const a = agg(rs), L = latest(rs), tk = tkState(rs);
@@ -1059,7 +1215,7 @@ async function renderFleet() {
 }
 
 /* ------------------------------------------------------------- trends --- */
-async function renderTrends() {
+async function renderTrends(force) {
   const msel = $("#trendMetric");
   if (!msel.options.length && STATE.metrics.length) {
     msel.innerHTML = STATE.metrics.map(([k, l]) => `<option value="${esc(k)}">${esc(l)}</option>`).join("");
@@ -1072,8 +1228,13 @@ async function renderTrends() {
   const m1 = msel.value, m2 = $("#trendMetric2").value;
   if (!m1) return;
   const metrics = [m1, m2].filter(Boolean);
+  const key = host + "|" + metrics.join(",");
+  const ver = stateVersion();
+  if (!force && _trendsCache[key] && _trendsCache[key].ver === ver) return;
   try {
-    const d = await api("/trends?host=" + encodeURIComponent(host) + metrics.map((m) => "&metric=" + encodeURIComponent(m)).join(""));
+    const d = await api("/trends?host=" + encodeURIComponent(host) + metrics.map((m) => "&metric=" + encodeURIComponent(m)).join(""),
+                        "GET", null, { conditional: true });
+    if (d && d.__notModified) return;
     const colors = ["#4c9aff", "#46c98d", "#e5b567"];
     const series = metrics.map((m, i) => ({
       name: labelFor(m), color: colors[i % colors.length],
@@ -1088,17 +1249,30 @@ async function renderTrends() {
       const extra = q.n ? ` · med ${fmt(q.p50, 1)} · p95 ${fmt(q.p95, 1)} · max ${fmt(q.max, 1)}` : "";
       return `<span><i class="sw" style="background:${s.color}"></i>${esc(s.name)} · ${s.points.length} pts${extra}</span>`;
     }).join("");
+    _trendsCache[key] = { ver };
   } catch (e) { /* ignore */ }
 }
 function labelFor(m) { const f = STATE.metrics.find((x) => x[0] === m); return f ? f[1] : m; }
 
 /* ------------------------------------------------------------ compare --- */
+let _cmpShown = false;
+function renderCompareEmpty() {
+  const el = $("#cmpResult");
+  if (!el) return;
+  const finished = STATE.recent.filter((r) => r.status !== "running");
+  el.innerHTML = `<div class="card empty">${finished.length < 2
+    ? "Not enough finished runs to compare — at least two are needed."
+    : "Choose two different runs and press “compare”."}</div>`;
+}
 async function renderCompareOptions() {
   let runs = STATE.recent;
   try { runs = (await api("/runs?limit=300")).runs; } catch (e) { /* offline fallback */ }
   const finished = runs.filter((r) => r.status !== "running");
   const a = $("#cmpA"), b = $("#cmpB");
   if (!a || !b) return;
+  const btn = $("#cmpRun");
+  if (btn) btn.disabled = finished.length < 2;   // nothing to compare with one run
+  if (!_cmpShown) renderCompareEmpty();          // keep the empty state in sync
   // keyed on the run ids, not the count: a new run replaces one past the limit of
   // /state (25) without changing the number of options
   const key = finished.map((r) => r.id).join(",");
@@ -1112,6 +1286,7 @@ async function renderCompareOptions() {
 async function runCompare() {
   const A = $("#cmpA").value, B = $("#cmpB").value;
   if (!A || !B) return;
+  if (A === B) { toast("pick two different runs to compare", "err"); return; }
   const [ra, rb] = await Promise.all([api("/runs/" + A), api("/runs/" + B)]);
   const keys = [["gpu_soak_tflops", "GPU soak (TFLOPS)", 1], ["cpu_soak_gflops", "CPU soak (GFLOPS)", 0],
     ["ram_soak_gbps", "RAM soak (GB/s)", 1], ["disk_seqwrite_mbps", "Disk seq write (MB/s)", 0],
@@ -1123,6 +1298,7 @@ async function runCompare() {
     return `<tr><td>${esc(label)}</td><td class="mono">${fmt(a, dec)}</td><td class="mono">${fmt(b, dec)}</td>
       <td class="mono delta ${cls}">${d == null ? "—" : (d > 0 ? "+" : "") + d.toFixed(1) + "%"}</td></tr>`;
   };
+  _cmpShown = true;
   $("#cmpResult").innerHTML = `
     <div class="card"><h3>${esc(ra.host)} · ${esc(ra.label || "")}</h3>
       <div class="muted">${ts(ra.started)} · ${esc(ra.gpu || "")}</div></div>
@@ -1143,6 +1319,17 @@ async function runCompare() {
  * opt.xTime    -> x is unix seconds (clock labels)
  * opt.xElapsed -> x is seconds into the run (m:ss labels)
  */
+/* Text alternative for a canvas chart: name, latest and range per series. */
+function chartAltText(series, opt) {
+  const parts = (series || []).filter((s) => s && s.points && s.points.length).map((s) => {
+    const ys = s.points.map((p) => p.y);
+    return s.name + ": last " + fmt(ys[ys.length - 1], 1)
+      + ", range " + fmt(Math.min.apply(null, ys), 1) + " to " + fmt(Math.max.apply(null, ys), 1);
+  });
+  const kind = opt && opt.xTime ? "trend" : "telemetry";
+  return parts.length ? kind + " chart. " + parts.join("; ") + "." : kind + " chart, no data yet.";
+}
+
 function drawChart(cv, series, opt = {}) {
   const dpr = window.devicePixelRatio || 1;
   const h = +(cv.dataset.baseH || (cv.dataset.baseH = cv.getAttribute("height") || 180));
@@ -1157,6 +1344,9 @@ function drawChart(cv, series, opt = {}) {
   const norm = !!opt.normalize;
   const compact = !!opt.compact;
   const use = (series || []).filter((s) => s && s.points && s.points.length >= 2);
+  // the canvas is unreadable to assistive tech: expose the same numbers as text
+  cv.setAttribute("role", "img");
+  cv.setAttribute("aria-label", chartAltText(series, opt));
   use.forEach((s) => {
     const ys = s.points.map((p) => p.y);
     s.min = Math.min.apply(null, ys);
@@ -1855,6 +2045,8 @@ function newSchedule() {
   };
 }
 async function deleteSchedule(id) {
+  const s = SCHEDULES.find((x) => x.id === id);
+  if (!confirm("Delete schedule “" + ((s && s.label) || id) + "”? This cannot be undone.")) return;
   try { await api("/schedules/" + id, "DELETE"); renderSchedules(); }
   catch (e) { toast("delete failed: " + e.message, "err"); }
 }
@@ -1955,7 +2147,12 @@ document.addEventListener("click", (e) => {
     return;
   }
   if (t.dataset.tab) {
-    $$("#tabs button").forEach((b) => b.classList.toggle("active", b === t));
+    $$("#tabs button").forEach((b) => {
+      const on = b === t;
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-selected", on ? "true" : "false");
+      b.setAttribute("tabindex", on ? "0" : "-1");
+    });
     $$(".tabpane").forEach((p) => p.classList.toggle("active", p.id === "tab-" + t.dataset.tab));
     if (t.dataset.tab === "history") renderHistory();
     if (t.dataset.tab === "trends") renderTrends();
@@ -1983,8 +2180,20 @@ document.addEventListener("click", (e) => {
 });
 
 /* keyboard activation for the click-only controls: sortable headers, history /
-   fleet rows, runner panels (Enter or Space) */
+   fleet rows, runner panels (Enter or Space); the tab strip gets roving focus */
 document.addEventListener("keydown", (e) => {
+  const tab = e.target.closest && e.target.closest('#tabs [role="tab"]');
+  if (tab) {
+    const tabs = $$('#tabs [role="tab"]');
+    const i = tabs.indexOf(tab);
+    let j = null;
+    if (e.key === "ArrowRight") j = (i + 1) % tabs.length;
+    else if (e.key === "ArrowLeft") j = (i - 1 + tabs.length) % tabs.length;
+    else if (e.key === "Home") j = 0;
+    else if (e.key === "End") j = tabs.length - 1;
+    if (j != null) { e.preventDefault(); tabs[j].focus(); tabs[j].click(); }
+    return;
+  }
   if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
   if (!e.target.closest || e.target.closest("button,input,select,textarea,a,form,label")) return;
   const t = e.target.closest("th.sortable,[data-detail],[data-runner]");
@@ -1994,6 +2203,7 @@ document.addEventListener("keydown", (e) => {
 });
 
 $("#tokenBtn").onclick = askToken;
+$("#notifyBtn").onclick = enableNotifications;
 $("#schedNew").onclick = newSchedule;
 $("#histRefresh").onclick = renderHistory;
 $("#histHost").onchange = renderHistory;
@@ -2043,8 +2253,14 @@ window.addEventListener("resize", () => {
    a blank page. The modal is also guarded so a wrong token cannot rebuild it while
    the operator is typing. */
 connect();
-refresh();
+refresh(true);
+// Pause polling while the tab is hidden, and refresh once when it returns.
+document.addEventListener("visibilitychange", () => {
+  _pollPaused = document.hidden;
+  if (!_pollPaused) { _refreshPending = false; refresh(true); }
+});
 setInterval(() => {
+  if (_pollPaused) return;
   if (STATE.active.length) { const st = _scrollState(); renderActive(); _restoreScroll(st); }
   if (FOCUS) renderFocus();
 }, 5000);

@@ -195,6 +195,7 @@ def _web(c):
     """
     js = open(os.path.join(REPO, "server", "web", "app.js"), encoding="utf-8").read()
     css = open(os.path.join(REPO, "server", "web", "style.css"), encoding="utf-8").read()
+    html = open(os.path.join(REPO, "server", "web", "index.html"), encoding="utf-8").read()
     c.check("the live view builds a tab per runner",
             "function focusTabsInner" in js and "data-rtab=" in js, "")
     c.check("a tab prefers the runner's live run over its last one",
@@ -254,6 +255,125 @@ def _web(c):
     c.check("toasts announce themselves to screen readers",
             't.setAttribute("role", "status")' in js
             and 't.setAttribute("aria-live", "polite")' in js, "")
+
+    # ---- W19: web UI P3 backlog ----
+    # USE-P3-001: schedule deletion is destructive and must be gated like the other
+    # destructive controls (forget runner / power off).
+    c.check("deleting a schedule goes through a confirm gate",
+            re.search(r"function deleteSchedule\(id\)\s*\{[^}]*confirm\(", js) is not None, "")
+    # USE-P3-002: notify on completion (Notification API only after an explicit
+    # grant) and always fall back to a flashing tab title.
+    c.check("a finished run raises a completion notification when permitted",
+            "function notifyDone" in js and "new Notification(" in js
+            and 'Notification.permission === "granted"' in js, "")
+    c.check("notifications are requested only from an explicit user action",
+            'id="notifyBtn"' in html and "function enableNotifications" in js
+            and "Notification.requestPermission()" in js
+            and re.search(r'#notifyBtn"\)\.onclick\s*=\s*enableNotifications', js) is not None, "")
+    c.check("a run completion flashes the tab title as a fallback",
+            "function flashTitle" in js and "document.title" in js, "")
+    c.check("a run that finished before load does not notify",
+            "function checkCompletions" in js and "_activeSeen === null" in js, "")
+    # USE-P3-003: Compare needs an empty state and must never compare a run to itself.
+    c.check("compare shows an empty state",
+            "function renderCompareEmpty" in js and "Not enough finished runs" in js
+            and 'Choose two different runs' in js, "")
+    c.check("compare refuses to compare a run with itself",
+            "if (A === B)" in js and "pick two different runs to compare" in js, "")
+    c.check("the compare button is disabled with fewer than two runs",
+            'btn.disabled = finished.length < 2' in js, "")
+    # UX-P3-001: honour prefers-reduced-motion, and state the dark-only theme.
+    c.check("reduced-motion turns off animations and transitions",
+            "prefers-reduced-motion: reduce" in css
+            and "animation:none" in css.replace(" ", "")
+            and "transition:none" in css.replace(" ", ""), "")
+    c.check("the dark-only theme is declared explicitly",
+            'name="color-scheme"' in html and "color-scheme:dark" in css.replace(" ", ""), "")
+    # UX-P3-002: offline cards must dim without blending muted text below AA.
+    c.check("offline runner cards no longer use a whole-card opacity",
+            ".runner.off{opacity:.55}" not in css.replace(" ", ""), "")
+    c.check("offline runner cards keep a dim affordance without dropping contrast",
+            ".runner.off{opacity:1" in css.replace(" ", "") and ".runner.off .statusp" in css, "")
+    # MOB-P3-002: fixed/sticky chrome must respect safe-area insets.
+    c.check("the viewport opts into safe-area insets",
+            "viewport-fit=cover" in html, "")
+    c.check("fixed and sticky chrome honours safe-area insets",
+            "env(safe-area-inset-top)" in css and "env(safe-area-inset-bottom)" in css
+            and "env(safe-area-inset-left)" in css and "env(safe-area-inset-right)" in css, "")
+    # PRIV-P3-001 / SECRET-P3-001: token storage.
+    c.check("the operator token defaults to sessionStorage",
+            "sessionStorage.getItem(\"benchd_token\")" in js
+            and 'sessionStorage.setItem("benchd_token", TOKEN)' in js, "")
+    c.check("localStorage is an explicit remember-on-this-device opt-in",
+            'id="tokRemember"' in js and "remember on this device" in js
+            and "benchd_remember" in js, "")
+    c.check("a token passed in the URL is stripped after it is read",
+            'new URLSearchParams(location.search).get("token")' in js
+            and "history.replaceState" in js, "")
+
+    # ---- W22b: regression tests for the W19 responsive / a11y additions ----
+    # MOB-P3-003 / UX-P3-003: the main tab strip must stay usable on a phone and by
+    # keyboard. Assert the wiring end to end (handler -> element -> behaviour),
+    # not just that a token appears somewhere in the file.
+    c.check("the tab strip scrolls instead of clipping on phones",
+            ".tabs{flex-wrap:nowrap;overflow-x:auto" in css.replace(" ", ""), "")
+    _kbd = re.search(r'document\.addEventListener\("keydown", \(e\) => \{\s*'
+                     r'const tab = e\.target\.closest.*?e\.key !== "Enter"', js, re.S)
+    _kbd = _kbd.group(0) if _kbd else ""
+    c.check("the roving-tabindex keydown handler is wired to the real tabs",
+            '#tabs [role="tab"]' in _kbd and 'tabs[j].focus()' in _kbd
+            and 'tabs[j].click()' in _kbd and 'e.preventDefault()' in _kbd, "")
+    c.check("the tabs it drives exist with role and roving tabindex",
+            'id="tabs"' in html and 'role="tablist"' in html
+            and html.count('role="tab"') >= 6 and 'tabindex="-1"' in html, "")
+    # the destructive schedule delete must stay behind its confirm gate: prove the
+    # DELETE is unreachable when confirm() returns false (control flow, not text).
+    _del = re.search(r"async function deleteSchedule\(id\) \{(.*?)\n\}", js, re.S)
+    _del = _del.group(1) if _del else ""
+    c.check("the schedule delete gate blocks the DELETE until confirmed",
+            re.search(r'if \(!confirm\(.*?\)\) return;.*?api\("/schedules/', _del, re.S)
+            is not None, "")
+    c.check("schedule rows carry the hook the delete handler consumes",
+            'data-sched-del=' in js and "t.dataset.schedDel) return deleteSchedule(" in js, "")
+
+    # ---- W22b: PERF-P3-002 / SEARCH-P3-001 ----
+    # History and Fleet cap the rows they fetch; they must say so and use the total
+    # the API already returns instead of silently truncating.
+    c.check("history shows the loaded count against the API total",
+            "showing ${rows.length} of ${total} run" in js
+            and "const total = typeof d.total" in js, "")
+    c.check("history flags when its page was capped",
+            "const loaded = d.runs.length" in js and "newest ${loaded} loaded" in js, "")
+    c.check("fleet shows the loaded count against the API total",
+            "showing ${runs.length} of ${total} runs" in js
+            and "total = typeof d.total" in js, "")
+    c.check("fleet flags when its page was capped",
+            "newest ${runs.length} loaded" in js, "")
+    # the runs endpoint has no search param, so the box must be labelled as a page
+    # filter and must not be sent to the server as a query.
+    c.check("history search is labelled as a page filter",
+            'id="histSearch"' in html and "filter this page" in html
+            and "not the whole history" in html, "")
+    c.check("history search is not passed to the API (no query param)",
+            '"/runs?limit=" + HIST_LIMIT' in js and "&q=" not in js and "?q=" not in js, "")
+    # Behavioural: the total the History/Fleet affordances print really comes from
+    # the API. Seed three runs and confirm the list returns a total the page limit
+    # does not hide (the UI reads exactly this field).
+    try:
+        from harness import Server
+        srv = Server()
+        try:
+            cl = srv.client()
+            for i in range(3):
+                cl.call("POST", "/api/v1/runs",
+                        {"runner_id": "w22b-runner", "host": "w22b-host", "label": "r%d" % i})
+            _, page = cl.call("GET", "/api/v1/runs?limit=2&host=w22b-host")
+            c.check("the runs API returns the total the UI shows",
+                    page.get("total") == 3 and len(page["runs"]) == 2, page)
+        finally:
+            srv.stop()
+    except Exception as e:
+        c.check("the runs API returns the total the UI shows", False, e)
 
 
 def run():

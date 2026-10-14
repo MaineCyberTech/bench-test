@@ -3,6 +3,10 @@
   --text:#dce3ee; --muted:#8592a6; --accent:#4c9aff; --good:#46c98d;
   --warn:#e5b567; --bad:#ef6b73; --grid:#232b37;
   --mono:"JetBrains Mono","Fira Code","Cascadia Mono","Consolas",monospace;
+  /* UX-P3-001: dark-only control-room theme. There is deliberately no
+     prefers-color-scheme: light variant; declaring the scheme keeps native form
+     controls and scrollbars dark instead of letting the UA render them light. */
+  color-scheme:dark;
 }
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--bg);color:var(--text);
@@ -21,7 +25,8 @@ select,input{background:var(--card2);color:var(--text);border:1px solid var(--bo
 .mono{font-family:var(--mono)}
 .muted{color:var(--muted)}
 
-.topbar{display:flex;align-items:center;gap:24px;padding:14px 22px;
+.topbar{display:flex;align-items:center;gap:24px;
+  padding:calc(14px + env(safe-area-inset-top)) calc(22px + env(safe-area-inset-right)) 14px calc(22px + env(safe-area-inset-left));
   background:linear-gradient(180deg,#141a24,#11151d);border-bottom:1px solid var(--border);
   position:sticky;top:0;z-index:20;overflow:hidden}
 .brand{display:flex;align-items:center;gap:12px;flex:0 0 auto}
@@ -38,16 +43,17 @@ select,input{background:var(--card2);color:var(--text);border:1px solid var(--bo
 .dot.on{background:var(--good);box-shadow:0 0 8px var(--good)}
 .dot.off{background:var(--bad)}
 
-.tabs{display:flex;gap:4px;padding:10px 22px 0}
+.tabs{display:flex;gap:4px;
+  padding:10px calc(22px + env(safe-area-inset-right)) 0 calc(22px + env(safe-area-inset-left));flex-wrap:wrap}
 .tabs button{background:transparent;color:var(--muted);border-radius:8px 8px 0 0;padding:9px 16px}
 .tabs button.active{color:var(--accent);background:var(--card);border:1px solid var(--border);
   border-bottom-color:var(--card)}
-main{padding:18px 22px 60px}
+main{padding:18px calc(22px + env(safe-area-inset-right)) calc(60px + env(safe-area-inset-bottom)) calc(22px + env(safe-area-inset-left))}
 .tabpane{display:none}
 .tabpane.active{display:block}
-.section-head{display:flex;align-items:center;gap:14px;margin:18px 0 10px}
+.section-head{display:flex;align-items:center;gap:14px;margin:18px 0 10px;flex-wrap:wrap}
 .section-head h2{font-size:15px;text-transform:uppercase;letter-spacing:1px;color:var(--muted)}
-.filters{margin-left:auto;display:flex;gap:8px;align-items:center}
+.filters{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
@@ -62,7 +68,14 @@ main{padding:18px 22px 60px}
 .runner .rrow{display:flex;gap:10px;align-items:baseline;font-size:12px;min-width:0}
 .runner .rrow .rk{color:var(--muted);flex:0 0 66px;text-transform:uppercase;letter-spacing:.06em;font-size:10px}
 .runner .rrow .rv{min-width:0;overflow:hidden;text-overflow:ellipsis}
-.runner.off{opacity:.7}
+/* UX-P3-002: an offline card must still read as dimmed, but a whole-card
+   opacity:.55 blended the muted metadata toward the page and dropped it below AA.
+   Dim the surface and the decorative bits instead; text keeps its full colour. */
+.runner.off{opacity:1;background:#131820;border-color:#232b37}
+.runner.off .rname{color:#c4cddc}
+.runner.off .statusp{opacity:.6}
+.runner.off .badge,.runner.off .uid{opacity:.85}
+.runner.off .ract button{opacity:.9}
 .runner .rhead{display:flex;align-items:center;gap:9px}
 .runner .rname{font-weight:700;font-size:15px}
 .runner .rtag{font-size:10px;color:var(--muted);border:1px solid var(--border);
@@ -121,7 +134,9 @@ tbody tr:hover{background:#1a2029}
 .sw{width:10px;height:10px;border-radius:3px;display:inline-block}
 
 .modal{position:fixed;inset:0;background:rgba(6,9,13,.72);display:none;
-  align-items:flex-start;justify-content:center;z-index:80;padding:40px 16px;overflow:auto}
+  align-items:flex-start;justify-content:center;z-index:80;
+  padding:calc(40px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right)) calc(40px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+  overflow:auto}
 .modal.show{display:flex}
 .modalbox{background:var(--card);border:1px solid var(--border);border-radius:14px;
   padding:22px;max-width:960px;width:100%}
@@ -167,14 +182,15 @@ tbody tr:hover{background:#1a2029}
 .statstable{border-collapse:collapse;width:100%}
 .statstable th,.statstable td{padding:6px 10px;border-bottom:1px solid var(--border);font-size:12px}
 .invjson{max-height:240px;overflow:auto;font-size:11px;background:#0c0f14;border-radius:8px;padding:8px}
-.toast{position:fixed;right:20px;bottom:20px;background:var(--card);border:1px solid var(--border);
+.toast{position:fixed;right:calc(20px + env(safe-area-inset-right));bottom:calc(20px + env(safe-area-inset-bottom));background:var(--card);border:1px solid var(--border);
   border-left:3px solid var(--accent);border-radius:8px;padding:10px 14px;font-size:13px;
   opacity:0;transform:translateY(10px);transition:.2s;pointer-events:none;z-index:100;max-width:440px}
 .toast.show{opacity:1;transform:none}
 .toast.err{border-left-color:var(--bad)}
 
 /* ---- revamp: fleet view, badges, sortable tables, chart tooltips ---- */
-.banner{display:none;background:#3a2530;color:var(--bad);padding:8px 22px;font-size:13px;
+.banner{display:none;background:#3a2530;color:var(--bad);
+  padding:8px calc(22px + env(safe-area-inset-right)) 8px calc(22px + env(safe-area-inset-left));font-size:13px;
   border-bottom:1px solid var(--border)}
 .banner.show{display:block}
 .toolbar{display:flex;align-items:center;gap:8px;margin-left:auto;flex-wrap:wrap}
@@ -209,7 +225,8 @@ table td.num{font-family:var(--mono);text-align:right}
 .focuspane{position:fixed;inset:0;background:var(--bg);display:none;overflow:auto;z-index:55}
 .focuspane.show{display:block}
 /* runner tabs inside the live view: switch machines without leaving the pane */
-.rtabs{display:flex;gap:6px;overflow-x:auto;padding:14px 22px 10px;border-bottom:1px solid var(--border);
+.rtabs{display:flex;gap:6px;overflow-x:auto;
+  padding:14px calc(22px + env(safe-area-inset-right)) 10px calc(22px + env(safe-area-inset-left));border-bottom:1px solid var(--border);
   position:sticky;top:0;background:var(--bg);z-index:2}
 .rtabs .rtab{display:inline-flex;align-items:center;gap:7px;background:transparent;color:var(--muted);
   border:1px solid transparent;border-radius:8px;padding:6px 12px;white-space:nowrap}
@@ -223,9 +240,10 @@ table td.num{font-family:var(--mono);text-align:right}
 .rtabs .rtab.live .dot{background:var(--accent);animation:pulse 1.2s infinite}
 .rtabs .rtab .muted{font-size:10px;text-transform:uppercase;letter-spacing:.06em}
 .focushead{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:12px;
-  flex-wrap:wrap;background:var(--card);border-bottom:1px solid var(--border);padding:10px 16px}
+  flex-wrap:wrap;background:var(--card);border-bottom:1px solid var(--border);
+  padding:calc(10px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right)) 10px calc(16px + env(safe-area-inset-left))}
 .focushead .h{font-weight:700;font-size:16px}
-.focusbody{padding:14px 16px 40px}
+.focusbody{padding:14px calc(16px + env(safe-area-inset-right)) calc(40px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left))}
 .fgrid{display:grid;gap:14px;align-items:start;
   grid-template-columns:minmax(310px,1.2fr) minmax(280px,1fr) minmax(360px,1.8fr)}
 .fgrid.two{grid-template-columns:minmax(280px,1fr) minmax(280px,1fr);margin-top:14px}
@@ -282,3 +300,57 @@ table td.num{font-family:var(--mono);text-align:right}
 @media (max-width:1400px){.minigrid{grid-template-columns:repeat(2,1fr)}}
 @media (max-width:900px){.minigrid{grid-template-columns:1fr}}
 @media (max-width:980px){.fgrid,.fgrid.two{grid-template-columns:1fr}}
+
+/* ---- W11: phones, touch targets, keyboard and assistive tech ---- */
+/* text alternative / live region: visible to screen readers, not the layout */
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+  clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap;border:0}
+
+/* a clear focus ring for keyboard users on the controls that used to be click-only */
+.runner .rhead:focus-visible,th.sortable:focus-visible,tbody tr:focus-visible,
+.tabs button:focus-visible,.rtabs .rtab:focus-visible,button:focus-visible,
+input:focus-visible,select:focus-visible,a:focus-visible,.badge.toggle:focus-visible{
+  outline:2px solid var(--accent);outline-offset:2px}
+
+/* header and filter bars wrap instead of clipping their contents */
+@media (max-width:760px){
+  .topbar{flex-wrap:wrap;gap:10px 16px;
+    padding:calc(12px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right)) 12px calc(14px + env(safe-area-inset-left));overflow:visible}
+  .topstats{flex-wrap:wrap;gap:14px;overflow:visible;width:100%;margin-left:0}
+  .conn{margin-left:auto}
+  main{padding:14px calc(14px + env(safe-area-inset-right)) calc(60px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left))}
+  .section-head{align-items:flex-start}
+  .filters{margin-left:0;width:100%}
+}
+
+/* phones: the tab bar scrolls horizontally, fixed grids collapse, and every
+   interactive control gets a >= 44x44px touch target */
+@media (max-width:640px){
+  .tabs{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;
+    padding:8px calc(12px + env(safe-area-inset-right)) 0 calc(12px + env(safe-area-inset-left))}
+  .tabs button{flex:0 0 auto;white-space:nowrap}
+  .grid,.grid2,.fgrid,.fgrid.two,.statcols{grid-template-columns:1fr}
+  .gauges{grid-template-columns:repeat(2,1fr)}
+  .minigrid{grid-template-columns:1fr}
+  .phase{grid-template-columns:16px 60px minmax(0,1fr) auto}
+  button,.tabs button,.rtabs .rtab,.ract button,select,input,.chk label,.dl{min-height:44px}
+  .ract button{min-width:44px}
+  .dl{display:inline-flex;align-items:center}
+  .runbox .rh{flex-wrap:wrap}
+  .term input{width:100%}
+}
+
+/* ---- W19: reduced motion (UX-P3-001) ---- */
+/* Honour the OS "reduce motion" setting: drop the pulse/spin animations and the
+   hover/transition fades, and keep the animated width bars from sliding. */
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{
+    animation-duration:.001ms !important;
+    animation-iteration-count:1 !important;
+    transition-duration:.001ms !important;
+    scroll-behavior:auto !important;
+  }
+  .statusp.busy,.phasechip .d,.rtabs .rtab.live .dot{animation:none !important}
+  .toast{transition:none !important;transform:none !important}
+  .fbar .bf{transition:none !important}
+}
