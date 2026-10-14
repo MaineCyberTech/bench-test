@@ -1,9 +1,12 @@
 ﻿# Invoke-CpuBench.ps1 - run the CPU compute/memory phases and write a report.
 # Usage: .\Invoke-CpuBench.ps1 [-OutDir .\results] [-SoakSeconds 120] [-Size 4096]
+#        .\Invoke-CpuBench.ps1 -UntilStable -StableHold 60   # soak until the CPU temp plateaus
 param(
     [string]$OutDir = "$PSScriptRoot\..\results",
     [int]$SoakSeconds = 120,
-    [int]$Size = 4096
+    [int]$Size = 4096,
+    [switch]$UntilStable,
+    [int]$StableHold = 60
 )
 
 $ErrorActionPreference = 'Continue'
@@ -32,7 +35,10 @@ $phases.hash = Invoke-Phase 'hash' @('--seconds', '8')
 $phases.compress = Invoke-Phase 'compress' @('--seconds', '6')
 $phases.aes = Invoke-Phase 'aes' @('--seconds', '8')
 $phases.flops = Invoke-Phase 'flops' @('--seconds', '8')
-$phases.soak = Invoke-Phase 'soak' @('--seconds', "$SoakSeconds")
+$phases.scaling = Invoke-Phase 'scaling' @('--seconds', '6')
+$soakArgs = @('--seconds', "$SoakSeconds")
+if ($UntilStable) { $soakArgs += @('--until-stable', '--stable-hold', "$StableHold") }
+$phases.soak = Invoke-Phase 'soak' $soakArgs
 
 $report = [ordered]@{ host = $hostname; timestamp = (Get-Date).ToString('o'); phases = $phases }
 $report | ConvertTo-Json -Depth 12 | Set-Content "$base.json" -Encoding UTF8
@@ -52,7 +58,17 @@ if ($phases.hash) { $md += "| sha256 | $($phases.hash.sha256_mbps) MB/s |" }
 if ($phases.compress) { $c = $phases.compress; $md += "| compression | zlib c/d $($c.zlib_compress_mbps)/$($c.zlib_decompress_mbps), lzma c/d $($c.lzma_compress_mbps)/$($c.lzma_decompress_mbps) MB/s |" }
 if ($phases.aes -and -not $phases.aes.skipped) { $md += "| AES-256-GCM | $($phases.aes.aes256gcm_mbps) MB/s |" }
 if ($phases.flops) { $md += "| flops fp32 | $($phases.flops.gflops) GFLOPS |" }
-if ($phases.soak) { $md += "| soak | $($phases.soak.gflops) GFLOPS over $($phases.soak.seconds)s |" }
+if ($phases.scaling) {
+    foreach ($k in $phases.scaling.results.PSObject.Properties.Name) {
+        $r = $phases.scaling.results.$k
+        if ($r.gflops) { $md += "| scaling ($k threads) | $($r.gflops) GFLOPS, efficiency $($phases.scaling.efficiency.$k) vs 1 thread |" }
+        else { $md += "| scaling ($k threads) | error: $($r.error) |" }
+    }
+}
+if ($phases.soak) {
+    $stable = if ($phases.soak.stable) { " (stable@$($phases.soak.stable_at_s)s + $($phases.soak.stable_hold_s)s hold)" } else { "" }
+    $md += "| soak | $($phases.soak.gflops) GFLOPS over $($phases.soak.seconds)s$stable |"
+}
 $md -join "`n" | Set-Content "$base.md" -Encoding UTF8
 
 Write-Host ""
