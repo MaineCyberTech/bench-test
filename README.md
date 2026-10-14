@@ -360,7 +360,7 @@ server/    benchd control plane (stdlib) + web dashboard + importer + systemd un
 live/      live-USB build + airootfs (launchers, units, conf)
 tests/     stdlib test suite (run_all.py)
 docs/      METHODOLOGY · CONTROL_PLANE · OPERATIONS · PHASE_TIMINGS · FUTURE_WORK ·
-           DATA · PRIVACY · KNOWN_ISSUES
+           DATA · PRIVACY · KNOWN_ISSUES · DECISIONS
 examples/  real Windows + Linux result sets
 results/   output (mostly git-ignored; a few runs tracked as history)
 ```
@@ -408,6 +408,11 @@ operator bearer; when the registration-only join-token model lands, bake that
 instead so a downloaded artifact cannot act as an operator (see
 [`docs/CONTROL_PLANE.md`](docs/CONTROL_PLANE.md) § Roadmap). Report a leaked or
 baked credential privately — see [`SECURITY.md`](SECURITY.md).
+
+Posture decisions that are **not** defects — no encryption at rest, hard deletes
+with the command log as the audit trail, the single-node control plane, and the
+commit-pinned audit artifacts — are recorded in
+[`docs/DECISIONS.md`](docs/DECISIONS.md).
 
 ## License
 
