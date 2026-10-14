@@ -193,6 +193,9 @@ def main():
               "LibreHardwareMonitor sensor library; run tools/fetch-lhm.py. "
               "AMD/Intel Windows telemetry will otherwise need a runtime download.",
               flush=True)
+    # ship the third-party attributions with the bundle so a redistributed
+    # LibreHardwareMonitor (MPL-2.0) is attributed; see THIRD_PARTY_NOTICES.md
+    notices = os.path.join(REPO, "THIRD_PARTY_NOTICES.md")
     # what the apps import, so the frozen stdlib is complete even though the app
     # code itself is not frozen
     toolkit_src = [os.path.join(BENCH, f) for f in
@@ -208,6 +211,8 @@ def main():
                "--add-data", "%s%sbench" % (BENCH, os.pathsep),
                *(["--add-data", "%s%stools" % (os.path.join(REPO, "tools"), os.pathsep)]
                  if have_lhm else []),
+               *(["--add-data", "%s%s." % (notices, os.pathsep)]
+                 if os.path.isfile(notices) else []),
                "--contents-directory", ".",
                "--distpath", a.out, "--workpath", os.path.join(a.out, "_work"),
                "--specpath", os.path.join(a.out, "_spec"),

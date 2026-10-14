@@ -1467,6 +1467,15 @@ def sha256_file(path):
     return h.hexdigest()
 
 
+def _discard_iso(path):
+    """Drop a staged ISO that failed verification, so a later destructive
+    iso_write cannot accept it (best effort: it may already be gone)."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 def _safe_extract(tar_path, dest):
     """Extract a tarball, stripping the top dir, ignoring links/escapes."""
     root = os.path.realpath(dest)
@@ -2087,44 +2096,44 @@ def iso_fetch(tag, gpu="nvidia-legacy", dest=None, log=None):
                 log("[iso] %s" % a["name"])
                 total += _download(a["url"], fh, log=None, timeout=900)
     except Exception as e:
-        return {"error": "download failed: %s" % e, "iso": iso, "bytes": total}
+        _discard_iso(iso)
+        return {"ok": False, "error": "download failed: %s" % e, "iso": iso, "bytes": total}
     got = sha256_file(iso)
-    verified = None               # True = matches SHA256SUMS, False = mismatch, None = no hash
-    why = ""
     sums = [a for a in rel["assets"] if (a["name"] or "") == "SHA256SUMS"]
     if not sums:
-        why = "the release has no SHA256SUMS"
-    else:
-        try:
-            f = os.path.join(out_dir, "SHA256SUMS")
-            _download(sums[0]["url"], f, log=None, timeout=60)
-            want = None
-            for ln in open(f, encoding="utf-8"):
-                p = ln.split()
-                if len(p) >= 2 and p[-1].lstrip("*").endswith(".iso"):
-                    want = p[0].lower()
-            if want is None:
-                why = "SHA256SUMS lists no .iso entry"
-            elif want == got:
-                verified = True
-            else:
-                verified = False
-                why = "sha256 mismatch: SHA256SUMS says %s, got %s" % (want, got)
-        except Exception as e:
-            why = "could not read SHA256SUMS (%s)" % e
-    out = {"iso": iso, "bytes": total, "sha256": got, "verified": verified,
-           "parts": len(parts), "tag": rel["tag"]}
-    if verified:
-        out["ok"] = True
-    elif verified is False:
-        out["ok"] = False
-        out["error"] = why
-    else:
-        # no SHA256SUMS / no usable hash: unverified, never a verified success
-        out["ok"] = False
-        out["unverified"] = why
-        out["error"] = "downloaded the iso but could not verify it: %s" % why
-    return out
+        _discard_iso(iso)
+        return {"ok": False, "verified": False, "sha256": got, "bytes": total,
+                "parts": len(parts), "iso": iso,
+                "error": "release %s has no SHA256SUMS asset - refusing an unverified ISO"
+                         % rel["tag"]}
+    try:
+        f = os.path.join(out_dir, "SHA256SUMS")
+        _download(sums[0]["url"], f, log=None, timeout=60)
+        want = None
+        for ln in open(f, encoding="utf-8"):
+            p = ln.split()
+            if len(p) >= 2 and p[-1].lstrip("*").endswith(".iso"):
+                want = p[0].lower()
+    except Exception as e:
+        _discard_iso(iso)
+        return {"ok": False, "verified": False, "sha256": got, "bytes": total,
+                "parts": len(parts), "iso": iso,
+                "error": "could not read SHA256SUMS for %s (%s) - refusing an unverified ISO"
+                         % (rel["tag"], e)}
+    if not want:
+        _discard_iso(iso)
+        return {"ok": False, "verified": False, "sha256": got, "bytes": total,
+                "parts": len(parts), "iso": iso,
+                "error": "SHA256SUMS on %s has no .iso entry - refusing an unverified ISO"
+                         % rel["tag"]}
+    if want != got:
+        _discard_iso(iso)
+        return {"ok": False, "verified": False, "sha256": got, "bytes": total,
+                "parts": len(parts), "iso": iso,
+                "error": "sha256 mismatch: SHA256SUMS says %s, got %s - refusing the ISO"
+                         % (want, got)}
+    return {"ok": True, "iso": iso, "bytes": total, "sha256": got, "verified": True,
+            "parts": len(parts), "tag": rel["tag"]}
 
 
 def _device_of_path(path):

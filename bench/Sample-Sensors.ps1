@@ -33,15 +33,23 @@ function Find-Lhm {
     }
     $dest = $LibDir
     New-Item -ItemType Directory -Force -Path $dest | Out-Null
-    $urls = @(
-        'https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/latest/download/LibreHardwareMonitor.zip',
-        'https://codeload.github.com/LibreHardwareMonitor/LibreHardwareMonitor/zip/refs/heads/master'
-    )
+    # Pin the release and verify its SHA-256 before extracting the DLL. A mirror
+    # (BENCH_LHM_URL) may be used instead, but must serve the same pinned artifact.
+    $lhmVersion = 'v0.9.6'
+    $lhmSha256 = '086D9F1B5A99E643EDC2CFAAAC16051685B551E4C5AC0B32A57C58C0E529C001'
+    $urls = @()
+    if ($env:BENCH_LHM_URL) { $urls += $env:BENCH_LHM_URL }
+    $urls += "https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/download/$lhmVersion/LibreHardwareMonitor.zip"
     $zip = Join-Path $env:TEMP 'lhm.zip'
     foreach ($u in $urls) {
         try {
             & curl.exe -L --fail --retry 2 --retry-delay 1 --max-time 90 -o $zip $u 2>$null | Out-Null
             if (-not (Test-Path $zip)) { continue }
+            $got = (Get-FileHash $zip -Algorithm SHA256).Hash
+            if (-not $got -or $got.ToUpperInvariant() -ne $lhmSha256) {
+                Remove-Item $zip -Force -ErrorAction SilentlyContinue
+                continue
+            }
             $tmp = Join-Path $env:TEMP ('lhmx_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
             Expand-Archive $zip -DestinationPath $tmp -Force
             $dll = Get-ChildItem $tmp -Recurse -Filter 'LibreHardwareMonitorLib.dll' |

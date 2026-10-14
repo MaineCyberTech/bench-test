@@ -48,13 +48,15 @@ import test_contract  # noqa: E402
 import test_build_left  # noqa: E402
 import test_robustness  # noqa: E402
 import test_privacy  # noqa: E402
+import test_release_integrity  # noqa: E402
 
 MODULES = [test_control_plane, test_reporting, test_import, test_update,
            test_presets, test_registry, test_dashboards, test_soak, test_version,
            test_bootstrap, test_packaging, test_sbom, test_a11y, test_lifecycle,
            test_hardening, test_observability, test_schema, test_server_p3,
            test_server_left, test_alerts, test_server_p2, test_contract,
-           test_build_left, test_robustness, test_privacy]
+           test_build_left, test_robustness, test_privacy,
+           test_release_integrity]
 
 
 def _allow_skips(argv):
