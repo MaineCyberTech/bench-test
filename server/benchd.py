@@ -1402,7 +1402,11 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 return self._api_get(path, q)
             except Exception as exc:
-                self._log_error("GET", path, exc)
+                # OBS-P2-003: the failure is logged with its traceback, but the
+                # client still gets the same short 500 body (never the traceback).
+                self._log("error", "api_get failed", route=path,
+                          error="%s: %s" % (type(exc).__name__, exc),
+                          traceback=traceback.format_exc())
                 return self._err(500, "internal server error")
         return self._static(path)
 
@@ -1466,7 +1470,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             return self._api_post(path, q, b)
         except Exception as exc:
-            self._log_error("POST", path, exc)
+            # OBS-P2-003: log the traceback server-side; the client still gets
+            # the same short 500 body without it.
+            self._log("error", "api_post failed", route=path,
+                      error="%s: %s" % (type(exc).__name__, exc),
+                      traceback=traceback.format_exc())
             return self._err(500, "internal server error")
 
     # -- readiness + metrics (OBS-P2-004 / OBS-P2-005) --------------------

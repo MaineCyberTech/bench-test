@@ -147,7 +147,7 @@ def run():
     srv.stop()
 
     # ---- OBS-P2-005: /metrics exposes runtime counters ----
-    msrv = Server()
+    msrv = Server(rate_limit=True)
     mcl = msrv.client()
     st, reg = mcl.call("POST", "/api/v1/register", {"name": "obs", "kind": "agent"})
     mrid = reg.get("runner_id")
