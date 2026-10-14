@@ -122,16 +122,17 @@ UI-facing:
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/state` | snapshot: runners, active runs (+latest telemetry, phases), recent, `hosts`, `server_git` |
-| GET | `/stream?token=` | SSE: `snapshot`/`runner`/`run`/`phase`/`telemetry` (coalesced)/`command`/`log`/`schedule`/`event` |
+| GET | `/state` | snapshot: runners, active runs (+latest telemetry, phases), recent, `hosts`, `server_git`, `version`, `version_source` |
+| GET | `/stream?token=` | SSE: `snapshot`/`runner`/`run`/`phase`/`telemetry` (coalesced)/`command`/`log`/`schedule`/`event`/`artifact` |
 | GET | `/runners` · `/runs` · `/runs/<id>` | fleet / history / detail |
 | GET | `/runs/<id>/telemetry?max=N` | downsampled series (named fields) |
 | GET | `/runs/<id>/logs?after=&limit=` | the run's live console lines |
 | GET | `/runs/<id>/stats` | per-field n / min / avg / max / std / p50 / p95 / p99 (+ derived: energy, clock residency, throttled %, headroom) |
 | GET | `/runs/<id>/telemetry.csv?token=` | full telemetry as CSV (download) |
 | GET | `/runs/<id>/artifact/<name>?token=` | download an attached artifact (binary-safe) |
+| DELETE | `/runs/<id>/artifact/<name>` | remove one attached artifact (its run's owner or the operator; audited) |
 | GET | `/trends?host=&metric=` | metric-over-time series + per-series median/p95/p99 |
-| GET | `/health` | public liveness + the control plane's commit (`git`, `latest`) |
+| GET | `/health` | public liveness + the control plane's `version`, commit (`git`) and `version_source` |
 | POST | `/server/update` | pull the control plane's own checkout + restart it (operator only; git deploy) |
 | GET | `/metrics` | the metric catalogue (key → label) |
 | GET | `/audit?limit=N` | audit trail (newest first): `ts`, `actor`, `action`, `target`, `detail` (operator only) |
@@ -269,6 +270,14 @@ connect. The token gate (operator token or per-runner key) is the real control; 
 firewall rule on the node or `--host <lab-ip>` narrows it further — see
 [Security](#security).
 
+A copy-deploy has no `.git`, so `/health` and `/state` resolve the control plane's
+**commit** and **release version** from files shipped with the code: the repo-root
+`VERSION`, and/or a `.bench-version` stamp (JSON `{"version": ..., "commit": ...}`).
+Push them alongside `server/` (or `git clone` the server) so `/health` reports the
+real version and the commit that a release tag maps to — otherwise the version
+reads `0.0.0+unknown`. The startup log line records which source was used, and
+`/health`/`/state` expose it as `version_source`.
+
 ## Data captured per run
 
 - **Summary** (runs-index-style): GPU matmul (fp16/bf16/tf32/fp32), soak TFLOPS + telemetry,
@@ -340,9 +349,15 @@ firewall rule on the node or `--host <lab-ip>` narrows it further — see
   `mode` git|copy, `ref`, `commit`, `sha256`) and the server compares its commit
   with the control plane's own (`/health` → `git`, `/state` → `server_git`) —
   surfaced as `update_available` on each runner (Live badge, Fleet "toolkit"
-  column, a "stale" topstat). A server deployed by copying files (no `.git`) reads
-  a `.deployed-commit` / `.bench-version` stamp instead, so write one in the
-  deploy (or `git clone` the server and it works for free).
+  column, a "stale" topstat). A server deployed by copying files (no `.git`) has
+  no git at all, so both its **commit** and its **release version** resolve from a
+  stamp shipped with the deploy: `.deployed-commit` (a plain commit) or
+  `.bench-version` (JSON: `{"version": ..., "commit": ...}`), the same stamp the
+  app bundle bakes. `/health` and `/state` report `version`, `git` and the
+  `version_source` (`VERSION` / `.bench-version` / `none`), so a release tag can
+  be tied to the exact build — write a stamp in the deploy (or `git clone` the
+  server and it works for free). With neither a `VERSION` file nor a stamp the
+  version stays `0.0.0+unknown`, never an invented release.
 - **Runner identity is stable per machine + role + instance.** Each runner sends
   a `machine_id` (Windows `MachineGuid`, Linux DMI uuid / `/etc/machine-id`, else
   a random id persisted next to the agent config; `$BENCH_MACHINE_ID` overrides)
@@ -391,11 +406,13 @@ firewall rule on the node or `--host <lab-ip>` narrows it further — see
   dashboard assets are served with `ETag`/`Last-Modified` and a short
   `max-age`; the API stays `Cache-Control: no-store`.
 - SQLite uses WAL; a run at 4 Hz writes ~4.5 MB per 15 minutes. Once an hour the
-  scheduler sweeps the per-sample tables (**telemetry/logs/events only**) of
-  **finished** runs older than `BENCHD_RETENTION_DAYS` (default 30 days, `0` keeps
-  everything), materialising each run's stats into the run row first. It never
-  touches a running run; the run rows, phases, artifacts, commands and summaries
-  are kept, because that is what History, Trends, Compare and Fleet read. See
+  scheduler sweeps the per-sample tables (**telemetry/logs/events only**) and the
+  **artifacts** of **finished** runs older than `BENCHD_RETENTION_DAYS` (default 30
+  days, `0` keeps everything), materialising each run's stats into the run row
+  first. It never touches a running run; the run rows, phases, commands and
+  summaries are kept, because that is what History, Trends, Compare and Fleet read
+  (an artifact is downloadable data, not a headline metric, so it ages out with the
+  samples). See
   [`DATA.md`](DATA.md#5-retention) for the runner-side knobs too.
 - **Backfill** (`server/import_results.py`): each unit gets a deterministic run
   id, so re-running over the same results directory is a no-op (already-imported
@@ -418,7 +435,8 @@ Stdlib only; each module starts an in-process `benchd` on an ephemeral port. It
 covers the API (auth, per-runner keys, runs/phases/telemetry/logs/artifacts/stats,
 commands, schedules, delete, reaper, SSE), control-plane P3 hardening (malformed
 input → generic 4xx, the late-finish guard, command re-queue/expiry, artifact
-sha256 verification, hot-path indexes, static-asset caching), the reporting client
+sha256 verification and per-artifact delete, hot-path indexes, static-asset
+caching, artifact retention, the version stamp), the reporting client
 (Reporter, PhaseTracker, ReporterPump, exec, inventory/summary builders), preset
 parity across GUI/TUI/web, and the dashboard phase-table logic.
 
