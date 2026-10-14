@@ -1,15 +1,18 @@
 Copyright (c) 2026 Maine Cyber Technologies, LLC. All rights reserved.
 
-PROPRIETARY AND CONFIDENTIAL.
+PROPRIETARY. All rights reserved.
 
 This source code and all associated documentation, files, and materials
-(collectively, the "Software") are the proprietary and confidential property
-of Maine Cyber Technologies, LLC.
+(collectively, the "Software") are the proprietary property of Maine Cyber
+Technologies, LLC.
 
-No part of the Software may be copied, reproduced, modified, translated,
-distributed, sublicensed, published, transmitted, or used, in whole or in part,
-in any form or by any means, without the express prior written permission of
-Maine Cyber Technologies, LLC.
+The source repository and its release artifacts are published publicly so they
+can be viewed and used for reference and evaluation. That publication grants no
+right to redistribute, sublicense, publish, or otherwise transfer the Software,
+in whole or in part, in any form or by any means. No part of the Software may be
+copied, reproduced, modified, translated, or distributed, in whole or in part, in
+any form or by any means, without the express prior written permission of Maine
+Cyber Technologies, LLC.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,

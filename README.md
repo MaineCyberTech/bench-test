@@ -9,12 +9,14 @@ live 4 Hz telemetry, a JSON + Markdown report per run, and an optional
 Built to compare machines (before/after a GPU, driver, or cooling change) with
 reproducible numbers, and to catch instability under sustained load.
 
-**Release version** lives in `VERSION` and is reported everywhere it matters: the
-GUI/TUI headers, each runner (so the fleet view says what a box is running), the
-web dashboard, and `GET /health` on the control plane. It is a release line plus
-an automatic build: `<release>+<n>.<commit>`, so every update is a distinct
-version rather than one number shared by many builds. Release artifacts name it
-too (`ISO <gpu> v<release> #<run>`).
+**Version** — the current release lives in [`VERSION`](VERSION) and on the
+[Releases](https://github.com/MaineCyberTech/bench-test/releases) page, and is
+reported everywhere it matters: the GUI/TUI headers, each runner (so the fleet
+view says what a box is running), the web dashboard, and `GET /health` on the
+control plane. It is a release line plus an automatic build:
+`<release>+<commits-since-tag>.<commit>`, so every update is a distinct version
+rather than one number shared by many builds. Release artifacts name it too
+(`ISO <gpu> v<release> #<run>`).
 
 - **Runs on:** Windows 10/11 (PowerShell + Python), Linux (Python + Bash), and a
   bootable **live USB** (Arch) that needs no install.
@@ -339,9 +341,19 @@ check only runs when `numpy` is importable:
 .venv/bin/python tests/run_all.py             # Linux / live USB
 ```
 
-The suite itself adds no dependencies; it starts an in-process `benchd` on an
-ephemeral port and covers the control-plane API, the reporting client, preset
-parity across GUI/TUI/web, and the dashboard phase-table logic.
+On Linux/macOS the suite is stdlib-only and starts an in-process `benchd` on an
+ephemeral port. On **Windows**, the dashboard checks import the curses TUI, so run
+it from a virtualenv with `windows-curses` installed (otherwise those checks are
+skipped):
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\pip install windows-curses
+.\.venv\Scripts\python tests\run_all.py
+```
+
+Covers the control-plane API, the reporting client, preset parity across
+GUI/TUI/web, and the dashboard phase-table logic.
 
 ## Interpreting results
 
