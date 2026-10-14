@@ -1837,7 +1837,7 @@ async function powerRunner(id, kind) {
   const extra = busy ? "\n\nA run is in progress and will be stopped first." : "";
   if (!confirm(verb + " " + name + "?" + extra + "\n\nThis powers off the machine.")) return;
   try {
-    const res = await api("/runners/" + id + "/commands", "POST", { kind, payload: {} });
+    const res = await api("/runners/" + id + "/commands", "POST", { kind, payload: { confirm: true } });
     trackCommand(res, id, kind, name);
     toast(verb.toLowerCase() + " sent to " + name);
     refresh();
