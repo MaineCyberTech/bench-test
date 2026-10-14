@@ -13,7 +13,10 @@ workstation benchmark & stress toolkit with a fleet control plane.
 - **`server/`** — `benchd`, a dependency-free control plane (HTTP + SSE + SQLite)
   and its self-contained web dashboard, plus `import_results.py`.
 - **`live/`** — the bootable Arch live-USB build.
-- **`tests/`** — the stdlib test suite (`python tests/run_all.py`).
+- **`tests/`** — the test suite (run it from the repo venv:
+  `.venv\Scripts\python.exe tests\run_all.py` on Windows, `.venv/bin/python
+  tests/run_all.py` on Linux; the TUI tests import `curses`, and some behaviour
+  checks need `psutil`/`numpy`).
 - **`docs/`**, **`examples/`**, **`results/`**.
 
 ## Ground rules
@@ -123,9 +126,10 @@ else; a local battery needs a toolkit checkout (`$BENCH_REPO`).
 
 4 Hz rows, per run (`--interval 0.25`). Only the **cheap** stats are sampled per
 row: a row's `nvidia-smi` (GPU util/temp/fan/power/clocks/VRAM/pstate, ~66 ms a
-call) is cached at 2 Hz (`--gpu-interval`) and `sensors`/`nvidia-settings` (CPU
-temps, fan RPM) at 1 Hz (`--slow-interval`). Polling everything every row cost
-~0.3 s an iteration, so a 4 Hz request really delivered 2.9 rows/s. Canonical
+call) is cached at 1 Hz (`--gpu-interval`, default 1.0) and
+`sensors`/`nvidia-settings` (CPU temps, fan RPM) at 1 Hz (`--slow-interval`).
+Polling everything every row cost ~0.3 s an iteration, so a 4 Hz request really
+delivered 2.9 rows/s. Canonical
 fields: `elapsed, temp_c, fan_pct, power_w, gpu_util,
 gpu_fan_rpm, cpu_util, ram_used, sm_mhz, mem_used` plus extras (`mem_util,
 mem_mhz, vram_used_mib, cpu_temp_c, cpu_max_core_c, cpu_fan_rpm, load1,
@@ -163,9 +167,14 @@ touching either path.
 
 ## Testing — required before every commit
 
+Run the suite from the repo venv: the TUI tests import `curses` (`windows-curses`
+on Windows), a TUI behaviour check needs `psutil`, and a RAM-integrity check only
+runs when `numpy` is importable. The suite files themselves add no third-party
+imports.
+
 ```bash
-python tests/run_all.py            # RESULT: PASS expected
-#   (needs the venv, or windows-curses + psutil: the TUI tests import curses)
+.venv\Scripts\python.exe tests\run_all.py     # Windows — RESULT: PASS expected
+.venv/bin/python tests/run_all.py             # Linux / live USB
 python -m py_compile bench/*.py server/*.py
 bash -n bench/Run-LinuxBench.sh live/Build-LiveUSB.sh live/airootfs/usr/local/bin/bench-*
 ```

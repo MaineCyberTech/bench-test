@@ -118,7 +118,7 @@ UI-facing:
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/state` | snapshot: runners, active runs (+latest telemetry, phases), recent, `hosts`, `server_git` |
-| GET | `/stream?token=` | SSE: `snapshot`/`runner`/`run`/`phase`/`telemetry`/`command`/`log`/`schedule`/`event` |
+| GET | `/stream?token=` | SSE: `snapshot`/`runner`/`run`/`phase`/`telemetry` (coalesced)/`command`/`log`/`schedule`/`event` |
 | GET | `/runners` · `/runs` · `/runs/<id>` | fleet / history / detail |
 | GET | `/runs/<id>/telemetry?max=N` | downsampled series (named fields) |
 | GET | `/runs/<id>/logs?after=&limit=` | the run's live console lines |
@@ -136,6 +136,26 @@ UI-facing:
 Runner-scoped routes (`/register`, heartbeat, `/runners/<id>/commands`, command
 `ack`, and run writes) require a **per-runner API key** and are scoped to the
 caller's own runner/run; the shared operator token may act on anything.
+
+### Live stream (SSE)
+
+`GET /stream?token=` is the dashboard's live path (an `EventSource`):
+
+- **Cadence.** `telemetry` events are coalesced: a run's samples accumulate on
+  the server and one event per run per tick (0.5 s, so at most 2/s) carries
+  every sample since the previous event, instead of one event per posted batch.
+  A `runner` event carries the full record only when something besides liveness
+  changed; otherwise it is a slim update (`id`, `last_seen`, `online`), so the
+  fleet view still moves without re-sending capabilities on every 2 s heartbeat.
+- **Slow consumers are closed, not starved.** Each stream has a bounded queue
+  (1000 events) and there is a cap of 64 concurrent streams (further connects
+  get a 503 and retry on their own). A subscriber that still falls behind has
+  its stream closed; the browser reconnects automatically and refetches each
+  active run's telemetry, so a stalled dashboard recovers instead of silently
+  missing samples.
+- **Commit comparison is cached.** `update_available`/`toolkit_status` come from
+  a cache refreshed in the background (4 s cap per GitHub call), so `/state`,
+  `/runners` and heartbeats never block on GitHub being slow or down.
 
 **Who handles which command:** the headless agent implements every kind; the
 GUI/TUI dashboards implement `start`/`stop`/`fan_curve`/`shutdown`/`reboot`, the
@@ -203,6 +223,33 @@ pct exec 108 -- systemctl mask tmp.mount run-lock.mount dev-mqueue.mount
 ```
 
 `onboot=1` starts it with the node. Live-USB and workstation runners reach it over the LAN/overlay.
+
+### Service hardening and the `User=` migration
+
+`server/benchd.service` runs with `NoNewPrivileges`, `PrivateTmp`,
+`ProtectSystem=full`, `ProtectHome`, `RestrictSUIDSGID`, `ProtectKernelTunables`,
+`ProtectKernelModules`, `ProtectControlGroups`, `LockPersonality` and
+`RestrictRealtime`, and scopes `ReadWritePaths` to the data dir
+(`server/data/`). It deliberately still runs as **root**: the lab deployment
+keeps its state under `/opt/bench-test` (the git checkout used by
+`POST /server/update` and the default SQLite DB), and `ProtectSystem=full`
+leaves `/opt` writable so both keep working.
+
+To move it to a dedicated account on a fresh deployment:
+
+1. `useradd --system --home /opt/bench-test --shell /usr/sbin/nologin benchd`
+2. `chown -R benchd: /opt/bench-test` (or move the DB out: run with
+   `--db /var/lib/benchd/benchd.sqlite`, `install -d -o benchd /var/lib/benchd`)
+3. Add `User=benchd` / `Group=benchd` to the unit. Keep the checkout writable if
+   you want the self-update; to give the service *only* its data dir, switch
+   `ProtectSystem=strict` with `ReadWritePaths=/var/lib/benchd` and deploy by
+   copy instead of `git pull`.
+4. `systemctl daemon-reload && systemctl restart benchd`, then check
+   `journalctl -u benchd` for startup errors.
+
+Numeric env values (`BENCHD_RETENTION_DAYS`, `BENCHD_AUTO_UPDATE_HOURS`) are
+parsed defensively: a typo logs a warning and falls back to the default instead
+of crash-looping the unit.
 
 ## Data captured per run
 
@@ -291,6 +338,11 @@ pct exec 108 -- systemctl mask tmp.mount run-lock.mount dev-mqueue.mount
   touches a running run; the run rows, phases, artifacts, commands and summaries
   are kept, because that is what History, Trends, Compare and Fleet read. See
   [`DATA.md`](DATA.md#5-retention) for the runner-side knobs too.
+- **Backfill** (`server/import_results.py`): each unit gets a deterministic run
+  id, so re-running over the same results directory is a no-op (already-imported
+  units are skipped); `--reset` pages through and deletes *all* existing runs
+  first. Prefer `$BENCHD_TOKEN` or `--token-file PATH` over `--token`, which is
+  visible in the process list.
 
 ## Tests
 

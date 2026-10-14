@@ -11,12 +11,18 @@ Walks a results directory and creates one run per completed session:
     python3 server/import_results.py --server http://lab:8722 --token XXX --dir results
     python3 server/import_results.py ... --dry-run
 
+The token is visible in `ps` when passed as `--token`; prefer $BENCHD_TOKEN or
+`--token-file PATH` (first line). Each unit gets a deterministic run id, so
+re-running over the same directory is a no-op instead of duplicating every run;
+`--reset` deletes every existing run first (all pages, not just the first 1000).
+
 Stdlib only.
 """
 import argparse
 import base64
 import csv
 import glob
+import hashlib
 import json
 import math
 import os
@@ -93,6 +99,17 @@ def _dur(s):
     s = int(s or 0)
     return ("%dh%02dm" % (s // 3600, (s % 3600) // 60) if s >= 3600
             else "%dm%02ds" % (s // 60, s % 60))
+
+
+def import_id(kind, *parts):
+    """Deterministic run id for one result unit (host + source + start).
+
+    The server's POST /runs is idempotent on a client-supplied id, so a second
+    import of the same directory adopts the existing run instead of minting a
+    fresh UUID and duplicating it.
+    """
+    h = hashlib.sha1("|".join([kind] + [str(p) for p in parts]).encode("utf-8")).hexdigest()
+    return "imp-%s-%s" % (kind, h[:20])
 
 
 def _throttle_active(thr):
@@ -359,10 +376,20 @@ def build_linux(d, rep, j):
     for ph in j.get("phases", []) if isinstance(j.get("phases"), list) else []:
         phases.append((ph.get("group") or "gpu", ph.get("phase"), t, t + 15))
         t += 15
-    tele = []
+    dur = (j.get("telemetry") or {}).get("duration_s") or 0
+    ended = started + dur if dur else started + 60
+    # the CSV of THIS session: like the Windows path, only files whose mtime
+    # falls inside the run's window count - the first glob match used to attach
+    # an arbitrary (possibly stale) session's telemetry
+    window_end = (started + dur + 120) if dur else (started + 8 * 3600)
+    tele, best_mt = [], None
     for p in glob.glob(os.path.join(d, "*.telemetry.csv")):
-        tele = read_telemetry(p, t0=started)
-        break
+        try:
+            mt = os.path.getmtime(p)
+        except OSError:
+            continue
+        if started - 120 <= mt <= window_end and (best_mt is None or mt > best_mt):
+            tele, best_mt = read_telemetry(p, t0=started), mt
     _merge_into(summary, j)
     vs = _hardware_verdicts(d)
     if vs:
@@ -370,8 +397,6 @@ def build_linux(d, rep, j):
     arts = [("report.json", "json", json.dumps(j))]
     if os.path.isfile(idx):
         arts.append(("runs-index.jsonl", "text", open(idx, encoding="utf-8").read()))
-    dur = (j.get("telemetry") or {}).get("duration_s") or 0
-    ended = started + dur if dur else started + 60
     system = _linux_system(j)
     return host, started, phases, tele, arts, summary, ended, system
 
@@ -379,21 +404,49 @@ def build_linux(d, rep, j):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--server", default=os.environ.get("BENCHD_SERVER", ""))
-    ap.add_argument("--token", default=os.environ.get("BENCHD_TOKEN", ""))
+    ap.add_argument("--token", default=None,
+                    help="operator token (prefer $BENCHD_TOKEN or --token-file: argv is "
+                         "visible to every process on the host)")
+    ap.add_argument("--token-file", default=os.environ.get("BENCHD_TOKEN_FILE") or "",
+                    help="read the token from a file (first line); $BENCHD_TOKEN_FILE works too")
     ap.add_argument("--dir", default="results")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--reset", action="store_true", help="delete existing runs first")
     a = ap.parse_args()
+    if a.token_file and not a.token:
+        try:
+            with open(a.token_file, encoding="utf-8") as fh:
+                text = fh.read().strip()
+        except OSError as e:
+            print("cannot read --token-file %s: %s" % (a.token_file, e))
+            return 2
+        a.token = text.splitlines()[0].strip() if text else ""
+    a.token = a.token or os.environ.get("BENCHD_TOKEN", "")
     if not a.server or not a.token:
-        print("need --server and --token"); return 2
+        print("need --server and a token (--token, --token-file or $BENCHD_TOKEN)")
+        return 2
     root = os.path.abspath(a.dir)
 
     if a.reset and not a.dry_run:
-        _, r = post(a.server, a.token, "/api/v1/runs?limit=1000", method="GET")
-        ids = [x["id"] for x in r.get("runs", [])]
-        for rid in ids:
-            post(a.server, a.token, "/api/v1/runs/%s" % rid, method="DELETE")
-        print("reset: deleted %d existing runs" % len(ids))
+        # page through everything: deleting one page shifted the next into view,
+        # so the old single-page reset silently left runs behind. Always delete
+        # offset 0 and stop when a page brings nothing new - which also
+        # terminates if a delete keeps failing.
+        deleted, seen = 0, set()
+        while True:
+            st, r = post(a.server, a.token, "/api/v1/runs?limit=1000", method="GET")
+            if st != 200:
+                print("reset: list failed (%s)" % st)
+                break
+            ids = [x["id"] for x in (r or {}).get("runs", [])
+                   if isinstance(x, dict) and x.get("id") not in seen]
+            if not ids:
+                break
+            seen.update(ids)
+            for rid in ids:
+                post(a.server, a.token, "/api/v1/runs/%s" % rid, method="DELETE")
+            deleted += len(ids)
+        print("reset: deleted %d existing runs" % deleted)
 
     wins = list(windows_units(root))
     win_starts = [w[3] for w in wins] + [float("inf")]
@@ -407,13 +460,17 @@ def main():
                system.get("cpu") or ""))
         if a.dry_run:
             continue
+        run_id = import_id("win", host, os.path.basename(man), int(started))
         st, r = post(a.server, a.token, "/api/v1/runs",
-                     {"host": host, "label": label, "profile": {"imported": True},
+                     {"id": run_id, "host": host, "label": label,
+                      "profile": {"imported": True},
                       "started": started, "platform": system.get("platform"),
                       "gpu": system.get("gpu"), "driver": system.get("driver"),
                       "system": system})
-        run_id = r.get("run_id")
-        if not run_id:
+        if r.get("existing"):
+            print("  skip (already imported)")
+            continue
+        if not r.get("run_id"):
             print("  FAIL create:", r); continue
         fail = upload_run(a.server, a.token, run_id, phases, tele, arts, summary,
                           ended=ended, system=system)
@@ -432,14 +489,18 @@ def main():
                system.get("cpu") or ""))
         if a.dry_run:
             continue
+        run_id = import_id("lin", host, os.path.basename(d), int(started))
         st, r = post(a.server, a.token, "/api/v1/runs",
-                     {"host": host, "label": "Linux battery", "profile": {"imported": True},
+                     {"id": run_id, "host": host, "label": "Linux battery",
+                      "profile": {"imported": True},
                       "started": started, "platform": system.get("platform"),
                       "gpu": summary.get("gpu") or system.get("gpu"),
                       "driver": summary.get("driver") or system.get("driver"),
                       "torch": summary.get("torch"), "system": system})
-        run_id = r.get("run_id")
-        if not run_id:
+        if r.get("existing"):
+            print("  skip (already imported)")
+            continue
+        if not r.get("run_id"):
             print("  FAIL create:", r); continue
         fail = upload_run(a.server, a.token, run_id, phases, tele, arts, summary,
                           ended=ended, system=system)

@@ -9,12 +9,12 @@ live 4 Hz telemetry, a JSON + Markdown report per run, and an optional
 Built to compare machines (before/after a GPU, driver, or cooling change) with
 reproducible numbers, and to catch instability under sustained load.
 
-**Release `v1.1.0`** — the version lives in `VERSION` and is reported everywhere it
-matters: the GUI/TUI headers, each runner (so the fleet view says what a box is
-running), the web dashboard, and `GET /health` on the control plane. It is a
-release line plus an automatic build: `1.11.3+<n>.<commit>`, so every update is a
-distinct version rather than one number shared by many builds. Release artifacts
-name it too (`ISO <gpu> v1.11.3 #<run>`).
+**Release version** lives in `VERSION` and is reported everywhere it matters: the
+GUI/TUI headers, each runner (so the fleet view says what a box is running), the
+web dashboard, and `GET /health` on the control plane. It is a release line plus
+an automatic build: `<release>+<n>.<commit>`, so every update is a distinct
+version rather than one number shared by many builds. Release artifacts name it
+too (`ISO <gpu> v<release> #<run>`).
 
 - **Runs on:** Windows 10/11 (PowerShell + Python), Linux (Python + Bash), and a
   bootable **live USB** (Arch) that needs no install.
@@ -212,7 +212,10 @@ closes dialogs, `/` jumps to search.
 - **Runner identity:** stable per machine (`machine_id` + role) — a re-registration
   or an ephemeral live-USB boot reuses one row instead of piling up duplicates,
   and the UI shows `name #short-uid` so hosts sharing a hostname differ.
-- **Backfill:** `python3 server/import_results.py --server URL --token T --dir results`
+- **Backfill:** `BENCHD_TOKEN=… python3 server/import_results.py --server URL --dir results`
+  (`--token-file PATH` / `$BENCHD_TOKEN_FILE` also work — a token on `argv` is visible
+  in `ps`). Each unit gets a deterministic id, so re-running is a no-op; `--reset`
+  deletes every existing run first (all pages, not just the first 1000).
 - Full API + deployment (Proxmox LXC): [`docs/CONTROL_PLANE.md`](docs/CONTROL_PLANE.md).
 
 ## Presets

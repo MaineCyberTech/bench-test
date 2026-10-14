@@ -32,6 +32,7 @@ import io
 import json
 import math
 import os
+import queue
 import re
 import secrets
 import sqlite3
@@ -179,6 +180,8 @@ CREATE INDEX IF NOT EXISTS idx_cmd_runner ON commands(runner_id, status);
 CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, ts);
 CREATE INDEX IF NOT EXISTS idx_logs_run ON logs(run_id, id);
 CREATE INDEX IF NOT EXISTS idx_sched_next ON schedules(enabled, next_run);
+-- the host filter / trend list scan this
+CREATE INDEX IF NOT EXISTS idx_runs_host ON runs(host);
 """
 
 
@@ -228,6 +231,24 @@ class Store:
                           "(SELECT MAX(id) FROM phases GROUP BY run_id, seq)")
         self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_phases_run_seq "
                           "ON phases(run_id, seq)")
+        # runners.api_key is looked up on every authenticated request (and the
+        # machine_id+kind+instance adoption on every register); both were full
+        # table scans. The unique index also enforces one key per runner. A
+        # legacy database can carry blank/duplicate keys (which never
+        # authenticated unambiguously): clear the extras first so the index can
+        # be created - the runner re-registers and gets a fresh key.
+        self.conn.execute("UPDATE runners SET api_key=NULL WHERE api_key=''")
+        dups = [r[0] for r in self.conn.execute(
+            "SELECT id FROM runners WHERE api_key IS NOT NULL AND id NOT IN "
+            "(SELECT MIN(id) FROM runners WHERE api_key IS NOT NULL GROUP BY api_key)")]
+        for rid in dups:
+            self.conn.execute("UPDATE runners SET api_key=NULL WHERE id=?", (rid,))
+        self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_runners_api_key "
+                          "ON runners(api_key)")
+        # after the ALTERs above: machine_id is a migrated column, so the index
+        # cannot live in SCHEMA (a legacy table would not have it yet)
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_runners_machine "
+                          "ON runners(machine_id)")
 
     def ex(self, sql, args=()):
         with self.lock:
@@ -245,15 +266,42 @@ class Store:
 
 
 # ----------------------------------------------------------------------- bus --
+# Wakes a stream whose subscriber queue overflowed; the handler then closes the
+# connection so the browser's EventSource reconnects and refetches.
+_SSE_OVERFLOW = object()
+
+
 class Bus:
-    def __init__(self):
+    """Fan-out of live events to SSE subscribers.
+
+    Bounded on every axis: concurrent streams are capped, each subscriber queue
+    is capped, telemetry is coalesced to one event per run per tick, and an
+    event is serialised once rather than once per subscriber. A subscriber that
+    still falls behind is closed (not silently starved): its queue is cleared
+    and it is woken with a sentinel, so the client reconnects and refreshes.
+    """
+
+    MAX_SUBS = 64               # concurrent SSE streams
+    QUEUE_MAX = 1000            # events a single subscriber may fall behind by
+    TELEMETRY_FLUSH_S = 0.5     # telemetry cadence: at most 2 events/s per run
+
+    def __init__(self, flush_s=None):
         self.lock = threading.Lock()
         self.subs = set()
+        self._pending = {}          # run_id -> {"samples": [...], "n": int}
+        self._runner_sigs = {}      # runner id -> fields that last went out
+        self._stop = threading.Event()
+        if flush_s is not None:
+            self.TELEMETRY_FLUSH_S = flush_s
+        threading.Thread(target=self._telemetry_loop, daemon=True,
+                         name="benchd-sse-flush").start()
 
     def subscribe(self):
-        import queue
-        q = queue.Queue(maxsize=1000)
+        """A new subscriber queue, or None when the stream cap is reached."""
+        q = queue.Queue(maxsize=self.QUEUE_MAX)
         with self.lock:
+            if len(self.subs) >= self.MAX_SUBS:
+                return None
             self.subs.add(q)
         return q
 
@@ -261,14 +309,105 @@ class Bus:
         with self.lock:
             self.subs.discard(q)
 
+    @staticmethod
+    def _frame(ev):
+        """One SSE frame, serialised once and shared by every subscriber."""
+        return ("event: %s\ndata: %s\n\n"
+                % (ev.get("event", "message"), _json_dumps(ev.get("data", {})))).encode()
+
     def publish(self, ev):
+        frame = self._frame(ev)
         with self.lock:
             subs = list(self.subs)
         for q in subs:
             try:
-                q.put_nowait(ev)
+                q.put_nowait(frame)
+            except queue.Full:
+                self._overflow(q)
+
+    def _overflow(self, q):
+        """Detach a subscriber that cannot keep up and wake it to close.
+
+        Dropping events silently left a stalled dashboard showing stale data
+        with no way to recover; closing the stream makes EventSource reconnect,
+        and the reconnect refetches the run's buffer.
+        """
+        with self.lock:
+            if q not in self.subs:
+                return
+            self.subs.discard(q)
+        try:
+            while True:
+                q.get_nowait()
+        except queue.Empty:
+            pass
+        try:
+            q.put_nowait(_SSE_OVERFLOW)
+        except Exception:
+            pass
+
+    def publish_telemetry(self, run_id, samples, n=None):
+        """Coalesce a run's live samples into one event per tick.
+
+        A runner posts telemetry in batches (the importer in 200-sample
+        chunks); emitting one event per batch serialised and fanned out every
+        one. Samples accumulate and the flusher emits a single event per run
+        per tick carrying every sample since the last one.
+        """
+        if not samples:
+            return
+        with self.lock:
+            p = self._pending.setdefault(run_id, {"samples": [], "n": 0})
+            p["samples"].extend(samples)
+            if len(p["samples"]) > self.QUEUE_MAX:
+                p["samples"] = p["samples"][-self.QUEUE_MAX:]
+            p["n"] += n if n is not None else len(samples)
+
+    def flush_telemetry(self):
+        with self.lock:
+            pending, self._pending = self._pending, {}
+        for run_id, p in pending.items():
+            if not p["samples"]:
+                continue
+            self.publish({"event": "telemetry",
+                          "data": {"run_id": run_id, "sample": p["samples"][-1],
+                                   "samples": p["samples"], "n": p["n"]}})
+
+    def _telemetry_loop(self):
+        while not self._stop.wait(self.TELEMETRY_FLUSH_S):
+            try:
+                self.flush_telemetry()
             except Exception:
                 pass
+
+    @staticmethod
+    def _runner_sig(r):
+        # last_seen/online move on every heartbeat by design; everything else is
+        # what a dashboard actually renders
+        return tuple(sorted((k, _json_dumps(v)) for k, v in r.items()
+                            if k not in ("last_seen", "online")))
+
+    def publish_runner(self, r):
+        """Publish a runner record, but only the fields that changed.
+
+        The heartbeat runs every 2 s and used to re-send the whole row
+        (capabilities, git, inventory) to every subscriber. The full record goes
+        out when anything other than liveness changes; otherwise a slim update
+        carries last_seen so online/offline still moves.
+        """
+        if not r:
+            return
+        sig = self._runner_sig(r)
+        with self.lock:
+            changed = self._runner_sigs.get(r.get("id")) != sig
+            if changed:
+                self._runner_sigs[r.get("id")] = sig
+        if changed:
+            self.publish({"event": "runner", "data": r})
+        else:
+            self.publish({"event": "runner",
+                          "data": {"id": r.get("id"), "last_seen": r.get("last_seen"),
+                                   "online": r.get("online"), "delta": True}})
 
 
 # ------------------------------------------------------------------ helpers ---
@@ -343,38 +482,59 @@ GH_API = os.environ.get("BENCH_GH_API") or "https://api.github.com"
 _REF = {"v": None, "t": 0.0}
 REF_TTL = 120.0
 _CMP = {}
+_CMP_PENDING = set()
+_CMP_LOCK = threading.Lock()
+_CMP_TTL = 600.0          # cached compare results are refreshed after this
+COMPARE_TIMEOUT_S = 4.0   # hard cap on a background GitHub compare
 
 
 def compare_detail(base, head):
-    """(status, files) for GitHub compare `base...head`.
+    """(status, files) for GitHub compare `base...head`, from cache.
 
     status is ahead|behind|diverged|identical|'' (unknown); `files` are the changed
     paths GitHub reports (possibly truncated, [] when unknown) - enough to tell a
     docs-only difference from a real one.
+
+    A cache miss returns ("", []) immediately and refreshes in the background.
+    This used to block the request for up to 8 s per unknown commit pair inside
+    /state, /runners and every heartbeat broadcast, so a slow GitHub stalled
+    every dashboard. Callers see the refreshed value on a later request.
     """
     if not base or not head:
         return "", []
     if base == head:
         return "identical", []
     key = (base, head)
-    if key in _CMP:
-        return _CMP[key]
+    t = time.time()
+    with _CMP_LOCK:
+        hit = _CMP.get(key)
+        if hit and (t - hit[2]) < _CMP_TTL:
+            return hit[0], hit[1]
+        if key not in _CMP_PENDING:
+            _CMP_PENDING.add(key)
+            threading.Thread(target=_compare_fetch, args=(key,), daemon=True).start()
+    return (hit[0], hit[1]) if hit else ("", [])
+
+
+def _compare_fetch(key):
+    base, head = key
     status, files = "", []
     if os.environ.get("BENCH_OFFLINE") != "1":
         try:
             url = "%s/repos/%s/compare/%s...%s" % (GH_API, REPO_SLUG, base, head)
             req = urllib.request.Request(url, headers={"User-Agent": "benchd",
                                                        "Accept": "application/vnd.github+json"})
-            with urllib.request.urlopen(req, timeout=8) as r:
+            with urllib.request.urlopen(req, timeout=COMPARE_TIMEOUT_S) as r:
                 j = json.loads(r.read().decode())
             status = str(j.get("status") or "")
             files = [str(f.get("filename") or "") for f in (j.get("files") or [])]
         except Exception:
             status, files = "", []
-    if len(_CMP) > 500:
-        _CMP.clear()
-    _CMP[key] = (status, files)
-    return status, files
+    with _CMP_LOCK:
+        if len(_CMP) > 500:
+            _CMP.clear()
+        _CMP[key] = (status, files, time.time())
+        _CMP_PENDING.discard(key)
 
 
 def compare_commits(base, head):
@@ -665,8 +825,15 @@ class Handler(BaseHTTPRequestHandler):
     bus = None
     token = None
     web_dir = WEB_DIR
+    # resolved once per request (see _caller); a keep-alive connection reuses
+    # the handler instance, so parse_request clears it
+    _caller_cache = None
 
     # -- plumbing ----------------------------------------------------------
+    def parse_request(self):
+        self._caller_cache = None
+        return super().parse_request()
+
     def log_message(self, fmt, *args):
         if getattr(self.server, "quiet", False):
             return
@@ -772,9 +939,7 @@ class Handler(BaseHTTPRequestHandler):
         access logs, and the documented exception is only the SSE stream and
         file downloads (which cannot set headers), handled by _query_token_ok.
         """
-        if self.token is None:
-            return True
-        return self._token_eq(self._bearer(), self.token)
+        return self._caller()[0]
 
     def _query_token_ok(self, q):
         """The operator token as ?token= - SSE and downloads only."""
@@ -787,22 +952,26 @@ class Handler(BaseHTTPRequestHandler):
         return self._token_eq(v, self.token)
 
     def _runner_ok(self, rid=None):
-        if self.token is None:
-            return True
-        if self._token_eq(self._bearer(), self.token):
-            return True
-        r = self._runner_from_bearer()
-        if r and (rid is None or r["id"] == rid):
-            return True
-        return False
+        op, r = self._caller()
+        return bool(op or (r and (rid is None or r["id"] == rid)))
 
     def _caller(self):
-        """(is_operator, runner_row_or_None) for the current request."""
+        """(is_operator, runner_row_or_None) for the current request.
+
+        Resolved once per request: the POST gate, _may_act_as and _may_write_run
+        each used to hit the api_key lookup again (twice per write, with the
+        bearer re-parsed), which is a table scan on an unindexed column.
+        """
+        cached = self._caller_cache
+        if cached is not None:
+            return cached
         if self.token is None:
-            return True, None
-        if self._token_eq(self._bearer(), self.token):
-            return True, None
-        return False, self._runner_from_bearer()
+            self._caller_cache = (True, None)
+        elif self._token_eq(self._bearer(), self.token):
+            self._caller_cache = (True, None)
+        else:
+            self._caller_cache = (False, self._runner_from_bearer())
+        return self._caller_cache
 
     def _may_act_as(self, rid):
         """The operator, or the runner itself."""
@@ -1118,6 +1287,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _stream(self):
         q = self.bus.subscribe()
+        if q is None:
+            # capped: an explicit refusal beats an unbounded set of streams (and
+            # EventSource retries on its own)
+            return self._err(503, "too many live streams; retry shortly")
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
@@ -1128,11 +1301,17 @@ class Handler(BaseHTTPRequestHandler):
             self._sse("snapshot", {"server_time": now()})
             while True:
                 try:
-                    ev = q.get(timeout=15)
-                    self._sse(ev.get("event", "message"), ev.get("data", {}))
-                except Exception:
+                    frame = q.get(timeout=15)
+                except queue.Empty:
                     self.wfile.write(b": keepalive\n\n")
                     self.wfile.flush()
+                    continue
+                if frame is _SSE_OVERFLOW:
+                    # this subscriber fell behind: close so the client reconnects
+                    # and refetches, instead of losing events silently
+                    break
+                self.wfile.write(frame)
+                self.wfile.flush()
         except Exception:
             pass
         finally:
@@ -1176,7 +1355,9 @@ class Handler(BaseHTTPRequestHandler):
             S.ex("UPDATE runners SET %s WHERE id=?" % ",".join(fields), args)
             r = runner_public(S.one("SELECT * FROM runners WHERE id=?", (rid,)))
             if r:
-                self.bus.publish({"event": "runner", "data": r})
+                # full record only when something changed; otherwise a slim
+                # liveness update (capabilities etc. are not re-sent every 2 s)
+                self.bus.publish_runner(r)
             pending = S.one("SELECT COUNT(*) c FROM commands WHERE runner_id=? AND status='queued'",
                             (rid,))["c"]
             return self._send(200, {"ok": True, "commands": pending, "server_time": now()})
@@ -1317,12 +1498,9 @@ class Handler(BaseHTTPRequestHandler):
                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", rows)
                 S.conn.commit()
             if named:
-                # publish the WHOLE batch: a runner posts telemetry in chunks, and
-                # sending only the last sample made the live web view undersample
-                # (one point per chunk instead of per second)
-                self.bus.publish({"event": "telemetry",
-                                  "data": {"run_id": run_id, "sample": named[-1],
-                                           "samples": named[-1000:], "n": len(rows)}})
+                # coalesced: one event per run per tick carrying every sample
+                # since the last one (a batch-per-event fan-out was unbounded)
+                self.bus.publish_telemetry(run_id, named, len(rows))
             return self._send(200, {"ok": True, "accepted": len(rows)})
         m = re.match(r"^/api/v1/runs/([^/]+)/event$", path)
         if m:
@@ -1467,7 +1645,7 @@ class Handler(BaseHTTPRequestHandler):
               b.get("status", "idle"), b.get("current_run"), self.client_address[0],
               b.get("git"), key, mid, 1 if b.get("ephemeral") else 0, inst))
         r = runner_public(S.one("SELECT * FROM runners WHERE id=?", (rid,)))
-        self.bus.publish({"event": "runner", "data": r})
+        self.bus.publish_runner(r)
         return self._send(200, {"runner_id": rid, "api_key": key, "poll_interval": 2.0,
                                 "telemetry_interval": 1.0, "server_time": now()})
 

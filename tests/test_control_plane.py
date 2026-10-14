@@ -851,6 +851,165 @@ def run():
             st == 200 and _rs.one("SELECT current_run FROM runners WHERE id=?",
                                   (rrid,))["current_run"] is None, st)
 
+    # ---- server scale: the SSE fan-out is bounded ----
+    _b = B.Bus(flush_s=3600)
+    _qs = [_b.subscribe() for _ in range(B.Bus.MAX_SUBS)]
+    c.check("concurrent SSE subscribers are capped", _b.subscribe() is None, "")
+    _b.unsubscribe(_qs.pop())
+    c.check("unsubscribing frees a stream slot", _b.subscribe() is not None, "")
+    for _q in _qs:
+        _b.unsubscribe(_q)
+
+    _b2 = B.Bus(flush_s=3600)
+    _q1, _q2 = _b2.subscribe(), _b2.subscribe()
+    _b2.publish({"event": "runner", "data": {"id": "x"}})
+    _f1, _f2 = _q1.get_nowait(), _q2.get_nowait()
+    c.check("an event is serialised once and shared by every subscriber",
+            _f1 is _f2 and _f1.startswith(b"event: runner"), (_f1, _f2))
+    for _ in range(B.Bus.QUEUE_MAX + 1):
+        _b2.publish({"event": "noise", "data": {"i": 1}})
+    c.check("an overflowed subscriber is detached and woken to close",
+            _q1.get_nowait() is B._SSE_OVERFLOW and _q1 not in _b2.subs, "")
+    _b2.unsubscribe(_q2)
+
+    # telemetry is coalesced to one event per run per tick, not one per batch
+    _b3 = B.Bus(flush_s=3600)
+    _q3 = _b3.subscribe()
+    _b3.publish_telemetry("run-a", [{"elapsed": 1.0}], 1)
+    _b3.publish_telemetry("run-a", [{"elapsed": 2.0}], 1)
+    _b3.publish_telemetry("run-b", [{"elapsed": 1.0}], 1)
+    _b3.flush_telemetry()
+    _evs = []
+    try:
+        while True:
+            _evs.append(_q3.get_nowait())
+    except Exception:
+        pass
+    c.check("telemetry batches inside one tick are coalesced per run",
+            len(_evs) == 2 and {e.split(b"\n")[0] for e in _evs} == {b"event: telemetry"},
+            _evs)
+    _tel_a = json.loads([e for e in _evs if b"run-a" in e][0]
+                        .split(b"data: ", 1)[1].decode().strip())
+    c.check("the coalesced event carries every sample since the last tick",
+            len(_tel_a["samples"]) == 2 and _tel_a["n"] == 2
+            and _tel_a["sample"]["elapsed"] == 2.0, _tel_a)
+    _b3.unsubscribe(_q3)
+
+    # a runner heartbeat sends the full record only when something changed
+    _b4 = B.Bus(flush_s=3600)
+    _q4 = _b4.subscribe()
+    _rec = {"id": "r1", "name": "box", "capabilities": {"groups": ["gpu"]},
+            "last_seen": 100.0, "online": True}
+    _b4.publish_runner(dict(_rec))
+    _b4.publish_runner(dict(_rec, last_seen=102.0))
+    _full = json.loads(_q4.get_nowait().split(b"data: ", 1)[1].decode().strip())
+    _delta = json.loads(_q4.get_nowait().split(b"data: ", 1)[1].decode().strip())
+    c.check("the first heartbeat publishes the full runner record",
+            _full.get("capabilities") == {"groups": ["gpu"]} and not _full.get("delta"), _full)
+    c.check("an unchanged heartbeat publishes only the liveness delta",
+            _delta.get("delta") and "capabilities" not in _delta
+            and _delta.get("last_seen") == 102.0, _delta)
+    _b4.unsubscribe(_q4)
+
+    # ...and end to end: a stalled stream is closed so the client reconnects.
+    # A raw socket with a tiny receive buffer and an overall deadline: the
+    # handler cannot buffer its way out of the overflow, and the test can never
+    # hang (a keepalive would otherwise keep resetting a socket timeout).
+    _sk = socket.create_connection(("127.0.0.1", port), timeout=10)
+    _sk.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    _sk.sendall(("GET /api/v1/stream?token=%s HTTP/1.0\r\nHost: localhost\r\n\r\n"
+                 % TOKEN).encode())
+    _buf = b""
+    _deadline = time.time() + 10
+    while b"event: snapshot" not in _buf and time.time() < _deadline:
+        try:
+            _buf += _sk.recv(4096)
+        except socket.timeout:
+            break
+    c.check("a live stream opens", b"event: snapshot" in _buf, _buf[:60])
+    # one frame larger than any socket buffer parks the handler in write();
+    # the queue then fills and overflows
+    B.Handler.bus.publish({"event": "noise", "data": {"pad": "x" * (4 * 1024 * 1024)}})
+    for _ in range(B.Handler.bus.QUEUE_MAX + 2):
+        B.Handler.bus.publish({"event": "noise", "data": {"pad": "x" * 8192}})
+    _closed, _deadline = False, time.time() + 30
+    while time.time() < _deadline:
+        try:
+            _chunk = _sk.recv(262144)
+        except socket.timeout:
+            continue
+        except OSError:
+            break
+        if not _chunk:
+            _closed = True
+            break
+    _sk.close()
+    c.check("a stream that cannot keep up is closed, not silently starved", _closed, "")
+
+    # ---- server scale: the caller is resolved once per request ----
+    st, _regx = cl.call("POST", "/api/v1/register",
+                        {"name": "scale", "os": "Linux", "kind": "agent"})
+    _ridx, _keyx = _regx["runner_id"], _regx["api_key"]
+    st, _rrx = cl.call("POST", "/api/v1/runs", {"runner_id": _ridx, "host": "lab-scale"},
+                       token=_keyx)
+    _runx = _rrx["run_id"]
+    _rfb_calls = []
+    _real_rfb = B.Handler._runner_from_bearer
+
+    def _counting_rfb(self):
+        _rfb_calls.append(1)
+        return _real_rfb(self)
+
+    B.Handler._runner_from_bearer = _counting_rfb
+    try:
+        st, _ = cl.call("POST", "/api/v1/runs/%s/telemetry" % _runx,
+                        {"samples": [{"elapsed": 1}]}, token=_keyx)
+    finally:
+        B.Handler._runner_from_bearer = _real_rfb
+    c.check("a runner write resolves the caller once, not per gate",
+            st == 200 and len(_rfb_calls) == 1, (st, len(_rfb_calls)))
+
+    # ---- server scale: the lookups have real indexes ----
+    _plan = _rs.q("EXPLAIN QUERY PLAN SELECT * FROM runners WHERE api_key=?", ("x",))
+    c.check("the api_key lookup uses its unique index",
+            any("idx_runners_api_key" in (r.get("detail") or "") for r in _plan), _plan)
+    _plan = _rs.q("EXPLAIN QUERY PLAN SELECT * FROM runners WHERE machine_id=? AND kind=? "
+                  "AND COALESCE(instance,'')=?", ("m", "agent", ""))
+    c.check("machine_id adoption uses its index",
+            any("idx_runners_machine" in (r.get("detail") or "") for r in _plan), _plan)
+    _plan = _rs.q("EXPLAIN QUERY PLAN SELECT * FROM runs WHERE host=?", ("h",))
+    c.check("the runs host filter uses its index",
+            any("idx_runs_host" in (r.get("detail") or "") for r in _plan), _plan)
+
+    # a legacy database (no api_key/machine_id columns, duplicate keys) migrates
+    import sqlite3 as _sqlite3
+    _legacy = os.path.join(tmpdir(), "legacy.sqlite")
+    _con = _sqlite3.connect(_legacy)
+    _con.execute("CREATE TABLE runners (id TEXT PRIMARY KEY, name TEXT, api_key TEXT)")
+    _con.execute("INSERT INTO runners VALUES('a','one','dupkey')")
+    _con.execute("INSERT INTO runners VALUES('b','two','dupkey')")
+    _con.execute("INSERT INTO runners VALUES('c','three','')")
+    _con.commit()
+    _con.close()
+    _legacy_store = B.Store(_legacy)
+    _keys = {r["id"]: r["api_key"] for r in _legacy_store.q("SELECT id, api_key FROM runners")}
+    c.check("a legacy database with duplicate api_keys migrates to the unique index",
+            sum(1 for k in _keys.values() if k == "dupkey") == 1, _keys)
+    c.check("a blank api_key is cleared, not left to collide", _keys.get("c") is None, _keys)
+    _legacy_store.conn.close()
+
+    # ---- server scale: the commit compare never blocks a request ----
+    _t0 = time.time()
+    _cmp = B.compare_detail("cmpaaa1", "cmpbbb2")
+    _dt = time.time() - _t0
+    c.check("a compare cache miss returns immediately",
+            _cmp == ("", []) and _dt < 0.5, (_cmp, _dt))
+    _deadline = time.time() + 5
+    while time.time() < _deadline and ("cmpaaa1", "cmpbbb2") not in B._CMP:
+        time.sleep(0.05)
+    c.check("the compare is refreshed in the background",
+            ("cmpaaa1", "cmpbbb2") in B._CMP, list(B._CMP))
+
     srv.stop()
     return c.fails
 

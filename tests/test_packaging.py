@@ -274,6 +274,23 @@ def run():
     c.check("and it requires a serial device to exist",
             "ConditionPathExists=/dev/ttyS0" in drop, "")
 
+    # ---- the benchd unit hardens what is safe without breaking self-update ----
+    with open(os.path.join(REPO, "server", "benchd.service"), encoding="utf-8") as fh:
+        unit = fh.read()
+    for directive in ("NoNewPrivileges=true", "PrivateTmp=true", "ProtectSystem=full",
+                      "ProtectHome=true", "RestrictSUIDSGID=true",
+                      "ProtectKernelTunables=true", "ProtectKernelModules=true",
+                      "ProtectControlGroups=true"):
+        c.check("benchd.service sets %s" % directive, directive in unit, "")
+    c.check("benchd.service scopes its writes to the data dir",
+            "ReadWritePaths=-/opt/bench-test/server/data" in unit, "")
+    c.check("the unit still runs as root (the User= migration is documented, not applied)",
+            "User=" not in unit, "")
+    with open(os.path.join(REPO, "docs", "CONTROL_PLANE.md"), encoding="utf-8") as fh:
+        cp = fh.read()
+    c.check("the User= migration path is documented",
+            "User=benchd" in cp and "ProtectSystem=strict" in cp, "")
+
     # ---- the LLM phase must not hang on a wedged Ollama server ----
     # `ollama list` blocks forever when the server is stuck, which is how a full run
     # sat on a handheld for eight hours with the machine idle and no model line printed.

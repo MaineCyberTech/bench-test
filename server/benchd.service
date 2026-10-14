@@ -11,11 +11,23 @@ WorkingDirectory=/opt/bench-test
 ExecStart=/usr/bin/python3 /opt/bench-test/server/benchd.py --host 0.0.0.0 --port 8722
 Restart=on-failure
 RestartSec=3
-# harden a little; benchd only needs its db + web dir
+# harden; benchd needs its db + web dir and, for the self-update, its own git
+# checkout. ProtectSystem=full leaves /opt writable so `git pull` and the
+# default DB (server/data/benchd.sqlite) keep working, while /usr, /boot, /etc
+# and /home are read-only. ReadWritePaths is the write scope for the migration
+# to a dedicated user (see docs/CONTROL_PLANE.md) and is a no-op while /opt
+# stays writable. The '-' tolerates a first boot before the data dir exists.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
+RestrictSUIDSGID=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictRealtime=true
+ReadWritePaths=-/opt/bench-test/server/data
 
 [Install]
 WantedBy=multi-user.target

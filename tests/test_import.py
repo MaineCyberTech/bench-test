@@ -6,6 +6,7 @@ live-run path (`benchreport._merge_into` / `_hardware_verdicts`).
 """
 import json
 import os
+import re
 import sys
 import tempfile
 
@@ -97,6 +98,125 @@ def run():
     c.check("import: verdicts from health report",
             any("TDR" in v["text"] for v in vs) and
             all(v["level"] in ("good", "info", "warn", "bad") for v in vs), vs)
+
+    # ---- deterministic ids make a re-import idempotent ----
+    c.check("import_id is deterministic",
+            imp.import_id("win", "h", "m.json", 1) == imp.import_id("win", "h", "m.json", 1), "")
+    c.check("import_id differs per unit",
+            imp.import_id("win", "h", "a.json", 1) != imp.import_id("win", "h", "b.json", 1), "")
+    c.check("import_id is a safe server id",
+            bool(re.match(r"^[A-Za-z0-9_.:-]{1,64}$", imp.import_id("lin", "h", "d", 2))), "")
+
+    # ---- the Linux telemetry CSV is scoped to the run's window ----
+    _ld = tmpdir()
+    _lrep = os.path.join(_ld, "lh-20260101-000000-linux-abc.json")
+    _lj = {"host": "lh", "timestamp": "2026-01-01T00:00:00Z", "phases": [],
+           "telemetry": {"duration_s": 60}}
+    with open(_lrep, "w", encoding="utf-8") as fh:
+        json.dump(_lj, fh)
+    with open(os.path.join(_ld, "runs-index.jsonl"), "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"host": "lh"}) + "\n")
+    _stale = os.path.join(_ld, "aaa-stale.telemetry.csv")
+    _fresh = os.path.join(_ld, "zzz-fresh.telemetry.csv")
+    for _p, _temp in ((_stale, 999.0), (_fresh, 55.0)):
+        with open(_p, "w", encoding="utf-8") as fh:
+            fh.write("elapsed_s,temp_c\n0,%s\n" % _temp)
+    _lstarted = imp.epoch(_lj["timestamp"])
+    os.utime(_stale, (_lstarted - 3600, _lstarted - 3600))
+    os.utime(_fresh, (_lstarted + 30, _lstarted + 30))
+    _lhost, _lst, _lph, _ltele, _larts, _lsum, _lend, _lsys = imp.build_linux(_ld, _lrep, _lj)
+    c.check("the Linux telemetry CSV is scoped to the run's window, not the first glob match",
+            len(_ltele) == 1 and _ltele[0].get("temp_c") == 55.0, _ltele)
+
+    # ---- main(): --reset pages through everything, a re-import is a no-op, and
+    # the token can come from a file or the environment instead of argv ----
+    _empty = tmpdir()
+    _runs = [{"id": "r%d" % i} for i in range(2500)]
+    _deleted, _created, _existing, _tokens = [], {}, [], []
+
+    def _fake_post(server, token, path, body=None, method="POST"):
+        _tokens.append(token)
+        if method == "GET" and path.startswith("/api/v1/runs?"):
+            return 200, {"runs": _runs[:1000], "total": len(_runs)}
+        if method == "DELETE" and path.startswith("/api/v1/runs/"):
+            rid = path.rsplit("/", 1)[-1]
+            _deleted.append(rid)
+            _runs[:] = [r for r in _runs if r["id"] != rid]
+            return 200, {"ok": True}
+        if method == "POST" and path == "/api/v1/runs":
+            rid = (body or {}).get("id")
+            if rid in _created:
+                _existing.append(rid)
+                return 200, {"run_id": rid, "existing": True}
+            _created[rid] = body
+            return 200, {"run_id": rid}
+        return 200, {"ok": True}
+
+    _res = tmpdir()
+    with open(os.path.join(_res, "impbox-20260101-000000.manifest.json"), "w",
+              encoding="utf-8") as fh:
+        json.dump({"host": "impbox", "timestamp": "2026-01-01T00:00:00Z",
+                   "artifacts": {}}, fh)
+    _real_post = imp.post
+    _argv = sys.argv
+    imp.post = _fake_post
+    try:
+        sys.argv = ["import_results.py", "--server", "http://x", "--token", "t",
+                    "--dir", _empty, "--reset"]
+        _rc1 = imp.main()
+        c.check("--reset deletes every page, not just the first 1000",
+                _rc1 == 0 and len(_deleted) == 2500 and _runs == [],
+                (_rc1, len(_deleted), len(_runs)))
+        sys.argv = ["import_results.py", "--server", "http://x", "--token", "t",
+                    "--dir", _res]
+        _rc2 = imp.main()
+        _rc3 = imp.main()
+        c.check("a second import of the same directory creates no duplicate",
+                _rc2 == 0 and _rc3 == 0 and len(_created) == 1 and len(_existing) == 1,
+                (len(_created), _existing))
+
+        _tokf = os.path.join(tmpdir(), "token.txt")
+        with open(_tokf, "w", encoding="utf-8") as fh:
+            fh.write("file-token\nignored-second-line\n")
+        _saved = {k: os.environ.pop(k, None) for k in ("BENCHD_TOKEN", "BENCHD_TOKEN_FILE")}
+        try:
+            _tokens.clear()
+            sys.argv = ["import_results.py", "--server", "http://x", "--dir", _res,
+                        "--token-file", _tokf]
+            _rc = imp.main()
+            c.check("the token can come from --token-file",
+                    _rc == 0 and _tokens and all(t == "file-token" for t in _tokens),
+                    _tokens[:3])
+            _tokens.clear()
+            os.environ["BENCHD_TOKEN"] = "env-token"
+            sys.argv = ["import_results.py", "--server", "http://x", "--dir", _res]
+            _rc = imp.main()
+            c.check("the token can come from $BENCHD_TOKEN",
+                    _rc == 0 and _tokens and all(t == "env-token" for t in _tokens),
+                    _tokens[:3])
+            _tokens.clear()
+            os.environ.pop("BENCHD_TOKEN", None)
+            os.environ["BENCHD_TOKEN_FILE"] = _tokf
+            sys.argv = ["import_results.py", "--server", "http://x", "--dir", _res]
+            _rc = imp.main()
+            c.check("$BENCHD_TOKEN_FILE works like --token-file",
+                    _rc == 0 and _tokens and all(t == "file-token" for t in _tokens),
+                    _tokens[:3])
+            _tokens.clear()
+            os.environ.pop("BENCHD_TOKEN_FILE", None)
+            sys.argv = ["import_results.py", "--server", "http://x", "--dir", _res]
+            _rc = imp.main()
+            c.check("without a token the importer refuses (exit 2)",
+                    _rc == 2 and not _tokens, _rc)
+        finally:
+            for _k, _v in _saved.items():
+                if _v is None:
+                    os.environ.pop(_k, None)
+                else:
+                    os.environ[_k] = _v
+    finally:
+        imp.post = _real_post
+        sys.argv = _argv
 
     return c.fails
 
