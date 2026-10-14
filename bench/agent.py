@@ -45,7 +45,7 @@ sys.path.insert(0, BENCH)
 from benchreport import (Reporter, PhaseTracker, TelemetryTail,  # noqa: E402
                          build_summary, build_summary_dir, telemetry_summary, read_runs_index,
                          load_identity, run_exec, system_info, read_inventory, load_conf,
-                         power_action, supported_groups,
+                         power_action, supported_groups, group_keys,
                          update_toolkit, iso_fetch, iso_write, iso_write_slot,
                          self_update, restart_self,
                          toolkit_version, is_live, update_needs_restart,
@@ -53,8 +53,8 @@ from benchreport import (Reporter, PhaseTracker, TelemetryTail,  # noqa: E402
                          extra_runner_args, version_string, drop_stray_script_arg)
 import bootstrap  # stdlib-only local env helper (see bench/bootstrap.py)
 
-DEFAULT_GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc",
-                  "llm", "fan", "sys", "gfx"]
+# Derived from the benchreport registry (EVOL-P2-001), not a second copy.
+DEFAULT_GROUPS = list(group_keys())
 
 
 def run_hidden(cmd, **kw):
@@ -124,6 +124,10 @@ class Agent:
         self.run_label = None
         self.stop_flag = False
         self.running = False
+        # guards the single battery slot: self.running is only set once the child
+        # is up, so two quick 'start' commands used to both pass the check
+        self._start_lock = threading.Lock()
+        self._claimed = False
 
     def log(self, msg):
         print("[agent] %s" % msg, flush=True)
@@ -257,6 +261,27 @@ class Agent:
         self.log("run finished rc=%s status=%s" % (rc, status))
         self.stop_flag = False
 
+    def _claim_start(self):
+        """Atomically claim the single battery slot.
+
+        ``self.running`` is only set once the child process is up, so two 'start'
+        commands handled back to back both saw False and launched two batteries
+        on one machine (a TOCTOU race). The claim closes that window: a second
+        start is rejected until the first battery finishes.
+        """
+        with self._start_lock:
+            if self.running or self._claimed:
+                return False
+            self._claimed = True
+            return True
+
+    def _start_battery(self, label, profile):
+        try:
+            self.run_battery(label, profile)
+        finally:
+            with self._start_lock:
+                self._claimed = False
+
     def stop_battery(self):
         if not self.proc or self.proc.poll() is not None:
             return
@@ -279,13 +304,13 @@ class Agent:
         result = {}
         try:
             if kind == "start":
-                if self.running:
-                    result = {"skipped": "already running"}
-                else:
-                    threading.Thread(target=self.run_battery,
+                if self._claim_start():
+                    threading.Thread(target=self._start_battery,
                                      args=(payload.get("label") or payload.get("preset") or "remote run",
                                            payload), daemon=True).start()
                     result = {"started": True}
+                else:
+                    result = {"skipped": "already running"}
             elif kind == "stop":
                 self.stop_battery()
                 result = {"stopped": True}
@@ -326,7 +351,7 @@ class Agent:
 
     def _update_and_ack(self, cid, kind, payload):
         """Long-running update/ISO work, off the poll loop, acked when done."""
-        if self.running:
+        if self.running or self._claimed:
             self.rep.ack(cid, "failed", {
                 "error": "a run is in progress - update once it finishes"})
             return
@@ -432,15 +457,22 @@ def main():
     _srv, _tok = load_conf()
     ap.add_argument("--server", default=_srv)
     ap.add_argument("--token", default=_tok)
-    ap.add_argument("--name", default=platform.node())
+    # runner label: explicit --name, else $BENCH_AGENT_NAME (bench-agent.conf on
+    # the live USB), else the hostname (INFRA-P3-001)
+    ap.add_argument("--name", default=os.environ.get("BENCH_AGENT_NAME") or platform.node())
     ap.add_argument("--out", default=os.path.join(REPO, "results"))
     ap.add_argument("--poll", type=float, default=2.0)
     ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--redact", action="store_true",
+                    help="replace hardware identifiers and PII with stable pseudonyms "
+                         "in everything sent or uploaded (same as BENCH_REDACT=1)")
     ap.add_argument("--once", action="store_true",
                     help="run the battery once and exit (args after -- go to the runner)")
     ap.add_argument("extra", nargs=argparse.REMAINDER,
                     help="runner flags after -- (with --once)")
     a = ap.parse_args()
+    if a.redact:
+        os.environ["BENCH_REDACT"] = "1"
     if not a.server or not a.token:
         print("agent: --server and --token are required (or BENCHD_SERVER/BENCHD_TOKEN)")
         return 2

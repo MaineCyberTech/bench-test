@@ -20,6 +20,7 @@ import glob
 import hashlib
 import json
 import os
+import random
 import re
 import shutil
 import socket
@@ -33,19 +34,83 @@ import urllib.error
 import urllib.request
 import uuid
 
-GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc",
-          "llm", "fan", "sys", "gfx"]
+import redact  # opt-in PII redaction (BENCH_REDACT); pass-through when disabled
+
+# ---------------------------------------------------------------- registry --
+# ONE source of truth for the benchmark groups/phases (EVOL-P2-001). Every
+# Python consumer derives its list from here instead of repeating a literal:
+#
+#   benchreport.GROUPS        -> group_keys() (canonical order)
+#   agent.DEFAULT_GROUPS      -> group_keys()
+#   tui.GROUPS                -> group_keys()
+#   gui.GROUPS / gui._ALL_G   -> group_keys() + group_labels()
+#   supported_groups()        -> registry filtered by platform + battery
+#
+# The web app (server/web/app.js) cannot import Python, so it keeps a copy of the
+# keys; tests/test_registry.py pins that copy to this registry.
+#
+# Adding a phase (recipe):
+#   1. Append an entry to PHASES with a unique ``key``, a human ``label``, the
+#      ``platform`` it runs on ("all" | "linux" | "win") and ``battery=True``
+#      when the runner emits ``[key] ...`` phase lines for it. A grouping that
+#      only exists for the dashboards uses ``battery=False`` and is never
+#      advertised as a runner capability.
+#   2. Implement the phase in the runner (bench/Run-LinuxBench.sh and/or
+#      bench/run_win.py + Run-WorkstationBench.ps1) so it prints ``[key] label``
+#      and accepts ``--skip-<key>``.
+#   3. Add the key to GROUPS/ALL_GROUPS in server/web/app.js, same order.
+#   4. Run ``python tests/run_all.py``: test_registry enforces registry parity
+#      (registry -> capabilities -> dashboard/presets -> web), and test_presets
+#      guards that no existing preset changed.
+PHASES = [
+    {"key": "gpu", "label": "GPU compute + soak", "platform": "all", "battery": True},
+    {"key": "cpu", "label": "CPU", "platform": "all", "battery": True},
+    {"key": "ram", "label": "RAM", "platform": "all", "battery": True},
+    {"key": "disk", "label": "Disk", "platform": "all", "battery": True},
+    {"key": "combined", "label": "Combined GPU+CPU", "platform": "all", "battery": True},
+    {"key": "fullsoak", "label": "Full-system soak", "platform": "all", "battery": True},
+    {"key": "net", "label": "Network", "platform": "all", "battery": True},
+    {"key": "nvenc", "label": "Video encode", "platform": "all", "battery": True},
+    {"key": "llm", "label": "LLM inference", "platform": "win", "battery": True},
+    {"key": "fan", "label": "Fan response", "platform": "linux", "battery": True},
+    {"key": "sys", "label": "Inventory", "platform": "all", "battery": True},
+    {"key": "gfx", "label": "Graphics (FurMark)", "platform": "all", "battery": True},
+]
 
 
-def supported_groups():
+def group_keys(registry=None):
+    """Group keys in registry order (the canonical ``GROUPS`` list)."""
+    return [e["key"] for e in (PHASES if registry is None else registry)]
+
+
+def group_labels(registry=None):
+    """``{key: label}`` for the dashboard toggles, from the registry."""
+    return {e["key"]: e["label"] for e in (PHASES if registry is None else registry)}
+
+
+def _platform_supported(entry):
+    """True when this OS runs the group (registry ``platform`` metadata)."""
+    p = entry.get("platform", "all")
+    if p == "all":
+        return True
+    return (p == "linux") != (os.name == "nt")
+
+
+def supported_groups(registry=None):
     """The groups this platform's battery actually implements.
 
-    `fan` is Linux-only and `llm` is Windows-only; runners advertise this so the
+    Registry-driven: the battery phases whose ``platform`` is this OS. `fan` is
+    Linux-only and `llm` is Windows-only; runners advertise this so the
     dashboards can disable a toggle that would be a silent no-op.
     """
-    if os.name == "nt":
-        return [g for g in GROUPS if g != "fan"]
-    return [g for g in GROUPS if g != "llm"]
+    reg = PHASES if registry is None else registry
+    return [e["key"] for e in reg if e.get("battery", True) and _platform_supported(e)]
+
+
+# Backwards-compatible alias: the full registry order, independent of platform.
+GROUPS = group_keys()
+# Labels for the GUI toggles (kept next to the registry so they cannot drift).
+GROUP_LABELS = group_labels()
 
 SAMPLE_FIELDS = ["elapsed", "temp_c", "fan_pct", "power_w", "gpu_util",
                  "gpu_fan_rpm", "cpu_util", "ram_used", "sm_mhz"]
@@ -336,7 +401,7 @@ def system_info():
                     pass
         except Exception:
             pass
-    return info
+    return redact.redact_obj(info) if redact.is_enabled() else info
 
 
 def _f(v):
@@ -452,10 +517,24 @@ def machine_id():
     return mid
 
 
+# Control-plane resilience (RES-P3-002). The client used to make one attempt per
+# request and discard anything that failed: telemetry vanished during an outage and
+# every dashboard re-registered against a dead server at a fixed interval forever.
+# These bound the work per call and stop a fleet hammering an unreachable server,
+# while keeping the client fail-soft (a benchmark never dies because benchd is down).
+REQ_RETRIES = 3            # transport attempts per request (1 = no retry)
+REQ_BACKOFF = 0.5          # seconds before the first retry; doubles per attempt
+REQ_BACKOFF_MAX = 5.0      # cap so a black-holed server cannot stall the pump
+CIRCUIT_THRESHOLD = 5      # consecutive failures before the breaker opens
+CIRCUIT_COOLDOWN = 30.0    # seconds the breaker stays open before one probe
+
+
 class Reporter:
     def __init__(self, server, token, name=None, kind="agent", version=None,
                  os_name=None, timeout=6, log=None, git=None, runner_id=None,
-                 api_key=None, persist=False, ephemeral=False, instance=None):
+                 api_key=None, persist=False, ephemeral=False, instance=None,
+                 retries=REQ_RETRIES, backoff=REQ_BACKOFF,
+                 circuit_threshold=CIRCUIT_THRESHOLD, circuit_cooldown=CIRCUIT_COOLDOWN):
         self.server = (server or "").rstrip("/")
         self.join_token = token or ""
         self.token = api_key or token or ""
@@ -463,7 +542,12 @@ class Reporter:
         self.api_key = api_key
         self.persist = persist
         self.ephemeral = ephemeral
-        self.name = name or socket.gethostname()
+        # Runner label on the control plane. Explicit --name wins, then
+        # $BENCH_AGENT_NAME (set from bench-agent.conf on the live USB), then
+        # the hostname. Previously BENCH_AGENT_NAME was exported but unread
+        # (INFRA-P3-001), so the key silently did nothing.
+        self.name = (name or os.environ.get("BENCH_AGENT_NAME")
+                     or socket.gethostname())
         self.kind = kind
         # Lets several dashboards share a host without colliding: the live USB
         # runs a TUI on tty1 *and* ttyS0, so 'bench-live' alone is ambiguous.
@@ -483,21 +567,71 @@ class Reporter:
         self.enabled = bool(self.server and self.token)
         self.last_error = None
         self.last_ok = None
+        # bounded retry + circuit breaker state (RES-P3-002)
+        self.retries = max(1, int(retries))
+        self.backoff = max(0.0, float(backoff))
+        self.circuit_threshold = max(1, int(circuit_threshold))
+        self.circuit_cooldown = max(0.0, float(circuit_cooldown))
+        self.circuit_state = "closed"    # closed | open | half-open
+        self.retry_count = 0             # transport retries performed
+        self.drops = 0                   # writes dropped (unreachable / breaker open)
+        self._fail_streak = 0
+        self._circuit_open_until = 0.0
+        self._drop_log = 0.0             # last time a drop was logged (rate-limit)
 
     def status(self):
-        """'off' | 'connecting' | 'connected' | 'offline' for the dashboards."""
+        """'off' | 'connecting' | 'connected' | 'offline' | 'unreachable' for the dashboards."""
         if not self.enabled:
             return "off"
+        if self.circuit_state == "open":
+            return "unreachable"
         if not self.runner_id:
             return "connecting"
         if self.last_ok and (time.time() - self.last_ok) < 10:
             return "connected"
         return "offline"
 
+    # -- resilience --------------------------------------------------------
+    def _backoff_delay(self, attempt):
+        """Exponential backoff with a little jitter, capped (attempt is 0-based)."""
+        d = min(self.backoff * (2 ** attempt), REQ_BACKOFF_MAX)
+        return d + (random.uniform(0, d * 0.1) if d else 0.0)
+
+    def _circuit_allows(self):
+        """True when a request may be attempted; opens/half-opens the breaker."""
+        if self._circuit_open_until and time.time() < self._circuit_open_until:
+            self.circuit_state = "open"
+            return False
+        if self._circuit_open_until:
+            # cooldown elapsed: let one probe through (half-open)
+            self.circuit_state = "half-open"
+        return True
+
+    def _note_ok(self):
+        self._fail_streak = 0
+        self._circuit_open_until = 0.0
+        self.circuit_state = "closed"
+
+    def _note_fail(self):
+        self._fail_streak += 1
+        if self._fail_streak >= self.circuit_threshold:
+            self._circuit_open_until = time.time() + self.circuit_cooldown
+            self.circuit_state = "open"
+            self.logfn("[report] circuit open after %d consecutive failures (%s)"
+                       % (self._fail_streak, self.last_error))
+
+    def _drop(self, what):
+        """Count a dropped write and surface it (rate-limited), so it is not silent."""
+        self.drops += 1
+        now = time.time()
+        if now - self._drop_log >= 5.0:
+            self._drop_log = now
+            self.logfn("[report] dropped %s (%d total; circuit %s)"
+                       % (what, self.drops, self.circuit_state))
+
     # -- transport ---------------------------------------------------------
-    def _req(self, method, path, body=None):
-        if not self.enabled:
-            return 0, {}
+    def _attempt(self, method, path, body=None):
+        """One transport attempt; returns (status, decoded-json). 0 = no answer."""
         url = self.server + path
         req = urllib.request.Request(url, method=method)
         req.add_header("Authorization", "Bearer " + self.token)
@@ -517,13 +651,44 @@ class Reporter:
             self.last_error = str(e)
             return 0, {}
 
+    def _req(self, method, path, body=None):
+        """A request with bounded retries + a circuit breaker (fail-soft).
+
+        Retries transport failures (status 0) and server-side 5xx/429 with
+        exponential backoff; a 4xx is a client error and is *not* retried or
+        counted against the breaker (the server is clearly reachable). After
+        CIRCUIT_THRESHOLD consecutive failures the breaker opens and calls return
+        immediately until CIRCUIT_COOLDOWN elapses, then one half-open probe is
+        allowed through. Always returns (status, json) and never raises.
+        """
+        if not self.enabled:
+            return 0, {}
+        if not self._circuit_allows():
+            self.last_error = "circuit open"
+            return 0, {}
+        for attempt in range(self.retries):
+            s, r = self._attempt(method, path, body)
+            if s and s < 500 and s != 429:
+                # any answer below 500 (incl. 4xx) means the server is reachable: a
+                # 4xx is the caller's problem, not a connectivity failure, so it
+                # neither retries nor trips the breaker
+                self._note_ok()
+                return s, r
+            if attempt < self.retries - 1:
+                self.retry_count += 1
+                time.sleep(self._backoff_delay(attempt))
+        self._note_fail()
+        return 0, {}
+
     # -- lifecycle ---------------------------------------------------------
     def register(self, capabilities=None, status="idle"):
+        name = redact.pseudonym("host", self.name) if redact.is_enabled() else self.name
+        mid = redact.pseudonym("machine", self.machine_id) if redact.is_enabled() else self.machine_id
         s, r = self._req("POST", "/api/v1/register", {
             "runner_id": self.runner_id, "api_key": self.api_key,
-            "name": self.name, "os": self.os_name, "kind": self.kind, "version": self.version,
+            "name": name, "os": self.os_name, "kind": self.kind, "version": self.version,
             "git": self.git, "capabilities": capabilities or {}, "status": status,
-            "current_run": self.run_id, "machine_id": self.machine_id,
+            "current_run": self.run_id, "machine_id": mid,
             "ephemeral": self.ephemeral, "instance": self.instance})
         if s == 200 and r.get("runner_id"):
             self.runner_id = r["runner_id"]
@@ -553,8 +718,12 @@ class Reporter:
                   driver=None, torch=None, system=None, preset=None):
         if not self.runner_id:
             return None
+        host = host or self.name
+        if redact.is_enabled():
+            host = redact.pseudonym("host", host)
+            system = redact.redact_obj(system or {})
         s, r = self._req("POST", "/api/v1/runs", {
-            "runner_id": self.runner_id, "host": host or self.name, "label": label,
+            "runner_id": self.runner_id, "host": host, "label": label,
             "profile": profile or {}, "started": time.time(), "platform": platform,
             "gpu": gpu, "driver": driver, "torch": torch, "system": system or {},
             "preset": preset})
@@ -567,9 +736,11 @@ class Reporter:
     def phase(self, seq, group, label, status="running", t0=None, t1=None, detail=None):
         if not self.run_id:
             return
-        self._req("POST", "/api/v1/runs/%s/phase" % self.run_id,
-                  {"seq": seq, "group": group, "label": label, "status": status,
-                   "t0": t0, "t1": t1, "detail": detail})
+        s, _r = self._req("POST", "/api/v1/runs/%s/phase" % self.run_id,
+                          {"seq": seq, "group": group, "label": label, "status": status,
+                           "t0": t0, "t1": t1, "detail": detail})
+        if s not in (200, 201):
+            self._drop("phase %s" % label)
 
     def telemetry(self, samples):
         """POST a batch and return the HTTP status (0 when nothing was sent).
@@ -587,17 +758,23 @@ class Reporter:
     def event(self, message, level="info"):
         if not self.run_id:
             return
-        self._req("POST", "/api/v1/runs/%s/event" % self.run_id,
-                  {"level": level, "message": message, "ts": time.time()})
+        s, _r = self._req("POST", "/api/v1/runs/%s/event" % self.run_id,
+                          {"level": level, "message": message, "ts": time.time()})
+        if s not in (200, 201):
+            self._drop("event")
 
     def log(self, lines, stream="out"):
         """Stream runner output lines to the server (live console / remote view)."""
         if not self.run_id or not lines:
-            return
+            return True
         if isinstance(lines, str):
             lines = [lines]
-        self._req("POST", "/api/v1/runs/%s/log" % self.run_id,
-                  {"stream": stream, "lines": [str(x) for x in lines]})
+        s, _r = self._req("POST", "/api/v1/runs/%s/log" % self.run_id,
+                          {"stream": stream, "lines": [str(x) for x in lines]})
+        if s in (200, 201):
+            return True
+        self._drop("log batch of %d" % len(lines))
+        return False
 
     def artifact(self, name, text, kind="json"):
         """Attach one artifact; returns the HTTP status (0 when not sent)."""
@@ -610,14 +787,37 @@ class Reporter:
                           "content": base64.b64encode(raw).decode()})[0]
 
     def finish(self, status="done", exit_code=0, summary=None, platform=None, gpu=None,
-               driver=None, torch=None, ended=None, system=None):
+               driver=None, torch=None, ended=None, system=None,
+               retries=4, backoff=1.0):
+        """Close the run, retrying a failed post so a network blip cannot lose it.
+
+        The server's finish is an idempotent UPDATE, so re-sending the same
+        payload is safe. The run is only treated as closed (run_id cleared) once
+        the server has acknowledged it; otherwise the id is kept so a later call
+        can retry, and the caller's real status (done/stopped/failed) is
+        preserved rather than the run being recorded as failed for a transport
+        error. Returns True when the server acknowledged the finish.
+        """
         if not self.run_id:
-            return
-        self._req("POST", "/api/v1/runs/%s/finish" % self.run_id, {
-            "status": status, "exit_code": exit_code, "summary": summary or {},
-            "platform": platform, "gpu": gpu, "driver": driver, "torch": torch,
-            "ended": ended, "system": system or {}})
-        self.run_id = None
+            return False
+        run_id = self.run_id
+        if redact.is_enabled():
+            summary = redact.redact_obj(summary or {})
+            system = redact.redact_obj(system or {})
+        body = {"status": status, "exit_code": exit_code, "summary": summary or {},
+                "platform": platform, "gpu": gpu, "driver": driver, "torch": torch,
+                "ended": ended, "system": system or {}}
+        tries = max(1, int(retries))
+        for attempt in range(tries):
+            s, _r = self._req("POST", "/api/v1/runs/%s/finish" % run_id, body)
+            if s in (200, 201):
+                self.run_id = None
+                return True
+            if attempt < tries - 1:
+                time.sleep(max(0.0, float(backoff)) * (2 ** attempt))
+        self.logfn("[report] finish for %s not acknowledged after %d attempt(s)" %
+                   (run_id[:8], tries))
+        return False
 
     # -- control -----------------------------------------------------------
     def poll_commands(self):
@@ -716,8 +916,10 @@ class PhaseTracker:
 class ReporterPump:
     """Background thread that flushes telemetry, heartbeats and polls commands.
 
-    Keeps the dashboard UI thread free of blocking HTTP calls; if the server is
-    unreachable the queue simply drains into no-ops.
+    Keeps the dashboard UI thread free of blocking HTTP calls. A batch that the
+    server refuses is kept in a small bounded spool and re-sent on the next tick,
+    so a short outage does not lose the run; the reporter also counts and logs the
+    drop, so nothing is lost silently.
     """
 
     def __init__(self, reporter, on_command=None, interval=1.0, log=None):
@@ -898,7 +1100,7 @@ def read_inventory(results_dir):
         gpus = inv.get("GPUs")
         if isinstance(gpus, list) and gpus and isinstance(gpus[0], dict):
             out["gpu"] = gpus[0].get("name") or gpus[0].get("Name")
-    return out
+    return redact.redact_obj(out) if redact.is_enabled() else out
 
 
 def run_exec(reporter, cmd, timeout=120, cwd=None):
@@ -2493,7 +2695,7 @@ def build_summary(report_path):
                        key=os.path.getmtime)
         if shots:
             out["gfx"] = {"screenshot": os.path.basename(shots[-1])}
-    return out
+    return redact.redact_obj(out) if redact.is_enabled() else out
 
 
 def _throttle_active(thr):
@@ -2834,7 +3036,7 @@ def build_summary_dir(results_dir, window_h=8, since=None):
             shots = [s for s in shots if now - os.path.getmtime(s) <= window_h * 3600]
         if shots:
             out["gfx"] = {"screenshot": os.path.basename(shots[-1])}
-    return out
+    return redact.redact_obj(out) if redact.is_enabled() else out
 
 
 def prune_results(results_dir, keep=100, log=None):
@@ -2936,9 +3138,11 @@ def upload_run_files(rep, results_dir, log=None, limit=60, max_bytes=512 * 1024)
     for p in keep:
         try:
             with open(p, "rb") as fh:
-                rep.artifact(os.path.basename(p), fh.read(), kind="file")
+                raw = fh.read()
         except OSError:
             continue
+        rep.artifact(os.path.basename(p), redact.redact_bytes(os.path.basename(p), raw),
+                     kind="file")
         n += 1
     log("[report] attached %d run files" % n)
     return n
@@ -3048,7 +3252,8 @@ def upload_telemetry_csv(rep, results_dir, log=None, cap=None, sent=None,
         parts.append(cur)
     for i, part in enumerate(parts):
         name = base if len(parts) == 1 else "%s.part%04d" % (base, i + 1)
-        if rep.artifact(name, "\n".join(part) + "\n", kind="csv") != 200:
+        body = redact.redact_text("\n".join(part) + "\n")
+        if rep.artifact(name, body, kind="csv") != 200:
             log("[report] telemetry CSV artifact %s REJECTED by the server" % name)
     if failed:
         log("[report] telemetry: %d samples stored, %d REJECTED by the server + %s"

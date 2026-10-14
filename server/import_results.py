@@ -10,6 +10,12 @@ Walks a results directory and creates one run per completed session:
 
     python3 server/import_results.py --server http://lab:8722 --token XXX --dir results
     python3 server/import_results.py ... --dry-run
+    python3 server/import_results.py ... --reset
+
+Re-running the importer is a no-op: each unit gets a deterministic run id derived
+from its host + start time + source, so a run already on the server is skipped
+instead of inserted again. `--reset` deletes the existing runs first, which
+forces a fresh re-import from scratch.
 
 The token is visible in `ps` when passed as `--token`; prefer $BENCHD_TOKEN or
 `--token-file PATH` (first line). Each unit gets a deterministic run id, so
@@ -38,6 +44,19 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
                                 "bench"))
 from benchreport import (CSV_ALIASES as _ALIASES, _merge_into,  # noqa: E402
                          _hardware_verdicts)
+import redact  # opt-in PII redaction (BENCH_REDACT); pass-through when disabled
+
+
+def _redact_all(host, summary, system, arts):
+    """Apply the opt-in redaction mode to an imported unit (no-op when off)."""
+    if not redact.is_enabled():
+        return host, summary, system, arts
+    out_arts = []
+    for n, k, text in arts:
+        raw = redact.redact_bytes(n, str(text).encode("utf-8"))
+        out_arts.append((n, k, raw.decode("utf-8", "replace")))
+    return (redact.pseudonym("host", host), redact.redact_obj(summary),
+            redact.redact_obj(system), out_arts)
 
 SAMPLE_FIELDS = ["elapsed", "temp_c", "fan_pct", "power_w", "gpu_util",
                  "gpu_fan_rpm", "cpu_util", "ram_used", "sm_mhz"]
@@ -411,7 +430,8 @@ def main():
                     help="read the token from a file (first line); $BENCHD_TOKEN_FILE works too")
     ap.add_argument("--dir", default="results")
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--reset", action="store_true", help="delete existing runs first")
+    ap.add_argument("--reset", action="store_true",
+                    help="delete existing runs first, then re-import from scratch")
     a = ap.parse_args()
     if a.token_file and not a.token:
         try:
@@ -448,12 +468,27 @@ def main():
             deleted += len(ids)
         print("reset: deleted %d existing runs" % deleted)
 
+    # ids already on the server: a re-import skips these instead of duplicating
+    existing = set()
+    if not a.dry_run:
+        off, total = 0, None
+        while total is None or off < total:
+            _, r = post(a.server, a.token,
+                        "/api/v1/runs?limit=1000&offset=%d" % off, method="GET")
+            rows = r.get("runs") or []
+            existing |= {x.get("id") for x in rows}
+            total = r.get("total", 0) or 0
+            if not rows:
+                break
+            off += len(rows)
+
     wins = list(windows_units(root))
     win_starts = [w[3] for w in wins] + [float("inf")]
     made = 0
     for i, (kind, man, host, started, m) in enumerate(wins):
         window_end = min(win_starts[i + 1] - 1, started + 8 * 3600)
         phases, tele, arts, summary, ended, system = build_windows(root, man, host, started, m, window_end)
+        host, summary, system, arts = _redact_all(host, summary, system, arts)
         label = "Windows battery"
         print("win  %-32s phases=%-3d tele=%-5d dur=%-6s %s" %
               (os.path.basename(man), len(phases), len(tele), _dur(ended - started),
@@ -481,6 +516,7 @@ def main():
 
     for d, rep, j in linux_units(root):
         host, started, phases, tele, arts, summary, ended, system = build_linux(d, rep, j)
+        host, summary, system, arts = _redact_all(host, summary, system, arts)
         if not host:
             print("linux %-32s skipped (no host in report)" % os.path.basename(d))
             continue

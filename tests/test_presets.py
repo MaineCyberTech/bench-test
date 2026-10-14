@@ -6,8 +6,12 @@ import re
 import sys
 
 from harness import Checker, BENCH, REPO
+import benchreport as _registry
 
-GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "llm", "fan", "sys", "gfx"]
+# The canonical group list is the benchreport registry (EVOL-P2-001): the preset
+# definitions are checked against it instead of a seventh hardcoded copy. The
+# registry -> dashboard/web parity itself is enforced by tests/test_registry.py.
+GROUPS = list(_registry.GROUPS)
 DEF = {"gpu": 600, "combined": 300, "fullsoak": 300, "gfx": 60}
 CANON = {
     "Quick check (short soaks)": (set(GROUPS) - {"llm", "fan"},

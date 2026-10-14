@@ -42,7 +42,7 @@ try:
     from benchreport import (Reporter, PhaseTracker, ReporterPump, build_summary, build_summary_dir,
                              telemetry_summary, newest_report, load_identity, run_exec, system_info,
                              read_inventory, load_conf, CSV_ALIASES, power_action,
-                             supported_groups,
+                             supported_groups, group_keys, group_labels,
                              update_toolkit, iso_fetch, iso_write, iso_write_slot,
                              self_update, restart_self,
                              toolkit_version, is_live, update_needs_restart, hardware_line,
@@ -52,6 +52,12 @@ try:
                              bench_version, version_string, drop_stray_script_arg)
 except Exception:  # reporting is optional
     Reporter = None
+
+    def group_keys():
+        return []
+
+    def group_labels():
+        return {}
 
 try:
     import bootstrap  # stdlib-only local env helper
@@ -92,12 +98,8 @@ GOOD = "#46c98d"
 WARN = "#e5b567"
 BAD = "#ef6b73"
 
-GROUPS = [
-    ("gpu", "GPU compute + soak"), ("cpu", "CPU"), ("ram", "RAM"), ("disk", "Disk"),
-    ("combined", "Combined GPU+CPU"), ("fullsoak", "Full-system soak"), ("net", "Network"),
-    ("nvenc", "Video encode"), ("llm", "LLM inference"), ("fan", "Fan response"),
-    ("sys", "Inventory"), ("gfx", "Graphics (FurMark)"),
-]
+# Derived from the benchreport registry (EVOL-P2-001), not a second copy.
+GROUPS = [(k, group_labels().get(k, k)) for k in group_keys()]
 
 # Only offer toggles for the groups this platform's battery actually implements
 # (fan is Linux-only, llm is Windows-only): an offered no-op group is a silent lie.
@@ -106,8 +108,7 @@ try:
 except Exception:
     UI_GROUPS = list(GROUPS)
 
-_ALL_G = {k: 1 for k in ("gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc",
-                         "llm", "fan", "sys", "gfx")}
+_ALL_G = {k: 1 for k in group_keys()}
 
 
 def _g(*on):
@@ -593,7 +594,9 @@ class Dashboard:
         try:
             import platform as _p
             ident = load_identity(self.server)
-            self.rep = Reporter(self.server, self.token, name=self.name or _p.node(),
+            # name=None lets Reporter fall back to $BENCH_AGENT_NAME or the
+            # hostname (an explicit --name still wins).
+            self.rep = Reporter(self.server, self.token, name=self.name or None,
                                 kind="gui", os_name=_p.system(), log=self._log,
                                 version=version_string(REPO),
                                 runner_id=ident.get("runner_id"), api_key=ident.get("api_key"),

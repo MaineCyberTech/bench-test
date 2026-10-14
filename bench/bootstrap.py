@@ -138,6 +138,59 @@ def find_system_python():
     return ""
 
 
+def _sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for b in iter(lambda: fh.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
+def _verify_sha256(path, want, name=""):
+    """Verify a download against a published digest, failing closed.
+
+    Returns True when a digest was published and matched, False when none was
+    available (the caller then relies on HTTPS), and raises RuntimeError on a
+    mismatch so a tampered download is never extracted.
+    """
+    if not want:
+        return False
+    got = _sha256(path)
+    if got.lower() != str(want).strip().lower():
+        raise RuntimeError("sha256 mismatch for %s: expected %s, got %s"
+                           % (name or os.path.basename(path), want, got))
+    return True
+
+
+def _safe_extract(tar_path, dest):
+    """Extract `tar_path` into `dest`, refusing anything that escapes it.
+
+    A downloaded tarball is untrusted: absolute paths, `..` traversal and links
+    whose target leaves `dest` are rejected outright (fail closed) instead of
+    being written. Uses tarfile's 'data' filter where the interpreter provides
+    it, and always validates members first so the older-interpreter fallback is
+    safe too.
+    """
+    dest = os.path.realpath(dest)
+    with tarfile.open(tar_path) as tf:
+        for m in tf.getmembers():
+            target = os.path.realpath(os.path.join(dest, m.name))
+            if target != dest and not target.startswith(dest + os.sep):
+                raise RuntimeError("unsafe archive member: %s" % m.name)
+            if m.issym():
+                link = os.path.realpath(os.path.join(os.path.dirname(target), m.linkname))
+            elif m.islnk():
+                link = os.path.realpath(os.path.join(dest, m.linkname))
+            else:
+                link = None
+            if link is not None and link != dest and not link.startswith(dest + os.sep):
+                raise RuntimeError("unsafe archive link: %s -> %s" % (m.name, m.linkname))
+        try:
+            tf.extractall(dest, filter="data")
+        except TypeError:          # `filter=` is only understood by Python >= 3.12
+            tf.extractall(dest)
+
+
 def _download_standalone(log=print):
     triple = _STANDALONE_TRIPLE.get((platform.system(), platform.machine()))
     if not triple:
@@ -155,22 +208,19 @@ def _download_standalone(log=print):
     try:
         with urllib.request.urlopen(url, timeout=120) as r, open(tmp.name, "wb") as fh:
             shutil.copyfileobj(r, fh, 1024 * 1024)
-        # best-effort integrity check when the release publishes a .sha256
+        # integrity check when the release publishes a .sha256: a mismatch is
+        # fatal (fail closed); only a *missing* checksum falls back to HTTPS
+        want = ""
         try:
             with urllib.request.urlopen(url + ".sha256", timeout=30) as r:
                 want = r.read().decode().split()[0]
-            got = hashlib.sha256(open(tmp.name, "rb").read()).hexdigest()
-            if want and got != want:
-                raise RuntimeError("sha256 mismatch for %s" % name)
-        except RuntimeError:
-            raise
         except Exception:
-            pass  # no published checksum -> proceed (HTTPS)
+            want = ""
+        _verify_sha256(tmp.name, want, name)
         if os.path.isdir(py_dir):
             shutil.rmtree(py_dir, ignore_errors=True)
         # install_only tarballs contain a top-level "python/" directory
-        with tarfile.open(tmp.name) as tf:
-            tf.extractall(root)
+        _safe_extract(tmp.name, root)
         if not os.path.isfile(base_python_path()):
             raise RuntimeError("standalone Python extracted but %s is missing" % base_python_path())
         log("[env] Python ready: %s" % base_python_path())

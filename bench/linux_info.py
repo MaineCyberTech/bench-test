@@ -14,6 +14,8 @@ import platform
 import re
 import subprocess
 
+import redact  # opt-in PII redaction (BENCH_REDACT); pass-through when disabled
+
 
 def jline(obj):
     print("RESULT_JSON:" + json.dumps(obj), flush=True)
@@ -193,7 +195,12 @@ def error_count():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("phase", choices=["info"])
+    ap.add_argument("--redact", action="store_true",
+                    help="replace hardware identifiers and PII with stable pseudonyms "
+                         "(same as BENCH_REDACT=1)")
     a = ap.parse_args()
+    if a.redact:
+        os.environ["BENCH_REDACT"] = "1"
 
     distro = ""
     for line in read("/etc/os-release").splitlines():
@@ -216,6 +223,7 @@ def main():
         "disk_health": disk_health(),
         "ecc": edac(),
     }
+    info = redact.redact_obj(info) if redact.is_enabled() else info
     g = info["gpu"] or {}
     print("host=%s kernel=%s cpu=%s (%s threads) mem=%.1fGiB gpu=%s driver=%s" % (
         info["distro"], info["kernel"], info["cpu"]["model"],

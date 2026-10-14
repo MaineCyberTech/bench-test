@@ -14,9 +14,13 @@ Config format (key=value, one per line):
   UPLOAD_PATH=results              (default: results)
   AUTO_UPLOAD=1                    (optional: dashboards upload after collect)
 
+Consent: publishing results to a remote repository requires an explicit opt-in.
+Set BENCH_UPLOAD_CONSENT=1 (the TUI's upload key sets it for the session), or
+the upload is skipped with a clear log line. Nothing is published by default.
+
 Usage: upload.py [RESULTS_DIR]     (default: /opt/bench-test/results)
 
-Exit codes: 0 all good, 3 missing config/dir/nothing to send, 5 total failure.
+Exit codes: 0 all good, 3 missing consent/config/dir/nothing to send, 5 total failure.
 """
 import base64
 import glob
@@ -59,6 +63,17 @@ def read_conf(path):
             k, v = ln.split("=", 1)
             conf[k.strip()] = v.strip().strip('"').strip("'")
     return conf
+
+
+def consent_granted(env=None):
+    """True when the operator has explicitly opted in to GitHub uploads.
+
+    Publishing a run to a remote repository used to happen with no consent.
+    Uploads now require ``BENCH_UPLOAD_CONSENT=1`` (the TUI's upload key sets it
+    for the session); without it ``main()`` skips the upload and says why.
+    """
+    e = env if env is not None else os.environ
+    return str(e.get("BENCH_UPLOAD_CONSENT", "")).strip().lower() in ("1", "true", "yes", "on")
 
 
 def api(method, url, token, data=None):
@@ -159,6 +174,14 @@ def _one_commit_once(repo, branch, upath, folder, files, token, log=print):
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
     src = args[0] if args else os.environ.get("BENCH_RESULTS_DIR", "/opt/bench-test/results")
+
+    # explicit consent before anything is published (AN-P2-002)
+    if not consent_granted():
+        print("[upload] skipped: no consent. Results were NOT published to GitHub.")
+        print("[upload] set BENCH_UPLOAD_CONSENT=1 (the dashboard's upload key does "
+              "this for the session) to allow it")
+        return 3
+
     if not os.path.isdir(src):
         print("[upload] results dir not found: %s" % src)
         return 3

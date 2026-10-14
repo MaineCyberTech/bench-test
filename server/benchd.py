@@ -550,6 +550,13 @@ METRICS = [
 
 ONLINE_WINDOW = 15.0
 
+# Persist the client's source address with each runner row? The address is a
+# client IP - personal data with no retention of its own - so an operator can
+# turn it off (--store-client-ip=off / BENCHD_STORE_CLIENT_IP=0). The retention
+# sweep anonymises whatever was stored. Default: on (unchanged behaviour).
+STORE_CLIENT_IP = str(os.environ.get("BENCHD_STORE_CLIENT_IP", "1")).strip().lower() \
+    not in ("0", "off", "no", "false")
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runners (
   id TEXT PRIMARY KEY, name TEXT, os TEXT, kind TEXT, version TEXT,
@@ -1599,6 +1606,8 @@ class Handler(BaseHTTPRequestHandler):
     artifact_quota = DEFAULT_ARTIFACT_QUOTA
     # RES-P3-003: per-connection socket timeout (StreamRequestHandler applies it).
     timeout = REQUEST_TIMEOUT_S
+    # class attribute so a test (or main) can toggle client-IP storage
+    store_client_ip = STORE_CLIENT_IP
 
     # -- plumbing ----------------------------------------------------------
     def parse_request(self):
@@ -2913,7 +2922,8 @@ class Handler(BaseHTTPRequestHandler):
              (rid, field_str(b, "name"), field_str(b, "os"), kind, field_str(b, "version"),
               _json_dumps(field_dict(b, "capabilities")), now(), now(),
               field_str(b, "status", "idle") or "idle", field_str(b, "current_run"),
-              self.client_address[0], field_str(b, "git"), key_digest(key), mid,
+              (self.client_address[0] if self.store_client_ip else None),
+              field_str(b, "git"), key_digest(key), mid,
               1 if b.get("ephemeral") else 0, inst, now()))
         r = runner_public(S.one("SELECT * FROM runners WHERE id=?", (rid,)))
         self.bus.publish_runner(r)
@@ -3241,6 +3251,19 @@ def _auto_update_worker(store):
         _AUTO_UPDATE_BUSY.release()
 
 
+_ANON_LAST = [0.0]                # last runner-anonymisation sweep
+
+
+def _pseudonym(kind, value):
+    """A stable `kind-<sha256[:8]>` token (None/empty unchanged)."""
+    if not value:
+        return None
+    s = str(value)
+    if re.match(r"^%s-[0-9a-f]{8}$" % re.escape(kind), s):
+        return s
+    return "%s-%s" % (kind, hashlib.sha256(s.encode("utf-8")).hexdigest()[:8])
+
+
 def retain_old_data(store, force=False):
     """Delete bulky per-run data of finished runs older than RETENTION_DAYS.
 
@@ -3312,6 +3335,40 @@ def prune_old_artifacts(store, force=False):
         print("[benchd] retention: removed %d artifact row(s) older than %.0f days"
               % (gone, days), flush=True)
     return gone
+
+
+def anonymise_old_runners(store, force=False):
+    """Anonymise PII on runners quiet for longer than the retention window.
+
+    The client IP (`addr`) and the hostname / machine id (`name` /
+    `machine_id`) are personal and stable identifiers. Once a runner has been
+    quiet for RETENTION_DAYS they are no longer needed, so the address is
+    blanked and the identifiers are pseudonymised. Run history keeps its own
+    host label (that is what History/Trends group on), so fleet trends are
+    unaffected; a returning machine simply re-registers. BENCHD_RETENTION_DAYS=0
+    disables the sweep (and the per-sample retention) entirely.
+    """
+    days = RETENTION_DAYS
+    if days <= 0:
+        return 0
+    t = now()
+    if not force and t - _ANON_LAST[0] < RETENTION_EVERY_S:
+        return 0
+    _ANON_LAST[0] = t
+    cutoff = t - days * 86400
+    old = store.q("SELECT id, name, machine_id, addr FROM runners WHERE "
+                  "COALESCE(last_seen, first_seen) < ?", (cutoff,))
+    changed = 0
+    for r in old:
+        if not (r.get("addr") or r.get("name") or r.get("machine_id")):
+            continue
+        store.ex("UPDATE runners SET addr=NULL, name=?, machine_id=? WHERE id=?",
+                 (_pseudonym("host", r.get("name")), _pseudonym("machine", r.get("machine_id")),
+                  r["id"]))
+        changed += 1
+    if changed:
+        print("[benchd] retention: anonymised %d stale runner row(s)" % changed, flush=True)
+    return changed
 
 
 def reap_stale_runs(store, bus):
@@ -3448,6 +3505,7 @@ def scheduler_loop(store, bus, stop):
                 threading.Thread(target=_auto_update_worker, args=(store,),
                                  daemon=True).start()
             prune_old_artifacts(store)
+            anonymise_old_runners(store)
         except Exception as e:
             print("[benchd] scheduler error: %s" % e, flush=True)
         stop.wait(10.0)
@@ -3626,6 +3684,9 @@ def main():
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--allow-anonymous", action="store_true",
                     help="serve without BENCHD_TOKEN (dangerous: anyone can control the fleet)")
+    ap.add_argument("--store-client-ip", choices=["on", "off"], default=None,
+                    help="persist the client IP with runner rows (default: on; "
+                         "env BENCHD_STORE_CLIENT_IP)")
     a = ap.parse_args()
 
 
@@ -3642,6 +3703,8 @@ def main():
         # DATA-P2-003 / DR-P2-002 / EVOL-P2-003: fail closed, do not start.
         print("[benchd] refusing to start: %s" % exc, flush=True)
         return 3
+    if a.store_client_ip is not None:
+        Handler.store_client_ip = (a.store_client_ip == "on")
     Handler.store, Handler.bus, Handler.token, Handler.web_dir = store, Bus(), token, a.web
     Handler.join_token = join_token
     Handler.cors_origin = cors_origin

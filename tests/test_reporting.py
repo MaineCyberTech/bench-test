@@ -6,7 +6,7 @@ import sys
 import tempfile
 import time
 
-from harness import Checker, Server, REPO, BENCH, tmpdir
+from harness import Checker, Server, REPO, BENCH, tmpdir, skip, wait_for, wait_for_rows
 from benchreport import (Reporter, PhaseTracker, ReporterPump, build_summary_dir,
                          telemetry_summary, system_info, read_inventory, run_exec,
                          upload_telemetry_csv, upload_run_files, build_summary)
@@ -51,25 +51,39 @@ def run():
     got = []
     pump = ReporterPump(rep, on_command=lambda cmd: (got.append(cmd["kind"]),
                                                      rep.ack(cmd["id"], "done", {"ok": True})),
-                        interval=0.3)
+                        interval=0.1)
     for i in range(3):
         pump.push_sample({"elapsed": float(i), "temp_c": 50 + i, "gpu_util": 90})
     pump.push_log("[gpu] hello")
     pump.start()
-    time.sleep(0.9)
-    _, tel = cl.call("GET", "/api/v1/runs/%s/telemetry" % rep.run_id)
-    c.check("pump flushed telemetry", len(tel["rows"]) == 3, len(tel["rows"]))
-    _, logs = cl.call("GET", "/api/v1/runs/%s/logs" % rep.run_id)
-    c.check("pump flushed logs", any("hello" in l["line"] for l in logs["lines"]), logs)
+
+    def _telemetry_rows():
+        _, t = cl.call("GET", "/api/v1/runs/%s/telemetry" % rep.run_id)
+        rows = t.get("rows", [])
+        return rows if len(rows) == 3 else None
+
+    def _has_log():
+        _, lg = cl.call("GET", "/api/v1/runs/%s/logs" % rep.run_id)
+        return any("hello" in l["line"] for l in lg.get("lines", [])) or None
+
+    # poll-until rather than a fixed sleep: a slow host is not flaked by a too-short
+    # sleep, and a fast one is not slowed by a too-long one (TEST-P3-002)
+    tel = wait_for(_telemetry_rows, timeout=5) or []
+    c.check("pump flushed telemetry", len(tel) == 3, len(tel))
+    c.check("pump flushed logs", bool(wait_for(_has_log, timeout=5)), "")
     cl.call("POST", "/api/v1/runners/%s/commands" % rep.runner_id, {"kind": "stop"})
-    time.sleep(0.9)
-    c.check("pump received command", got == ["stop"], got)
+    c.check("pump received command", bool(wait_for(lambda: got == ["stop"] or None, timeout=5)), got)
 
     tr.close()
     rep.finish("done", 0, {"gpu_soak_tflops": 42.0})
-    time.sleep(0.2)
-    _, runs = cl.call("GET", "/api/v1/runs")
-    c.check("run finished", runs["runs"][0]["status"] == "done", runs["runs"][0])
+
+    def _finished():
+        _, runs = cl.call("GET", "/api/v1/runs")
+        rs = runs.get("runs", [])
+        return rs if rs and rs[0]["status"] == "done" else None
+
+    runs = wait_for(_finished, timeout=5) or []
+    c.check("run finished", bool(runs) and runs[0]["status"] == "done", runs[0] if runs else runs)
     pump.stop()
 
     # ---- system_info ----
@@ -225,14 +239,14 @@ def run():
     import csv as _csv
     import subprocess as _sp
     import threading as _th
-    import time as _t
     import run_win as _rw
     _out = os.path.join(tmpdir(), "align-win.telemetry.csv")
     _stop = _th.Event()
-    _th.Thread(target=_rw.sampler, args=(_out, _stop, 0.25, 0.5), daemon=True).start()
-    _t.sleep(2.5)
+    _thr = _th.Thread(target=_rw.sampler, args=(_out, _stop, 0.1, 0.2), daemon=True)
+    _thr.start()
+    wait_for_rows(_out, 3, timeout=10)          # header + two samples, then stop
     _stop.set()
-    _t.sleep(0.5)
+    _thr.join(timeout=5)
     _rows = [r for r in _csv.reader(open(_out, newline="")) if r]
     c.check("run_win rows match the header width",
             bool(_rows) and all(len(r) == len(_rows[0]) for r in _rows),
@@ -254,10 +268,11 @@ def run():
                          "vram_used": 387.0, "gpu_util": None})
         _rw._GPU_ENGINE.update({"3d": 42.0, "copy": 1.0})
         _stop2 = _th.Event()
-        _th.Thread(target=_rw.sampler, args=(_amd_out, _stop2, 0.25, 0.5), daemon=True).start()
-        _t.sleep(2)
+        _thr2 = _th.Thread(target=_rw.sampler, args=(_amd_out, _stop2, 0.1, 0.2), daemon=True)
+        _thr2.start()
+        wait_for_rows(_amd_out, 3, timeout=10)
         _stop2.set()
-        _t.sleep(0.5)
+        _thr2.join(timeout=5)
     finally:
         _rw._gpu_row = _real_gpu_row
         _rw._LHM.clear()
@@ -271,9 +286,11 @@ def run():
     c.check("the AMD branch still keeps the LHM values it does have",
             _arows[1][_arows[0].index("mem_util_pct")] == "75.6", _arows[1][:6])
     _lout = os.path.join(tmpdir(), "align-linux.telemetry.csv")
-    _sp.run([sys.executable, os.path.join(BENCH, "telemetry_log.py"), "--out", _lout,
-             "--interval", "0.25", "--duration", "2"],
-            capture_output=True, timeout=90)
+    _lp = _sp.Popen([sys.executable, os.path.join(BENCH, "telemetry_log.py"), "--out", _lout,
+                     "--interval", "0.1", "--duration", "1"],
+                    stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+    wait_for_rows(_lout, 3, timeout=15)         # as soon as rows land, not a fixed 2 s
+    _lp.wait(timeout=30)
     _lrows = [r for r in _csv.reader(open(_lout, newline="")) if r]
     c.check("telemetry_log rows match the header width",
             bool(_lrows) and all(len(r) == len(_lrows[0]) for r in _lrows),
@@ -725,7 +742,7 @@ def run():
     try:
         import ram_bench as rb
     except Exception as e:                      # numpy is not needed by the suite
-        print("  SKIP the RAM integrity record check (%s)" % e)
+        skip("the RAM integrity record check", e)
     else:
         real_empty, real_jline = rb.np.empty, rb.jline
         calls = {"n": 0}
@@ -759,7 +776,7 @@ def run():
     try:
         import disk_bench as dbm
     except Exception as e:
-        print("  SKIP the random-IO timing check (%s)" % e)
+        skip("the random-IO timing check", e)
     else:
         class _A:
             seconds = 1.0

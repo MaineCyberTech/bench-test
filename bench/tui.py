@@ -44,12 +44,25 @@ FAN_CURVE = os.path.join(BENCH, "fan_curve.py")
 FAN_CONF = "/etc/bench-fan-curve.conf"
 RESULT_COLLECTOR = "/usr/local/bin/bench-collect"
 GUI_LAUNCHER = "/usr/local/bin/bench-gui"
+
+
+def _upload_consented():
+    """Explicit opt-in for publishing results to GitHub (AN-P2-002).
+
+    The TUI's upload key sets BENCH_UPLOAD_CONSENT for the session; the automatic
+    post-collect upload only runs when it is already set, so results are never
+    published without an operator action.
+    """
+    return str(os.environ.get("BENCH_UPLOAD_CONSENT", "")).strip().lower() in \
+        ("1", "true", "yes", "on")
+
+
 sys.path.insert(0, BENCH)
 try:
     from benchreport import (Reporter, PhaseTracker, ReporterPump, build_summary, build_summary_dir,
                              telemetry_summary, newest_report, load_identity, run_exec, system_info,
                              read_inventory, load_conf, CSV_ALIASES, power_action,
-                             supported_groups,
+                             supported_groups, group_keys,
                              update_toolkit, iso_fetch, iso_write, iso_write_slot,
                              self_update, restart_self,
                              toolkit_version, is_live, update_needs_restart, hardware_line,
@@ -59,6 +72,9 @@ try:
                          drop_stray_script_arg)
 except Exception:  # reporting is optional
     Reporter = None
+
+    def group_keys():
+        return []
 
 # Windows runs the Python battery directly - the .sh runner is Linux-only and
 # starting it there fails with WinError 193 - and it needs a real interpreter
@@ -107,7 +123,9 @@ def _kill_tree(proc):
             pass
 
 
-GROUPS = ["gpu", "cpu", "ram", "disk", "combined", "fullsoak", "net", "nvenc", "llm", "fan", "sys", "gfx"]
+# Derived from the benchreport registry (EVOL-P2-001), not a second copy.
+GROUPS = list(group_keys())
+
 
 # Only offer toggles for the groups this platform's battery actually implements
 # (fan is Linux-only, llm is Windows-only): an offered no-op group is a silent lie.
@@ -285,7 +303,9 @@ class BenchTUI:
         try:
             import platform as _p
             ident = load_identity(self.server)
-            self.rep = Reporter(self.server, self.token, name=self.name or _p.node(),
+            # name=None lets Reporter fall back to $BENCH_AGENT_NAME or the
+            # hostname (an explicit --name still wins).
+            self.rep = Reporter(self.server, self.token, name=self.name or None,
                                 kind="tui", os_name=_p.system(), version=version_string(REPO),
                                 runner_id=ident.get("runner_id"), api_key=ident.get("api_key"),
                                 persist=True, instance=self.instance,
@@ -575,7 +595,15 @@ class BenchTUI:
                 pass
         return False
 
-    def upload(self):
+    def upload(self, consent=False):
+        # publishing to GitHub needs explicit consent: pressing 'u' grants it for
+        # the session; the automatic post-collect upload only proceeds if it was
+        # already granted (AN-P2-002)
+        if consent:
+            os.environ["BENCH_UPLOAD_CONSENT"] = "1"
+        if not _upload_consented():
+            self._set("upload needs consent - press u to publish", 3)
+            return
         if not os.path.exists("/usr/local/bin/bench-upload"):
             self._set("upload not available on this system", 3)
             return
@@ -1352,7 +1380,7 @@ class BenchTUI:
         elif ch == ord("c"):
             self.collect()
         elif ch == ord("u"):
-            self.upload()
+            self.upload(consent=True)
         elif ch == ord("f"):
             self.toggle_curve()
         elif ch == ord("r"):
