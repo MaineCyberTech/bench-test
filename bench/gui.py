@@ -48,7 +48,7 @@ try:
                              toolkit_version, is_live, update_needs_restart, hardware_line,
                              DASH_FIELDS, auto_update, should_restart_after_update,
                              venv_python, upload_telemetry_csv, persist_root,
-                             upload_run_files, extra_runner_args, tune_summary,
+                             upload_run_files, extra_runner_args, tune_summary, presets,
                              bench_version, version_string, drop_stray_script_arg)
 except Exception:  # reporting is optional
     Reporter = None
@@ -57,6 +57,9 @@ except Exception:  # reporting is optional
         return []
 
     def group_labels():
+        return {}
+
+    def presets():
         return {}
 
 try:
@@ -110,59 +113,11 @@ except Exception:
 
 _ALL_G = {k: 1 for k in group_keys()}
 
-
-def _g(*on):
-    return {k: (1 if k in on else 0) for k in _ALL_G}
-
-
-_DEF_DUR = {"gpu": 600, "combined": 300, "fullsoak": 300, "gfx": 60}
-
-# Knobs the runner already accepts but the four spin boxes above do not expose.
-# A preset carries them in "tune"; the runner's long defaults apply otherwise
-# (cpu 120s, ram 120s, gpu matrix 12288, steady 10GB, disk 2048MB) - the reason a
-# "Quick check" used to take over half an hour.
-#
-# disk_size_mb is the one that bit hardest: the randread/randwrite/randmix phases
-# are size-bound, not seconds-bound, so the default 2048MB cost 226s of the
-# desktop's 1368s stabilized run. 512MB does the same job in ~57s.
-_TUNE = {"cpu_soak": 45, "ram_soak": 30, "disk_seconds": 30, "disk_size_mb": 512,
-         "gpu_size": 4096, "cpu_size": 2048, "ram_size_mb": 512, "passes": 1,
-         "steady_gb": 2, "stable": 1, "stable_hold": 60, "gfx_engine": "furmark"}
-
-# "Quick check" has to be quick: with no tune it inherits the runner's long
-# defaults (cpu 120s, ram 120s, 10 GiB steady write, gpu matrix 12288) and ran
-# ~14 min on the live stick.
-_QUICK_TUNE = {"cpu_soak": 60, "ram_soak": 30, "disk_seconds": 15, "disk_size_mb": 256,
-               "gpu_size": 4096, "cpu_size": 2048, "ram_size_mb": 512, "passes": 1,
-               "steady_gb": 2}
-
-PRESETS = {
-    "Select a preset...": None,
-    "Quick check (short soaks)": {"groups": _g("gpu", "cpu", "ram", "disk", "combined", "fullsoak",
-                                               "net", "nvenc", "sys", "gfx"),
-                                  "spin": {"gpu": 60, "combined": 60, "fullsoak": 60, "gfx": 30},
-                                  "tune": _QUICK_TUNE},
-    "Stabilized full soak (15 min)": {"groups": _g("gpu", "cpu", "ram", "disk", "combined", "fullsoak",
-                                                   "net", "nvenc", "fan", "sys", "gfx"),
-                                      "spin": {"gpu": 180, "combined": 45, "fullsoak": 90, "gfx": 30},
-                                      "tune": dict(_TUNE)},
-    "System info + 60s soak (all)": {"groups": _g("sys", "fullsoak"),
-                                     "spin": {**_DEF_DUR, "fullsoak": 60}},
-    "Full run (defaults)": {"groups": _ALL_G, "spin": dict(_DEF_DUR)},
-    "GPU compute": {"groups": _g("gpu", "sys"), "spin": {**_DEF_DUR, "gpu": 60}},
-    "CPU + RAM + disk": {"groups": _g("cpu", "ram", "disk", "sys"), "spin": dict(_DEF_DUR)},
-    "Storage + network": {"groups": _g("disk", "net", "sys"), "spin": dict(_DEF_DUR)},
-    "Video / graphics": {"groups": _g("nvenc", "gfx", "sys"), "spin": dict(_DEF_DUR)},
-    "Graphics only (FurMark/Valley)": {"groups": _g("gfx", "sys"),
-                                       "spin": {**_DEF_DUR, "gfx": 30},
-                                       "tune": {"gfx_engine": "furmark"}},
-    "LLM inference (Ollama)": {"groups": _g("llm", "sys"), "spin": dict(_DEF_DUR)},
-    "Fan response": {"groups": _g("fan", "sys"), "spin": dict(_DEF_DUR)},
-    "Soak only (long)": {"groups": _g("gpu", "fullsoak", "sys"),
-                         "spin": {**_DEF_DUR, "gpu": 1800, "fullsoak": 1800}},
-    "Full-system soak (long)": {"groups": _g("fullsoak", "sys"),
-                                "spin": {**_DEF_DUR, "fullsoak": 1800}},
-}
+# The presets come from the ONE canonical table in benchreport.py - the agent
+# expands a preset name from the same table, so a name and its tune cannot
+# drift apart between the dashboards and the control plane. Only the
+# placeholder is GUI-only.
+PRESETS = {"Select a preset...": None, **presets()}
 
 STATUS_COLOR = {"running": ACCENT, "done": GOOD, "WARN": WARN, "warn": WARN,
                 "error": BAD, "failed": BAD}
@@ -958,7 +913,8 @@ class Dashboard:
             self.tracker = None
         if self.rep and self.rep.run_id:
             try:
-                summary = build_summary_dir(self.results_dir, since=self.run_t0)
+                summary = build_summary_dir(self.results_dir, since=self.run_t0,
+                                            log=self._log)
                 csvs = glob.glob(os.path.join(self.results_dir, "*.telemetry.csv"))
                 if csvs:
                     ts = telemetry_summary(max(csvs, key=os.path.getmtime))

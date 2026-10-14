@@ -68,13 +68,16 @@ try:
                              toolkit_version, is_live, update_needs_restart, hardware_line,
                              DASH_FIELDS, auto_update, should_restart_after_update, venv_python,
                          upload_telemetry_csv, persist_root, upload_run_files,
-                         extra_runner_args, tune_summary, bench_version, version_string,
+                         extra_runner_args, tune_summary, presets, bench_version, version_string,
                          drop_stray_script_arg)
 except Exception:  # reporting is optional
     Reporter = None
 
     def group_keys():
         return []
+
+    def presets():
+        return {}
 
 # Windows runs the Python battery directly - the .sh runner is Linux-only and
 # starting it there fails with WinError 193 - and it needs a real interpreter
@@ -140,54 +143,14 @@ _GROUP_KEYS = list("1234567890-=")[:len(UI_GROUPS)]
 _KEY_HINT = {11: "1-9,0,-", 12: "1-9,0,-,="}.get(len(_GROUP_KEYS), ",".join(_GROUP_KEYS))
 
 
-def _g(*on):
-    return [g for g in GROUPS if g in on]
-
-
-_DEF_DUR = {"gpu": "600", "combined": "300", "fullsoak": "300", "gfx": "60"}
-
-# Extra knobs the runner accepts but the four duration fields do not expose; a
-# preset carries them in "tune". Without them a run uses the runner's long
-# defaults (cpu 120s, ram 120s, gpu matrix 12288, steady 10GB, disk 2048MB).
-#
-# disk_size_mb is the one that bit hardest: the randread/randwrite/randmix phases
-# are size-bound, not seconds-bound, so the default 2048MB cost 226s of the
-# desktop's 1368s stabilized run. 512MB does the same job in ~57s.
-_TUNE = {"cpu_soak": 45, "ram_soak": 30, "disk_seconds": 30, "disk_size_mb": 512,
-         "gpu_size": 4096, "cpu_size": 2048, "ram_size_mb": 512, "passes": 1,
-         "steady_gb": 2, "stable": 1, "stable_hold": 60, "gfx_engine": "furmark"}
-
-# "Quick check" has to be quick: with no tune it inherits the runner's long
-# defaults (cpu 120s, ram 120s, 10 GiB steady write, gpu matrix 12288).
-_QUICK_TUNE = {"cpu_soak": 60, "ram_soak": 30, "disk_seconds": 15, "disk_size_mb": 256,
-               "gpu_size": 4096, "cpu_size": 2048, "ram_size_mb": 512, "passes": 1,
-               "steady_gb": 2}
-
+# The presets come from the ONE canonical table in benchreport.py (the agent
+# expands a preset name from the same table), reshaped into the TUI's list of
+# (name, {"groups": [...], "dur": {...}, "tune": {...}}).
 PRESETS = [
-    ("Quick check (short soaks)", {"groups": _g("gpu", "cpu", "ram", "disk", "combined", "fullsoak",
-                                                "net", "nvenc", "sys", "gfx"),
-                                   "dur": {"gpu": "60", "combined": "60", "fullsoak": "60", "gfx": "30"},
-                                   "tune": dict(_QUICK_TUNE)}),
-    ("Stabilized full soak (15 min)", {"groups": _g("gpu", "cpu", "ram", "disk", "combined", "fullsoak",
-                                                    "net", "nvenc", "fan", "sys", "gfx"),
-                                       "dur": {"gpu": "180", "combined": "45", "fullsoak": "90", "gfx": "30"},
-                                       "tune": dict(_TUNE)}),
-    ("System info + 60s soak (all)", {"groups": _g("sys", "fullsoak"),
-                                      "dur": {**_DEF_DUR, "fullsoak": "60"}}),
-    ("Full run (defaults)", {"groups": list(GROUPS), "dur": dict(_DEF_DUR)}),
-    ("GPU compute", {"groups": _g("gpu", "sys"), "dur": {**_DEF_DUR, "gpu": "60"}}),
-    ("CPU + RAM + disk", {"groups": _g("cpu", "ram", "disk", "sys"), "dur": dict(_DEF_DUR)}),
-    ("Storage + network", {"groups": _g("disk", "net", "sys"), "dur": dict(_DEF_DUR)}),
-    ("Video / graphics", {"groups": _g("nvenc", "gfx", "sys"), "dur": dict(_DEF_DUR)}),
-    ("Graphics only (FurMark/Valley)", {"groups": _g("gfx", "sys"),
-                                        "dur": {**_DEF_DUR, "gfx": "30"},
-                                        "tune": {"gfx_engine": "furmark"}}),
-    ("LLM inference (Ollama)", {"groups": _g("llm", "sys"), "dur": dict(_DEF_DUR)}),
-    ("Fan response", {"groups": _g("fan", "sys"), "dur": dict(_DEF_DUR)}),
-    ("Soak only (long)", {"groups": _g("gpu", "fullsoak", "sys"),
-                          "dur": {**_DEF_DUR, "gpu": "1800", "fullsoak": "1800"}}),
-    ("Full-system soak (long)", {"groups": _g("fullsoak", "sys"),
-                                 "dur": {**_DEF_DUR, "fullsoak": "1800"}}),
+    (name, {"groups": [k for k, v in spec["groups"].items() if v],
+            "dur": {k: str(v) for k, v in spec["spin"].items()},
+            "tune": dict(spec.get("tune") or {})})
+    for name, spec in presets().items()
 ]
 
 SPARK = "▁▂▃▄▅▆▇█"
@@ -733,7 +696,8 @@ class BenchTUI:
             self.tracker = None
         if self.rep and self.rep.run_id:
             try:
-                summary = build_summary_dir(self.results_dir, since=self.run_t0)
+                summary = build_summary_dir(self.results_dir, since=self.run_t0,
+                                            log=lambda m: self.log.append(m))
                 csvs = glob.glob(os.path.join(self.results_dir, "*.telemetry.csv"))
                 if csvs:
                     ts = telemetry_summary(max(csvs, key=os.path.getmtime))

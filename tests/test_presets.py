@@ -29,6 +29,8 @@ CANON = {
     "Fan response": ({"fan", "sys"}, dict(DEF)),
     "Soak only (long)": ({"gpu", "fullsoak", "sys"}, {**DEF, "gpu": 1800, "fullsoak": 1800}),
     "Full-system soak (long)": ({"fullsoak", "sys"}, {**DEF, "fullsoak": 1800}),
+    "Burn-in (1 h)": ({"gpu", "cpu", "ram", "disk", "combined", "sys"},
+                      {"gpu": 1200, "combined": 1200, "fullsoak": 300, "gfx": 60}),
 }
 
 
@@ -155,6 +157,100 @@ def run():
         c.check("gui/tui tune parity for %s" % name,
                 gtune.get(name, {}) == ttune.get(name, {}),
                 (gtune.get(name), ttune.get(name)))
+
+    # ---- the GUI/TUI derive from the canonical table, not a private copy ----
+    canon = rep.presets()
+    c.check("gui PRESETS are the canonical table",
+            {k: v for k, v in gui.PRESETS.items() if v} == canon,
+            (sorted(gui.PRESETS), sorted(canon)))
+    want_tui = {name: {"groups": [k for k, v in spec["groups"].items() if v],
+                       "dur": {k: str(v) for k, v in spec["spin"].items()},
+                       "tune": dict(spec.get("tune") or {})}
+                for name, spec in canon.items()}
+    c.check("tui PRESETS are the canonical table (reshaped)",
+            dict(tui.PRESETS) == want_tui, dict(tui.PRESETS))
+
+    # the web table is a copy; pin its explicit tune overrides too (TUNE_DEFAULT
+    # only fills the keys a preset does not name)
+    web_tune = {}
+    for line in block.splitlines():
+        m = re.match(r'\s*"([^"]+)":\s*\{(.*)\},?\s*$', line)
+        if not m:
+            continue
+        tm = re.search(r"tune:\s*\{(.*?)\}", m.group(2))
+        body = tm.group(1).replace("...TUNE_DEFAULT", "") if tm else ""
+        web_tune[m.group(1)] = {k: (int(v) if v.isdigit() else v.strip('"'))
+                                for k, v in re.findall(r'(\w+):\s*(\d+|"[^"]*")', body)}
+    for name, spec in canon.items():
+        want = dict(spec.get("tune") or {})
+        c.check("web tune parity for %s" % name, web_tune.get(name, {}) == want,
+                (web_tune.get(name), want))
+
+    # ---- a preset NAME must carry its tune to the runner (agent expansion) ----
+    # The control plane can send {"preset": "Quick check (short soaks)"} with no
+    # explicit fields; the agent used to apply only explicit fields, so the name
+    # ran the runner's long defaults (a "Quick check" ran 600s soaks) and the
+    # same preset measured N=4096 on one machine and N=10240 on another.
+    def preset_args(name):
+        spec = canon[name]
+        args = ["--skip-" + g for g in GROUPS if not spec["groups"][g]]
+        spin = spec["spin"]
+        args += ["--gpu-soak", str(spin["gpu"]), "--combined-seconds", str(spin["combined"]),
+                 "--fullsoak-seconds", str(spin["fullsoak"]), "--gfx-seconds", str(spin["gfx"])]
+        args += rep.extra_runner_args(spec["tune"])
+        return args
+
+    for name in ("Quick check (short soaks)", "Stabilized full soak (15 min)", "Burn-in (1 h)"):
+        c.check("agent expands preset %r into its groups + durations + tune" % name,
+                ag.build_runner_args({"preset": name}) == preset_args(name),
+                ag.build_runner_args({"preset": name}))
+    payload = {"preset": "Quick check (short soaks)"}
+    expanded = ag.expand_preset(payload)
+    c.check("expansion fills the profile the run records",
+            expanded.get("gpu_soak") == 60 and expanded.get("cpu_soak") == 60
+            and expanded.get("gpu_size") == 4096
+            and set(expanded.get("skip") or []) == {"llm", "fan"}, expanded)
+    c.check("expansion does not mutate the caller's payload",
+            payload == {"preset": "Quick check (short soaks)"}, payload)
+    # explicit payload fields still win over the preset
+    over = ag.build_runner_args({"preset": "Quick check (short soaks)",
+                                 "gpu_soak": 99, "cpu_soak": 5})
+    c.check("an explicit duration overrides the preset",
+            over[over.index("--gpu-soak") + 1] == "99"
+            and over[over.index("--cpu-soak") + 1] == "5", over)
+    c.check("the preset's other tune still applies around the override",
+            over[over.index("--disk-size-mb") + 1] == "256"
+            and over[over.index("--gpu-size") + 1] == "4096", over)
+    c.check("the preset still plateau-soaks with no override",
+            "--soak-until-stable" in ag.build_runner_args(
+                {"preset": "Stabilized full soak (15 min)"}), "")
+    c.check("an explicit stable:0 turns the preset's plateau soak off",
+            "--soak-until-stable" not in ag.build_runner_args(
+                {"preset": "Stabilized full soak (15 min)", "stable": 0}), "")
+    gmap = ag.build_runner_args({"preset": "Quick check (short soaks)", "groups": {"llm": 1}})
+    c.check("an explicit group turns a preset group back on",
+            "--skip-llm" not in gmap and "--skip-fan" in gmap, gmap)
+    c.check("an unknown preset name is left alone (never guessed)",
+            ag.build_runner_args({"preset": "no such preset"}) == []
+            and ag.expand_preset({"preset": "no such preset"})
+            == {"preset": "no such preset"}, "")
+    c.check("no preset name -> no expansion",
+            ag.build_runner_args({}) == [] and ag.expand_preset({}) == {}, "")
+
+    # ---- Burn-in (1 h): a stability hunt, not a score run ----
+    burn = canon["Burn-in (1 h)"]
+    burn_tune = burn.get("tune") or {}
+    c.check("Burn-in runs the mixed load (gpu + cpu + ram + disk + combined)",
+            {"gpu", "cpu", "ram", "disk", "combined"}
+            <= {k for k, v in burn["groups"].items() if v},
+            sorted(k for k, v in burn["groups"].items() if v))
+    c.check("Burn-in includes sys for the WHEA/TDR/ECC/disk verdicts + event-log window",
+            burn["groups"].get("sys") == 1, burn["groups"])
+    c.check("Burn-in has long fixed soaks and no plateau flag",
+            burn["spin"]["gpu"] >= 600 and burn["spin"]["combined"] >= 600
+            and not burn_tune.get("stable") and not burn_tune.get("stable_hold")
+            and "--soak-until-stable" not in ag.build_runner_args({"preset": "Burn-in (1 h)"}),
+            (burn["spin"], burn_tune))
 
     return c.fails
 

@@ -25,6 +25,10 @@ const PRESETS = {
   "Fan response": { groups: gset("fan", "sys"), spin: { ...DEF_SPIN } },
   "Soak only (long)": { groups: gset("gpu", "fullsoak", "sys"), spin: { ...DEF_SPIN, gpu: 1800, fullsoak: 1800 } },
   "Full-system soak (long)": { groups: gset("fullsoak", "sys"), spin: { ...DEF_SPIN, fullsoak: 1800 } },
+  // stability hunt: a long mixed load whose point is the WHEA/TDR/ECC/disk
+  // verdicts plus the event-log window; no stable/stable_hold, so the durations
+  // are fixed and two burn-ins are comparable
+  "Burn-in (1 h)": { groups: gset("gpu", "cpu", "ram", "disk", "combined", "sys"), spin: { gpu: 1200, combined: 1200, fullsoak: 300, gfx: 60 }, tune: { ...TUNE_DEFAULT, cpu_soak: 600, ram_soak: 300, disk_seconds: 60, disk_size_mb: 2048, gpu_size: 12288, cpu_size: 4096, ram_size_mb: 1024, passes: 1, steady_gb: 10 } },
 };
 const SERIES = {
   temp_c: ["temp °C", "#ef6b73"], power_w: ["power W", "#4c9aff"], gpu_util: ["GPU %", "#46c98d"],

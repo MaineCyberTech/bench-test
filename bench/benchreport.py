@@ -936,7 +936,11 @@ class ReporterPump:
         self.rep = reporter
         self.on_command = on_command
         self.interval = interval
-        self.log = log or (lambda *_a: None)
+        # Default to stdout (what the run console captures): a caller that does
+        # not pass a logger used to send the pipeline counters AND the pump's own
+        # "pump error"/"command failed" lines to a no-op - a failed remote
+        # command failed invisibly.
+        self.log = log or (lambda *a: print(*a, flush=True))
         # Bounded: a runner that cannot reach the server must not grow without
         # limit, but it must not lose rows silently either - the oldest go, and the
         # count is reported. 1200 rows is five minutes at 4 Hz.
@@ -1017,6 +1021,11 @@ class ReporterPump:
                 "failed": self.failed, "dropped": self.dropped,
                 "queued": self.samples.qsize()}
 
+    def _log_counters(self):
+        """The ~20s pipeline line: produced/sent/failed/dropped since start."""
+        self.log("[report] telemetry %d produced, %d sent, %d failed, %d dropped"
+                 % (self.produced, self.sent, self.failed, self.dropped))
+
     def _loop(self):
         while not self._stop:
             try:
@@ -1027,9 +1036,7 @@ class ReporterPump:
                 # every ~20s: a run's own console then says whether the pipeline kept
                 # up, instead of a silent loss being found by hand later
                 if self.ticks % 20 == 0 and (self.produced or self.failed or self.dropped):
-                    self.log("[report] telemetry %d produced, %d sent, %d failed, "
-                             "%d dropped"
-                             % (self.produced, self.sent, self.failed, self.dropped))
+                    self._log_counters()
                 if self.ticks % 2 == 0:
                     self.rep.heartbeat()
                     for c in self.rep.poll_commands():
@@ -1257,6 +1264,145 @@ def tune_summary(profile):
     if t.get("gfx_engine"):
         parts.append("gfx %s" % t["gfx_engine"])
     return " · ".join(parts)
+
+
+# --------------------------------------------------------------- presets ----
+# ONE canonical preset table. The GUI, TUI and the headless agent all read this,
+# and the agent expands a preset NAME into its groups/durations/tune, so a preset
+# selected by name runs the tune it advertises. The web app cannot import Python,
+# so server/web/app.js keeps a copy and tests/test_presets.py pins it to this
+# table.
+#
+# A spec carries:
+#   groups: {key: 0/1} over every registry key (so switching stays deterministic)
+#   spin:   {"gpu": s, "combined": s, "fullsoak": s, "gfx": s} runner durations
+#   tune:   the extra knobs extra_runner_args() knows
+PRESET_DEF_SPIN = {"gpu": 600, "combined": 300, "fullsoak": 300, "gfx": 60}
+
+# Knobs the runner already accepts but the four duration boxes do not expose.
+# Without them a run uses the runner's long defaults (cpu 120s, ram 120s, gpu
+# matrix 12288, steady 10GB, disk 2048MB) - which is why "Quick check" used to
+# take over half an hour.
+_PRESET_TUNE = {"cpu_soak": 45, "ram_soak": 30, "disk_seconds": 30, "disk_size_mb": 512,
+                "gpu_size": 4096, "cpu_size": 2048, "ram_size_mb": 512, "passes": 1,
+                "steady_gb": 2, "stable": 1, "stable_hold": 60, "gfx_engine": "furmark"}
+_PRESET_QUICK_TUNE = {"cpu_soak": 60, "ram_soak": 30, "disk_seconds": 15, "disk_size_mb": 256,
+                      "gpu_size": 4096, "cpu_size": 2048, "ram_size_mb": 512, "passes": 1,
+                      "steady_gb": 2}
+
+# The dashboards' spin names -> the payload/profile keys the runners take.
+_PRESET_DUR_KEYS = {"gpu": "gpu_soak", "combined": "combined",
+                    "fullsoak": "fullsoak", "gfx": "gfx"}
+
+
+def _preset_groups(*on):
+    """{key: 0/1} over every registry key, so switching is deterministic."""
+    return {k: (1 if k in on else 0) for k in group_keys()}
+
+
+def presets():
+    """The canonical preset table: ``name -> {groups, spin, tune}``.
+
+    Built from the live registry on every call, so a registry change (or a
+    test's synthetic entry) flows into the GUI/TUI/agent without editing a
+    consumer. The GUI adds its own "Select a preset..." placeholder; it is not
+    part of the table.
+    """
+    return {
+        "Quick check (short soaks)": {"groups": _preset_groups("gpu", "cpu", "ram", "disk", "combined",
+                                                               "fullsoak", "net", "nvenc", "sys", "gfx"),
+                                      "spin": {"gpu": 60, "combined": 60, "fullsoak": 60, "gfx": 30},
+                                      "tune": dict(_PRESET_QUICK_TUNE)},
+        "Stabilized full soak (15 min)": {"groups": _preset_groups("gpu", "cpu", "ram", "disk", "combined",
+                                                                   "fullsoak", "net", "nvenc", "fan", "sys", "gfx"),
+                                          "spin": {"gpu": 180, "combined": 45, "fullsoak": 90, "gfx": 30},
+                                          "tune": dict(_PRESET_TUNE)},
+        "System info + 60s soak (all)": {"groups": _preset_groups("sys", "fullsoak"),
+                                         "spin": {**PRESET_DEF_SPIN, "fullsoak": 60}},
+        "Full run (defaults)": {"groups": _preset_groups(*group_keys()),
+                                "spin": dict(PRESET_DEF_SPIN)},
+        "GPU compute": {"groups": _preset_groups("gpu", "sys"),
+                        "spin": {**PRESET_DEF_SPIN, "gpu": 60}},
+        "CPU + RAM + disk": {"groups": _preset_groups("cpu", "ram", "disk", "sys"),
+                             "spin": dict(PRESET_DEF_SPIN)},
+        "Storage + network": {"groups": _preset_groups("disk", "net", "sys"),
+                              "spin": dict(PRESET_DEF_SPIN)},
+        "Video / graphics": {"groups": _preset_groups("nvenc", "gfx", "sys"),
+                             "spin": dict(PRESET_DEF_SPIN)},
+        "Graphics only (FurMark/Valley)": {"groups": _preset_groups("gfx", "sys"),
+                                           "spin": {**PRESET_DEF_SPIN, "gfx": 30},
+                                           "tune": {"gfx_engine": "furmark"}},
+        "LLM inference (Ollama)": {"groups": _preset_groups("llm", "sys"),
+                                   "spin": dict(PRESET_DEF_SPIN)},
+        "Fan response": {"groups": _preset_groups("fan", "sys"),
+                         "spin": dict(PRESET_DEF_SPIN)},
+        "Soak only (long)": {"groups": _preset_groups("gpu", "fullsoak", "sys"),
+                             "spin": {**PRESET_DEF_SPIN, "gpu": 1800, "fullsoak": 1800}},
+        "Full-system soak (long)": {"groups": _preset_groups("fullsoak", "sys"),
+                                    "spin": {**PRESET_DEF_SPIN, "fullsoak": 1800}},
+        # Stability hunt: a long mixed load whose point is the existing WHEA /
+        # TDR / ECC / disk verdicts plus the event-log window. No plateau flag
+        # (`stable`/`stable_hold`): the durations are fixed, so two burn-ins are
+        # directly comparable.
+        "Burn-in (1 h)": {"groups": _preset_groups("gpu", "cpu", "ram", "disk", "combined", "sys"),
+                          "spin": {"gpu": 1200, "combined": 1200, "fullsoak": 300, "gfx": 60},
+                          "tune": {"cpu_soak": 600, "ram_soak": 300, "disk_seconds": 60,
+                                   "disk_size_mb": 2048, "gpu_size": 12288, "cpu_size": 4096,
+                                   "ram_size_mb": 1024, "passes": 1, "steady_gb": 10}},
+    }
+
+
+def _group_map(groups):
+    """Normalise a payload `groups` (dict or list) to {key: 0/1} over the registry."""
+    if isinstance(groups, dict):
+        return {k: (1 if groups.get(k) else 0) for k in group_keys()}
+    if isinstance(groups, (list, tuple, set)):
+        on = set(groups)
+        return {k: (1 if k in on else 0) for k in group_keys()}
+    return None
+
+
+def expand_preset(profile):
+    """Fill a recognised preset name's groups/durations/tune into `profile`.
+
+    A preset NAME must carry its tune: a control-plane payload that named a
+    preset and set nothing else used to run the runner's long defaults (a
+    "Quick check" ran 600s soaks, and the same preset measured N=4096 on one
+    machine and N=10240 on another). Explicit payload fields always win - the
+    preset only supplies what the caller left unset - and an unknown name is
+    left alone rather than guessed. Returns a new dict; the input is untouched.
+    """
+    p = dict(profile or {})
+    name = p.get("preset")
+    spec = presets().get(name) if name else None
+    if not spec:
+        return p
+    # groups: the preset's map, overridden per key by an explicit payload map
+    groups = dict(spec["groups"])
+    explicit = _group_map(p.get("groups"))
+    if explicit is not None:
+        groups.update({k: v for k, v in explicit.items() if k in groups})
+    # an explicit `skip` is explicit too: it zeroes those groups
+    for g in (p.get("skip") or []):
+        if g in groups:
+            groups[g] = 0
+    p["groups"] = groups
+    if not p.get("skip"):
+        p["skip"] = [k for k, v in groups.items() if not v]
+    # durations: explicit wins over the preset
+    for key, val in spec["spin"].items():
+        pk = _PRESET_DUR_KEYS.get(key, key)
+        if p.get(pk) in (None, ""):
+            p[pk] = val
+    # tune: explicit wins; a payload that explicitly switches the plateau soak
+    # off (stable: 0) must not get the preset's stable_hold filled back in
+    stable_off = ("stable" in p) and not p.get("stable")
+    for key, val in (spec.get("tune") or {}).items():
+        if key == "stable_hold" and stable_off:
+            continue
+        if p.get(key) in (None, ""):
+            p[key] = val
+    return p
 
 
 def is_live():
@@ -2996,13 +3142,100 @@ def _hardware_verdicts(results_dir, since=None, window_h=8):
     return [{"level": v[k]["level"], "text": v[k]["text"]} for k in order]
 
 
-def build_summary_dir(results_dir, window_h=8, since=None):
+# The samplers tick at 1-2 Hz. A CSV not written for this long during a run
+# means the sampler died (or never started) - ~60 missed ticks, far beyond a slow
+# disk or a paused VM, and well inside a soak that recorded nothing for its life.
+SAMPLER_STALE_S = 60
+
+
+def sampler_liveness(results_dir, since=None, now=None, stale_s=SAMPLER_STALE_S):
+    """Finding when the run's own telemetry sampler produced nothing (or died).
+
+    A run whose CSV is missing, empty (header only) or whose last write is older
+    than `stale_s` before the finish used to report green - the FullSystemSoak
+    phase that recorded nothing for its whole life is the argument. Returns an
+    explicit finding ({"level", "reason", "csv", "age_s", "text"}) for the
+    summary/verdicts, or None when the sampler looks healthy. `since` scopes the
+    search to a CSV THIS run wrote (normally the run's start). Never raises and
+    never fails the run.
+    """
+    now = time.time() if now is None else now
+    try:
+        files = glob.glob(os.path.join(results_dir, "*.telemetry.csv"))
+        if since is not None:
+            files = [p for p in files if os.path.getmtime(p) >= since - 5]
+    except OSError:
+        files = []
+    if not files:
+        return {"level": "warn", "reason": "missing", "csv": None, "age_s": None,
+                "text": "telemetry sampler produced no CSV for this run - "
+                        "the live charts and the stored telemetry block are empty"}
+    path = max(files, key=os.path.getmtime)
+    base = os.path.basename(path)
+    try:
+        age = max(0.0, now - os.path.getmtime(path))
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            rows = sum(1 for i, ln in enumerate(fh) if i and ln.strip())
+    except OSError:
+        return {"level": "warn", "reason": "missing", "csv": base, "age_s": None,
+                "text": "telemetry CSV %s could not be read - the sampler's data "
+                        "is missing for this run" % base}
+    if rows <= 0:
+        return {"level": "warn", "reason": "empty", "csv": base, "age_s": round(age, 1),
+                "text": "telemetry CSV %s has no data rows - the sampler recorded "
+                        "nothing for this run" % base}
+    if age > stale_s:
+        return {"level": "warn", "reason": "stale", "csv": base, "age_s": round(age, 1),
+                "text": "telemetry CSV %s stopped %ds before the run finished - "
+                        "the sampler died mid-run" % (base, int(age))}
+    return None
+
+
+def apply_sampler_liveness(summary, results_dir, since=None, now=None, log=None):
+    """Record a dead/empty/stale sampler in a run summary as an explicit warning.
+
+    Shared by build_summary_dir (GUI/TUI and the agent's summary path) and the
+    agent's runs-index path, so every run end reports the same finding instead of
+    a green summary for a run whose sampler recorded nothing. The verdict is a
+    warning - the run still finishes - and carries only {"level", "text"} like
+    the other verdicts; the details live under `summary["sampler"]`. Idempotent:
+    a summary that already carries the finding is left alone. Returns the finding
+    (or None when healthy/already recorded).
+    """
+    if isinstance(summary, dict):
+        cur = summary.get("sampler")
+        if isinstance(cur, dict) and cur.get("ok") is False:
+            return None
+    try:
+        live = sampler_liveness(results_dir, since=since, now=now)
+    except Exception:
+        return None
+    if not live:
+        return None
+    if isinstance(summary, dict):
+        vs = summary.get("verdicts")
+        if not isinstance(vs, list):
+            vs = []
+        summary["verdicts"] = [{"level": live["level"], "text": live["text"]}] + vs
+        summary["sampler"] = {"ok": False, "reason": live["reason"],
+                              "csv": live.get("csv"), "age_s": live.get("age_s")}
+    if log:
+        try:
+            log("[report] " + live["text"])
+        except Exception:
+            pass
+    return live
+
+
+def build_summary_dir(results_dir, window_h=8, since=None, log=None):
     """Merge all of a run's report JSONs (Windows main + per-group) into one row.
 
     `since` (a unix time, normally the run's start) restricts the merge to files
     this run wrote: the results dir keeps earlier runs for hours, and merging
     those made a summary inherit metrics it never measured (a 'System info + 60s
-    soak' run reported disk/net numbers from a previous run).
+    soak' run reported disk/net numbers from a previous run). A run whose own
+    telemetry sampler produced nothing gets an explicit warn verdict (see
+    apply_sampler_liveness); `log` receives that line when given.
     """
     now = time.time()
     reports = []
@@ -3038,6 +3271,9 @@ def build_summary_dir(results_dir, window_h=8, since=None):
     verdicts = _hardware_verdicts(results_dir, since=since, window_h=window_h)
     if verdicts:
         out["verdicts"] = verdicts
+    # a run whose sampler recorded nothing must not report green: the finding
+    # rides in `verdicts` (details under `sampler`), and never fails the run
+    apply_sampler_liveness(out, results_dir, since=since, now=now, log=log)
     # Windows gfx is a Unigine Valley run kept as a screenshot. Scope it to this
     # run exactly like the reports above: the results dir keeps earlier runs for
     # hours, and an unscoped screenshot made a FurMark run report a stale Valley

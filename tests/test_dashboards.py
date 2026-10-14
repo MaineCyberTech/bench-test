@@ -6,8 +6,9 @@ import json
 import os
 import re
 import sys
+import time
 
-from harness import Checker, BENCH, REPO, WEB, skip
+from harness import Checker, BENCH, REPO, WEB, skip, tmpdir
 
 LINES = ["[sys] inventory", "[gpu] info", "[gpu] soak", "[cpu] matmul", "[net] bench",
          "[fullsoak] gpu + cpu + ram + disk concurrently"]
@@ -504,12 +505,114 @@ def _pwa(c):
             "caches.match(req).then((hit) => hit || fetch(req))" in sw, "")
 
 
+def _liveness(c):
+    """A run whose sampler recorded nothing must say so, not report green.
+
+    The FullSystemSoak phase that recorded nothing for its whole life reported
+    green: a missing, empty or stale telemetry CSV was a silent success.
+    """
+    import benchreport as rep
+    since = time.time() - 60
+
+    d = tmpdir()
+    summ = rep.build_summary_dir(d, since=since)
+    c.check("a run with no telemetry CSV records a sampler finding",
+            (summ.get("sampler") or {}).get("ok") is False
+            and (summ.get("sampler") or {}).get("reason") == "missing", summ)
+    c.check("the finding is a warning verdict, not a failed run",
+            any(v.get("level") == "warn" and "sampler" in v.get("text", "")
+                for v in summ.get("verdicts") or []), summ.get("verdicts"))
+
+    empty = tmpdir()
+    with open(os.path.join(empty, "host-win-20260101-000000.telemetry.csv"), "w") as fh:
+        fh.write("elapsed_s,temp_c,power_w\n")
+    summ2 = rep.build_summary_dir(empty, since=since)
+    c.check("a header-only CSV records an empty-sampler finding",
+            (summ2.get("sampler") or {}).get("reason") == "empty", summ2)
+
+    stale = tmpdir()
+    stale_path = os.path.join(stale, "host-win-20260101-000000.telemetry.csv")
+    with open(stale_path, "w") as fh:
+        fh.write("elapsed_s,temp_c,power_w\n0,50,200\n1,51,201\n")
+    os.utime(stale_path, (time.time() - 300, time.time() - 300))
+    since_stale = time.time() - 600
+    summ3 = rep.build_summary_dir(stale, since=since_stale)
+    c.check("a stale last row records a stale-sampler finding",
+            (summ3.get("sampler") or {}).get("reason") == "stale"
+            and (summ3.get("sampler") or {}).get("age_s", 0) > 60, summ3)
+
+    healthy = tmpdir()
+    with open(os.path.join(healthy, "host-win-20260101-000000.telemetry.csv"), "w") as fh:
+        fh.write("elapsed_s,temp_c,power_w\n0,50,200\n1,51,201\n")
+    logs = []
+    summ4 = rep.build_summary_dir(healthy, since=since, log=logs.append)
+    c.check("a healthy sampler records no finding",
+            "sampler" not in summ4
+            and not any(v.get("level") == "warn" and "sampler" in v.get("text", "")
+                        for v in summ4.get("verdicts") or []), summ4)
+    c.check("no liveness log line for a healthy sampler", logs == [], logs)
+
+    logs2 = []
+    rep.build_summary_dir(d, since=since, log=logs2.append)
+    c.check("the finding is also logged at run end",
+            len(logs2) == 1 and "sampler" in logs2[0], logs2)
+
+    c.check("sampler_liveness returns None for a healthy CSV",
+            rep.sampler_liveness(healthy, since=since) is None, "")
+    c.check("sampler_liveness reasons are explicit",
+            rep.sampler_liveness(d, since=since).get("reason") == "missing"
+            and rep.sampler_liveness(empty, since=since).get("reason") == "empty"
+            and rep.sampler_liveness(stale, since=since_stale).get("reason") == "stale", "")
+
+
+def _pump(c):
+    """The reporting pump's default log must be visible, not a no-op.
+
+    ReporterPump(log=...) defaulted to `lambda *_a: None`, so the pipeline
+    counters and the pump's own "pump error"/"command failed" lines went
+    nowhere - a failed remote command failed invisibly.
+    """
+    import contextlib
+    import io
+    import benchreport as rep
+
+    class _Rep:
+        def telemetry(self, batch):
+            return 200
+
+        def log(self, lines, stream="out"):
+            pass
+
+        def heartbeat(self):
+            pass
+
+        def poll_commands(self):
+            return []
+
+    pump = rep.ReporterPump(_Rep())
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        pump.log("[report] pump error: boom")
+    c.check("the pump's default log prints to stdout",
+            "pump error: boom" in buf.getvalue(), buf.getvalue())
+
+    pump.produced, pump.sent, pump.failed, pump.dropped = 10, 9, 1, 0
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        pump._log_counters()
+    line = buf.getvalue()
+    c.check("the pipeline counters line is emitted with the real counters",
+            "10 produced, 9 sent, 1 failed, 0 dropped" in line, line)
+
+
 def run():
     c = Checker("dashboards")
     _gui(c)
     _gui_cleanup(c)
     _tui(c)
     _web(c)
+    _liveness(c)
+    _pump(c)
     # ---- runner-supplied summary fields must be escaped before innerHTML ----
     # The panel used to interpolate gpu_soak_size / cpu_soak_size / gfx.engine straight
     # into HTML; a runner key could inject a script into the operator's browser.

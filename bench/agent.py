@@ -50,7 +50,8 @@ from benchreport import (Reporter, PhaseTracker, TelemetryTail,  # noqa: E402
                          self_update, restart_self,
                          toolkit_version, is_live, update_needs_restart,
                          auto_update, venv_python, upload_telemetry_csv, upload_run_files,
-                         extra_runner_args, version_string, drop_stray_script_arg)
+                         extra_runner_args, expand_preset, apply_sampler_liveness,
+                         version_string, drop_stray_script_arg)
 import bootstrap  # stdlib-only local env helper (see bench/bootstrap.py)
 
 # Derived from the benchreport registry (EVOL-P2-001), not a second copy.
@@ -95,7 +96,13 @@ def git_commit():
 
 
 def build_runner_args(profile):
-    """profile -> argv for run_win.py / Run-LinuxBench.sh."""
+    """profile -> argv for run_win.py / Run-LinuxBench.sh.
+
+    A recognised preset name is expanded first (groups + durations + tune, see
+    benchreport.expand_preset), so a name-only payload runs the preset it asked
+    for instead of the runner's long defaults.
+    """
+    profile = expand_preset(profile)
     args = []
     for g in (profile.get("skip") or []):
         args += ["--skip-" + g]
@@ -142,6 +149,9 @@ class Agent:
         return ["bash", os.path.join(BENCH, "Run-LinuxBench.sh")] + args + ["-o", self.out_dir]
 
     def run_battery(self, label, profile, extra_args=None):
+        # expand once here too: start_run must record the effective profile (the
+        # preset's groups/durations/tune), not the raw name-only payload
+        profile = expand_preset(profile)
         args = build_runner_args(profile) + list(extra_args or [])
         cmd = self.runner_cmd(args)
         self.log("run: %s" % " ".join(cmd))
@@ -237,7 +247,7 @@ class Agent:
     def _finish(self, rc):
         summary = read_runs_index(self.out_dir)
         if not summary:
-            summary = build_summary_dir(self.out_dir, since=self.run_t0)
+            summary = build_summary_dir(self.out_dir, since=self.run_t0, log=self.log)
             # only a CSV THIS run wrote: at run end the newest file can still be
             # the previous run's, which would give this run a stale telemetry block
             try:
@@ -249,6 +259,10 @@ class Agent:
                 ts = telemetry_summary(max(csvs, key=os.path.getmtime))
                 if ts:
                     summary["telemetry"] = ts
+        else:
+            # the runner's own index row skips build_summary_dir, so apply the
+            # sampler-liveness finding here too (warn only, never fails the run)
+            apply_sampler_liveness(summary, self.out_dir, since=self.run_t0, log=self.log)
         summary.setdefault("host", self.a.name)
         status = "done" if rc == 0 else ("stopped" if self.stop_flag else "failed")
         system = read_inventory(self.out_dir) or self.sysinfo
