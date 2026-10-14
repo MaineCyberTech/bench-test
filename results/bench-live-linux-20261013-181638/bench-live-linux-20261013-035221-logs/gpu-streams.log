@@ -1,2 +1,0 @@
-streams skipped (pre-Volta GPU: multi-stream matmul hangs)
-RESULT_JSON:{"phase": "streams", "skipped": true, "reason": "pre-Volta GPU"}
