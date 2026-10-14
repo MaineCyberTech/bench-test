@@ -77,6 +77,15 @@ def main():
     # the toolkit wins over anything the launcher itself imported, and every import
     # the app makes (benchreport, bootstrap, the phases) resolves from here
     sys.path.insert(0, bench)
+    # Run from a per-user work dir, never the bundle folder: a surviving child
+    # (a telemetry PowerShell loop, an ollama server started by the LLM phase)
+    # keeps its working directory open and would lock the download folder the user
+    # later wants to delete. Imports still come from `bench/` via sys.path.
+    try:
+        from benchreport import work_dir
+        os.chdir(work_dir())
+    except Exception:
+        pass
     sys.argv = [script] + _app_args(sys.argv)
     runpy.run_path(script, run_name="__main__")
     return 0
