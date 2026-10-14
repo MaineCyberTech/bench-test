@@ -34,6 +34,20 @@ import test_soak  # noqa: E402
 import test_version  # noqa: E402
 import test_bootstrap  # noqa: E402
 import test_packaging  # noqa: E402
+import test_sbom  # noqa: E402
+import test_a11y  # noqa: E402
+import test_lifecycle  # noqa: E402
+import test_hardening  # noqa: E402
+import test_observability  # noqa: E402
+import test_schema  # noqa: E402
+import test_server_p3  # noqa: E402
+import test_server_left  # noqa: E402
+import test_alerts  # noqa: E402
+import test_server_p2  # noqa: E402
+import test_contract  # noqa: E402
+import test_build_left  # noqa: E402
+import test_robustness  # noqa: E402
+import test_privacy  # noqa: E402
 import test_release_integrity  # noqa: E402
 
 MODULES = [test_control_plane, test_reporting, test_import, test_update,

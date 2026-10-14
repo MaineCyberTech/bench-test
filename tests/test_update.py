@@ -214,17 +214,16 @@ def run():
     finally:
         _Stub.with_sums = True
     c.check("an iso without SHA256SUMS is not ok", r3b.get("ok") is False, r3b)
-    c.check("an iso without SHA256SUMS is unverified, not a mismatch",
-            r3b.get("verified") is None and "no SHA256SUMS" in str(r3b.get("unverified")), r3b)
-    c.check("an unverifiable fetch says it could not verify",
-            "could not verify" in str(r3b.get("error")), r3b)
+    c.check("an iso without SHA256SUMS is refused, never unverified-but-ok",
+            r3b.get("verified") is False
+            and "no SHA256SUMS" in str(r3b.get("error")), r3b)
 
     # a SHA256SUMS with no .iso entry cannot verify anything either
     _Stub.sums = "%s  some-other-file.txt\n" % ("0" * 64)
     r3c = br.iso_fetch("iso-stub-1", "nvidia-legacy", dest=os.path.join(sand, "iso4"))
-    c.check("a SHA256SUMS with no .iso entry is unverifiable",
-            r3c.get("ok") is False and r3c.get("verified") is None
-            and "no .iso entry" in str(r3c.get("unverified")), r3c)
+    c.check("a SHA256SUMS with no .iso entry is refused",
+            r3c.get("ok") is False and r3c.get("verified") is False
+            and "no .iso entry" in str(r3c.get("error")), r3c)
 
     # ---- restart semantics ----
     c.check("git update always restarts (so the commit re-registers)",
