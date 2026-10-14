@@ -547,6 +547,19 @@
         }
       }
     },
+    "/api/v1/server/update": {
+      "post": {
+        "tags": ["ui"],
+        "summary": "Pull the control plane's own git checkout and restart it (operator only; a git deploy, not a copy-deploy).",
+        "operationId": "serverUpdate",
+        "x-required-role": "operator",
+        "security": [{"operatorBearer": []}],
+        "responses": {
+          "200": {"description": "Updated (or already current).", "content": {"application/json": {"schema": {"type": "object", "additionalProperties": true}}}},
+          "403": {"description": "Operator only.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
     "/api/v1/trends": {
       "get": {
         "tags": ["ui"],

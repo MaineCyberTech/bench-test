@@ -34,6 +34,7 @@ server/benchd.conf, ~/.config/benchd.conf, /etc/benchd.conf   (key=value).
 """
 import argparse
 import base64
+import collections
 import csv
 import hashlib
 import io
@@ -168,6 +169,7 @@ API_ROUTES = (
     {"method": "GET", "path": "/api/v1/runs/{run_id}", "auth": "operator"},
     {"method": "GET", "path": "/api/v1/trends", "auth": "operator"},
     {"method": "POST", "path": "/api/v1/register", "auth": "join"},
+    {"method": "POST", "path": "/api/v1/server/update", "auth": "operator"},
     {"method": "POST", "path": "/api/v1/runners/{runner_id}/heartbeat", "auth": "runner"},
     {"method": "POST", "path": "/api/v1/runners/{runner_id}/rotate", "auth": "runner"},
     {"method": "POST", "path": "/api/v1/runners/{runner_id}/commands", "auth": "operator"},
