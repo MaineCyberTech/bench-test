@@ -1,0 +1,196 @@
+name: Tests
+
+# CI-P1-002 / TEST-P1-001 / BP-P1-001: no workflow ran the test suite, so a
+# red change could land on main unnoticed. This runs the suite, byte-compiles
+# the Python packages and syntax-checks the shell entry points on every push to
+# the long-lived branches and on every pull request.
+#
+# DET-P2-005 / SC-P1-002: every `uses:` is pinned to a full commit SHA.
+#
+# DET-P3-002 / SC-P2-002: a Trivy filesystem scan gates dependencies, secrets
+# and misconfiguration. SBOM-P2-004: pull requests get a dependency/license
+# review, and pushes emit the CycloneDX SBOM from packaging/sbom.py.
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Run test suite
+        run: python tests/run_all.py
+
+      - name: Byte-compile Python sources
+        run: python -m py_compile bench/*.py server/*.py
+
+      - name: Syntax-check shell scripts
+        run: |
+          set -euo pipefail
+          bash -n bench/Run-LinuxBench.sh live/Build-LiveUSB.sh
+          # live/airootfs/usr/local/bin/bench-* is mostly bash/sh, but bench-slot
+          # is a python3 script - only syntax-check the shell entry points.
+          for f in live/airootfs/usr/local/bin/bench-*; do
+            if head -n1 "$f" | grep -qE '^#!.*(bash|/sh)'; then
+              bash -n "$f"
+            fi
+          done
+
+      - name: Parse-check PowerShell battery scripts
+        # TEST-P2-003: the PowerShell battery was only ever validated by substring
+        # assertions in tests/test_packaging.py, so a genuine parse error (an
+        # unbalanced brace, a typo'd keyword) shipped unnoticed. Parse every
+        # tracked *.ps1 with the real PowerShell language parser and fail on any
+        # parse error. GitHub-hosted ubuntu runners ship pwsh, and parsing is
+        # Python-agnostic, so run it once rather than on every matrix leg.
+        if: matrix.python-version == '3.12'
+        shell: pwsh
+        run: |
+          $bad = 0
+          $scripts = Get-ChildItem -Recurse -Filter *.ps1 -File
+          Write-Host "parse-checking $($scripts.Count) PowerShell script(s)"
+          foreach ($script in $scripts) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              $bad = 1
+              Write-Host "::error file=$($script.FullName)::$($errors[0].Message)"
+            }
+          }
+          if ($bad -eq 0) { Write-Host "all PowerShell scripts parse cleanly" }
+          exit $bad
+
+      - name: Syntax-check web dashboard JavaScript
+        # TEST-P2-003: server/web/app.js is the whole dashboard and was never
+        # parsed - a syntax error would only surface in a browser. `node --check`
+        # parses without executing, so it is safe to run on untrusted front-end
+        # code. Runs once; node is Python-agnostic.
+        if: matrix.python-version == '3.12'
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(server/web/*.js)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::no server/web/*.js files found to syntax-check"
+            exit 1
+          fi
+          for f in "${files[@]}"; do
+            node --check "$f"
+            echo "ok: $f"
+          done
+
+      - name: No generated results tracked
+        run: |
+          set -euo pipefail
+          # HYGIENE-P1-001 / PRIV-P1-001: results/ is generated output (and carries
+          # host PII); it must never be tracked. examples/ is the curated set.
+          tracked=$(git ls-files -- 'results/**')
+          if [ -n "$tracked" ]; then
+            echo "::error::generated results/ files are tracked; results/ is git-ignored output"
+            echo "$tracked" | head -20
+            exit 1
+          fi
+          echo "no results/ files are tracked"
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: --report-format=sarif --report-path=results.sarif
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@9f759ee644a3e7c15c1390abf49868036c00067b # v3.38.3
+        with:
+          sarif_file: results.sarif
+
+  trivy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Trivy filesystem scan (vulnerability + secret + config)
+        # DET-P3-002 / SC-P2-002: dependency/secret scanning was missing from CI.
+        # Scan the whole tree for vulnerable dependencies, leaked secrets and
+        # misconfiguration; fail the run on any HIGH/CRITICAL finding that has a
+        # fix available (ignore-unfixed keeps unfixable upstream CVEs from
+        # blocking every run).
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,config
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  supply-chain:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Dependency review (pull requests)
+        # SBOM-P2-004: no dependency/license gate existed. On PRs, fail on
+        # high-severity advisories and on the licenses denied by
+        # docs/DEPENDENCIES.md (strong copyleft / non-open terms that conflict
+        # with this proprietary, distributed toolkit).
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          deny-licenses: GPL-2.0,GPL-3.0,AGPL-3.0,LGPL-2.1,LGPL-3.0,SSPL-1.0,BUSL-1.1,Elastic-2.0
+
+      - name: Generate SBOM (push)
+        # SBOM-P2-004: emit the CycloneDX SBOM for the tree. packaging/sbom.py
+        # lands on a sibling branch, so this step is a no-op until it exists.
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          if [ -f packaging/sbom.py ]; then
+            python3 packaging/sbom.py --out sbom.json
+            echo "wrote sbom.json"
+          else
+            echo "packaging/sbom.py not present yet - skipping SBOM (no-op)"
+          fi
+
+      - name: Upload SBOM artifact
+        if: github.event_name == 'push' && hashFiles('sbom.json') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sbom
+          path: sbom.json
+          if-no-files-found: error
