@@ -2849,6 +2849,10 @@ def build_summary(report_path):
                     out["cpu_soak_size"] = r.get("size")
             elif r.get("gbps") is not None:
                 out["ram_soak_gbps"] = r.get("gbps")
+        elif phase == "driver-wait" and r.get("waited_s") is not None:
+            # the runner's bounded wait for the GPU driver (Run-LinuxBench.sh)
+            out["gpu_driver_wait_s"] = r.get("waited_s")
+            out["gpu_driver_usable"] = r.get("usable")
         elif phase == "seqwrite" and r.get("mbps") is not None:
             out["disk_seqwrite_mbps"] = r.get("mbps")
         elif phase == "integrity" and r.get("bad_elements") is not None:
@@ -2877,6 +2881,9 @@ def build_summary(report_path):
                        key=os.path.getmtime)
         if shots:
             out["gfx"] = {"screenshot": os.path.basename(shots[-1])}
+    # a report whose GPU phases found no usable backend carries the kind; keep
+    # the finding in this row too (build_summary_dir does the same)
+    apply_backend_liveness(out, [data])
     return redact.redact_obj(out) if redact.is_enabled() else out
 
 
@@ -2972,6 +2979,11 @@ def _merge_into(s, j):
                 setd("cpu_soak_size", r.get("size"))
             elif r.get("gbps") is not None:
                 setd("ram_soak_gbps", r["gbps"])
+        elif phase == "driver-wait" and r.get("waited_s") is not None:
+            # the runner's bounded wait for the GPU driver (Run-LinuxBench.sh):
+            # how long it cost and whether the GPU was usable when it gave up
+            setd("gpu_driver_wait_s", r.get("waited_s"))
+            setd("gpu_driver_usable", r.get("usable"))
         elif phase == "seqwrite":
             setd("disk_seqwrite_mbps", r.get("mbps"))
         elif phase == "integrity" and r.get("bad_elements") is not None:
@@ -3248,6 +3260,76 @@ def apply_sampler_liveness(summary, results_dir, since=None, now=None, log=None)
     return live
 
 
+def backend_liveness(reports):
+    """Finding when the GPU group ran but found no usable compute backend.
+
+    A live USB run started before the NVIDIA driver finished coming up reports
+    "no usable backend" for every GPU phase - and records no gpu_soak_tflops
+    and no verdicts, which is indistinguishable from a run whose preset never
+    asked for a GPU test. gpu_bench marks those phase results with
+    ``backend_error_kind`` (driver_not_ready / no_cuda_device / no_torch), so
+    turn them into an explicit finding. `reports` is an iterable of report dicts
+    (build_summary_dir already has them loaded). Returns
+    ``{"level", "kind", "detail", "text"}`` or None when a backend was used.
+    Never raises.
+    """
+    for j in reports or []:
+        if not isinstance(j, dict):
+            continue
+        for ph in j.get("phases") or []:
+            if not isinstance(ph, dict):
+                continue
+            r = ph.get("result")
+            if not isinstance(r, dict):
+                continue
+            kind = r.get("backend_error_kind")
+            err = str(r.get("error") or "").strip()
+            if not kind:
+                # a record written before the kind existed still says it in the text
+                if "no usable backend" not in err:
+                    continue
+                kind = "unknown"
+            detail = re.sub(r"^no usable backend(?: \(kind=[^)]+\))?:?\s*", "", err) or err
+            return {"level": "warn", "kind": kind, "detail": detail or None,
+                    "text": "GPU group found no usable backend (%s)%s - the GPU phases "
+                            "recorded no results; this run was asked for a GPU test, it "
+                            "was not skipped" % (kind, (": " + detail) if detail else "")}
+    return None
+
+
+def apply_backend_liveness(summary, reports, log=None):
+    """Record a missing GPU backend in a run summary as an explicit warning.
+
+    Follows apply_sampler_liveness: the verdict carries only {"level", "text"}
+    like the other verdicts, the details live under `summary["gpu_backend"]`,
+    the run's status is never changed, and the finding is idempotent. Returns
+    the finding (or None when a backend was used / already recorded).
+    """
+    if isinstance(summary, dict):
+        cur = summary.get("gpu_backend")
+        if isinstance(cur, dict) and cur.get("ok") is False:
+            return None
+    try:
+        live = backend_liveness(reports)
+    except Exception:
+        return None
+    if not live:
+        return None
+    if isinstance(summary, dict):
+        vs = summary.get("verdicts")
+        if not isinstance(vs, list):
+            vs = []
+        summary["verdicts"] = [{"level": live["level"], "text": live["text"]}] + vs
+        summary["gpu_backend"] = {"ok": False, "kind": live["kind"],
+                                  "detail": live.get("detail")}
+    if log:
+        try:
+            log("[report] " + live["text"])
+        except Exception:
+            pass
+    return live
+
+
 def build_summary_dir(results_dir, window_h=8, since=None, log=None):
     """Merge all of a run's report JSONs (Windows main + per-group) into one row.
 
@@ -3292,6 +3374,10 @@ def build_summary_dir(results_dir, window_h=8, since=None, log=None):
     verdicts = _hardware_verdicts(results_dir, since=since, window_h=window_h)
     if verdicts:
         out["verdicts"] = verdicts
+    # a run whose GPU group found no usable backend must not read like a run
+    # that never asked for a GPU test: the finding rides in `verdicts` (details
+    # under `gpu_backend`), and never fails the run
+    apply_backend_liveness(out, reports, log=log)
     # a run whose sampler recorded nothing must not report green: the finding
     # rides in `verdicts` (details under `sampler`), and never fails the run
     apply_sampler_liveness(out, results_dir, since=since, now=now, log=log)

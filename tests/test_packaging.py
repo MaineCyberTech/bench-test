@@ -434,6 +434,130 @@ def run():
     else:
         skip("the Linux idle baseline behaviour check", "no bash here")
 
+    # ---- the runner waits for the GPU driver before the first GPU phase ----
+    # A live USB started a minute after boot lost its whole GPU soak: the DKMS
+    # module was built but not loaded, so no /dev/nvidia* and no libcuda.so.1
+    # existed, `import torch` failed, and the probe reported "no usable
+    # backend". The runner now waits (bounded) before the GPU group and records
+    # what the wait cost, so a slow bring-up is visible rather than fatal.
+    wm = re.search(r"# >>> gpu driver wait >>>\n(.*?)\n# <<< gpu driver wait <<<", lsrc, re.S)
+    c.check("the shipped GPU driver wait block is the one under test", bool(wm), "")
+    c.check("the wait runs before the first GPU phase",
+            bool(wm) and lsrc.index("# >>> gpu driver wait >>>")
+            < lsrc.index("run_phase gpu gpu_bench.py info"), "")
+    c.check("the wait is bounded and gated on the gpu group",
+            "BENCH_GPU_WAIT_SECONDS:-120" in (wm.group(1) if wm else "")
+            and 'if [ "$DO_GPU" = 1 ]' in (wm.group(1) if wm else ""), "")
+    if wm and bash:
+        d = tempfile.mkdtemp(prefix="bench-wait-")
+        bindir = os.path.join(d, "bin")
+        os.makedirs(bindir)
+
+        def _fake(path, body):
+            with open(path, "w", newline="\n") as fh:
+                fh.write("#!/usr/bin/env bash\n" + body)
+            os.chmod(path, 0o755)
+
+        _fake(os.path.join(bindir, "nvidia-smi"),
+              'n=$(cat "$NVSMI_COUNTER" 2>/dev/null || echo 0)\n'
+              'n=$((n+1))\n'
+              'echo "$n" > "$NVSMI_COUNTER"\n'
+              '[ "$n" -ge 2 ] && { echo "Fake GPU"; exit 0; }\n'
+              'exit 1\n')
+        _fake(os.path.join(bindir, "sleep"), "exit 0\n")
+        _fake(os.path.join(d, "fakepy"),
+              'n=$(cat "$PY_COUNTER" 2>/dev/null || echo 0)\n'
+              'n=$((n+1))\n'
+              'echo "$n" > "$PY_COUNTER"\n'
+              '[ "$n" -ge 2 ] && exit 0\n'
+              'exit 1\n')
+        waitenv = dict(os.environ, DO_GPU="1", PY=os.path.join(d, "fakepy"),
+                       PATH=bindir + os.pathsep + os.environ.get("PATH", ""),
+                       NVSMI_COUNTER=os.path.join(d, "nv.count"),
+                       PY_COUNTER=os.path.join(d, "py.count"))
+        jl = os.path.join(d, "records.jsonl")
+        r = subprocess.run([bash, "-s"], input=wm.group(1), capture_output=True, text=True,
+                           encoding="utf-8", timeout=60, env=dict(waitenv, JSONL=jl))
+        recs = [json.loads(ln) for ln in open(jl).read().splitlines() if ln.strip()] \
+            if os.path.isfile(jl) else []
+        c.check("the wait polls until nvidia-smi AND torch answer, then records the seconds",
+                r.returncode == 0 and recs
+                and recs[-1].get("group") == "gpu" and recs[-1].get("phase") == "driver-wait"
+                and recs[-1]["result"].get("waited_s") == 10
+                and recs[-1]["result"].get("usable") is True
+                and "GPU usable after 10s" in r.stdout,
+                (r.returncode, recs, r.stdout, r.stderr[:120]))
+        # a bring-up that outlives the bound proceeds (the missing backend is
+        # recorded by the phases) and says so
+        _fake(os.path.join(bindir, "nvidia-smi"), "exit 1\n")
+        jl2 = os.path.join(d, "records2.jsonl")
+        r2 = subprocess.run([bash, "-s"], input=wm.group(1), capture_output=True, text=True,
+                            encoding="utf-8", timeout=60,
+                            env=dict(waitenv, JSONL=jl2, BENCH_GPU_WAIT_SECONDS="10"))
+        recs2 = [json.loads(ln) for ln in open(jl2).read().splitlines() if ln.strip()] \
+            if os.path.isfile(jl2) else []
+        c.check("a wait that times out is recorded as not usable, not fatal",
+                r2.returncode == 0 and recs2
+                and recs2[-1]["result"] == {"waited_s": 10, "usable": False}
+                and "not usable" in r2.stdout,
+                (r2.returncode, recs2, r2.stdout))
+        # --skip-gpu keeps the wait (and torch) entirely out of the run
+        jl3 = os.path.join(d, "records3.jsonl")
+        r3 = subprocess.run([bash, "-s"], input=wm.group(1), capture_output=True, text=True,
+                            encoding="utf-8", timeout=60,
+                            env=dict(waitenv, DO_GPU="0", JSONL=jl3))
+        c.check("a skipped gpu group never pays the wait",
+                r3.returncode == 0 and not os.path.isfile(jl3)
+                and "driver wait" not in r3.stdout, (r3.returncode, r3.stdout))
+    else:
+        skip("the GPU driver wait behaviour checks", "no bash here")
+
+    # ---- the Linux summary carries the missing-backend verdict and the wait ----
+    # The runner's own summary (and its runs-index row, which the agent sends
+    # verbatim) must carry the same finding benchreport.build_summary_dir adds,
+    # so a run with no GPU never looks like one that was not asked for one.
+    sm = re.search(r"# >>> run summary >>>\n(.*?)\n# <<< run summary <<<", lsrc, re.S)
+    c.check("the shipped Linux summary block is the one under test", bool(sm), "")
+    if sm and bash:
+        d = tempfile.mkdtemp(prefix="bench-runsum-")
+        jl = os.path.join(d, "records.jsonl")
+        with open(jl, "w") as fh:
+            fh.write(json.dumps({"group": "gpu", "phase": "driver-wait",
+                                 "result": {"waited_s": 10, "usable": True}}) + "\n")
+            fh.write(json.dumps({"group": "gpu", "phase": "info",
+                                 "result": {"phase": "info", "backend": None,
+                                            "error": "no usable backend (kind=driver_not_ready): "
+                                                     "ImportError: libcuda.so.1: cannot open "
+                                                     "shared object file: No such file or directory",
+                                            "backend_error_kind": "driver_not_ready"}}) + "\n")
+        logdir = os.path.join(d, "logs")
+        os.makedirs(logdir)
+        base = os.path.join(d, "host-linux-20260101-000000")
+        env = dict(os.environ, JSONL=jl, BASE=base, HOST="host",
+                   ISO="2026-01-01T00:00:00+00:00", PY=sys.executable, ROOT=REPO,
+                   TELEMETRY=os.path.join(d, "none.telemetry.csv"), LOGDIR=logdir)
+        r = subprocess.run([bash, "-s"], input=sm.group(1), capture_output=True, text=True,
+                           encoding="utf-8", timeout=120, env=env)
+        with open(os.path.join(d, "runs-index.jsonl")) as fh:
+            idx = json.loads([ln for ln in fh.read().splitlines() if ln.strip()][-1])
+        with open(base + ".json") as fh:
+            repj = json.load(fh)
+        c.check("the runner's summary carries the missing-backend verdict",
+                r.returncode == 0 and (idx.get("gpu_backend") or {}).get("ok") is False
+                and (idx.get("gpu_backend") or {}).get("kind") == "driver_not_ready"
+                and any(v.get("level") == "warn" and "no usable backend" in v.get("text", "")
+                        for v in idx.get("verdicts") or []),
+                (r.returncode, idx.get("gpu_backend"), idx.get("verdicts"), r.stderr[:200]))
+        c.check("the runner records the driver wait in the summary",
+                idx.get("gpu_driver_wait_s") == 10 and idx.get("gpu_driver_usable") is True, idx)
+        c.check("the missing backend is a warn line in the run log",
+                "[warn]" in r.stdout and "no usable backend" in r.stdout, r.stdout[-200:])
+        c.check("the report JSON carries the same finding",
+                (repj.get("gpu_backend") or {}).get("kind") == "driver_not_ready",
+                repj.get("gpu_backend"))
+    else:
+        skip("the Linux run-summary behaviour checks", "no bash here")
+
     # the Windows side: run_win.py captures the baseline itself (the battery
     # script is untouched) and writes the idle_* fields into its own report
     rwmod = _load("run_win_idle", os.path.join(BENCH, "run_win.py"))

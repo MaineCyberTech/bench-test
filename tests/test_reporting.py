@@ -826,6 +826,140 @@ def run():
                 x["text"] for x in _hardware_verdicts(hd) if x["level"] == "good") or
             not [x for x in v if x["level"] == "good"], v)
 
+    # ---- a GPU group with no usable backend must be an explicit verdict ----
+    # Field failure: a live USB run started a minute after boot; the NVIDIA
+    # driver was not up, torch could not even import (libcuda missing), and the
+    # run recorded nothing - no gpu_soak_tflops, no verdicts - which is
+    # indistinguishable from a run whose preset never asked for a GPU test.
+    # gpu_bench now marks those phase results with backend_error_kind.
+    from benchreport import backend_liveness, apply_backend_liveness
+    bd = tmpdir()
+    backend_rec = {"group": "gpu", "phase": "info",
+                   "result": {"phase": "info", "backend": None,
+                              "error": "no usable backend (kind=driver_not_ready): "
+                                       "ImportError: libcuda.so.1: cannot open shared "
+                                       "object file: No such file or directory",
+                              "backend_error_kind": "driver_not_ready"}}
+    backend_report = {"host": "h", "phases": [backend_rec]}
+    with open(os.path.join(bd, "host-linux-20260101-000000.json"), "w") as fh:
+        json.dump(backend_report, fh)
+    bs = build_summary_dir(bd, since=time.time() - 60)
+    c.check("a missing GPU backend is a warn verdict",
+            any(v.get("level") == "warn" and "no usable backend" in v.get("text", "")
+                for v in bs.get("verdicts") or []), bs.get("verdicts"))
+    c.check("the summary names the missing-backend reason",
+            (bs.get("gpu_backend") or {}).get("ok") is False
+            and (bs.get("gpu_backend") or {}).get("kind") == "driver_not_ready",
+            bs.get("gpu_backend"))
+    c.check("the verdict says the GPU test was asked for, not skipped",
+            "not skipped" in " ".join(v.get("text", "") for v in bs.get("verdicts") or []),
+            bs.get("verdicts"))
+    c.check("the missing-backend verdict keeps the {level,text} shape",
+            all(set(v) == {"level", "text"} for v in bs.get("verdicts") or []),
+            bs.get("verdicts"))
+    c.check("the finding is a warn, never a failed run",
+            srv.benchd.run_failed("done", bs) is False, bs.get("verdicts"))
+
+    # a backend that was used is not an error
+    ud = tmpdir()
+    with open(os.path.join(ud, "host-linux-20260101-000001.json"), "w") as fh:
+        json.dump({"host": "h", "phases": [
+            {"group": "gpu", "phase": "soak",
+             "result": {"phase": "soak", "backend": "cuda", "matmul_tflops": 81.1}}]}, fh)
+    us = build_summary_dir(ud, since=time.time() - 60)
+    c.check("a run that used a backend gets no missing-backend verdict",
+            "gpu_backend" not in us
+            and not any("no usable backend" in v.get("text", "")
+                        for v in us.get("verdicts") or []), us.get("verdicts"))
+
+    # idempotent, and it logs the finding exactly once
+    fresh = {}
+    lines = []
+    r1 = apply_backend_liveness(fresh, [backend_report], log=lines.append)
+    r2 = apply_backend_liveness(fresh, [backend_report], log=lines.append)
+    c.check("apply_backend_liveness is idempotent and logs once",
+            r1 is not None and r2 is None and len(lines) == 1
+            and len(fresh.get("verdicts") or []) == 1, (r1, r2, lines, fresh))
+    bl = backend_liveness([backend_report])
+    c.check("backend_liveness names the kind and keeps the driver detail",
+            bl and bl["kind"] == "driver_not_ready" and "libcuda" in (bl.get("detail") or ""), bl)
+    # a record written before the kind existed still says it in the error text
+    old_rec = {"group": "gpu", "phase": "info",
+               "result": {"phase": "info",
+                          "error": "no usable backend (CUDA torch, onnxruntime-directml, "
+                                   "or CPU torch)"}}
+    c.check("a legacy no-backend record is still caught",
+            (backend_liveness([{"phases": [old_rec]}]) or {}).get("kind") == "unknown",
+            backend_liveness([{"phases": [old_rec]}]))
+
+    # the driver wait reaches the dashboard summary path as flat fields
+    wd = tmpdir()
+    with open(os.path.join(wd, "host-linux-20260101-000002.json"), "w") as fh:
+        json.dump({"host": "h", "phases": [
+            {"group": "gpu", "phase": "driver-wait",
+             "result": {"waited_s": 15, "usable": True}}]}, fh)
+    ws = build_summary_dir(wd, since=time.time() - 60)
+    c.check("the GPU driver wait is a flat summary field",
+            ws.get("gpu_driver_wait_s") == 15 and ws.get("gpu_driver_usable") is True, ws)
+
+    # ---- the probe must say WHY CUDA was not selected ----
+    # The three cases the incident needed told apart: the NVIDIA driver still
+    # coming up (libcuda missing, so `import torch` itself fails), torch
+    # importing but seeing no CUDA device, and no torch at all. The shipped
+    # probe runs with fake modules so each case is deterministic (this box has a
+    # real torch, and CI may have a real DirectML provider).
+    import subprocess as _sub
+
+    def _probe_case(fake_torch):
+        pd = tmpdir()
+        with open(os.path.join(pd, "torch.py"), "w", encoding="utf-8") as fh:
+            fh.write(fake_torch)
+        with open(os.path.join(pd, "onnxruntime.py"), "w", encoding="utf-8") as fh:
+            fh.write("def get_available_providers():\n    return []\n")
+        env = dict(os.environ, PYTHONPATH=pd)
+        pr = _sub.run([sys.executable, os.path.join(BENCH, "gpu_bench.py"), "probe"],
+                      capture_output=True, text=True, encoding="utf-8", timeout=120, env=env)
+        ph = _sub.run([sys.executable, os.path.join(BENCH, "gpu_bench.py"), "info"],
+                      capture_output=True, text=True, encoding="utf-8", timeout=120, env=env)
+        rec = {}
+        for ln in ph.stdout.splitlines():
+            if ln.startswith("RESULT_JSON:"):
+                rec = json.loads(ln.split(":", 1)[1])
+        return pr, ph, rec
+
+    pr, ph, rec = _probe_case(
+        "raise ImportError('libcuda.so.1: cannot open shared object file: "
+        "No such file or directory')\n")
+    c.check("probe: a driver that is not up is named and suggests the wait",
+            "BACKEND_ERROR=driver_not_ready" in pr.stdout
+            and "kind=driver_not_ready" in pr.stderr
+            and "wait for the driver" in pr.stderr, (pr.stdout, pr.stderr))
+    c.check("a no-backend phase result carries the kind so the summary can see it",
+            ph.returncode == 2 and rec.get("backend_error_kind") == "driver_not_ready"
+            and "kind=driver_not_ready" in (rec.get("error") or ""), (ph.returncode, rec))
+
+    pr, ph, rec = _probe_case('__version__ = "9.9.9"\n'
+                              'class _C:\n'
+                              '    @staticmethod\n'
+                              '    def is_available():\n'
+                              '        return False\n'
+                              'cuda = _C()\n'
+                              'class _V:\n'
+                              '    cuda = None\n'
+                              'version = _V()\n')
+    c.check("probe: torch importing without a CUDA device is its own kind",
+            "BACKEND_ERROR=no_cuda_device" in pr.stdout and "BACKEND=cpu" in pr.stdout,
+            pr.stdout)
+    c.check("a used backend is not recorded as an error",
+            ph.returncode == 0 and not rec.get("backend_error_kind"), (ph.returncode, rec))
+
+    pr, ph, rec = _probe_case("raise ModuleNotFoundError(\"No module named 'torch'\")\n")
+    c.check("probe: no torch at all is its own kind",
+            "BACKEND_ERROR=no_torch" in pr.stdout and "BACKEND=none" in pr.stdout, pr.stdout)
+    c.check("a no-torch phase result carries the kind too",
+            ph.returncode == 2 and rec.get("backend_error_kind") == "no_torch",
+            (ph.returncode, rec))
+
     # ---- the sequential write must flush as it goes ----
     # With one flush at the end the page cache absorbs the whole file and the number
     # measures free RAM: 512 MiB reported 45 MB/s that way and 128 MiB 279 MB/s, while

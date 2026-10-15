@@ -205,6 +205,49 @@ PYEOF
 fi
 # <<< idle baseline <<<
 
+# ---- GPU driver bring-up wait ----------------------------------------------
+# A live USB can start a run minutes after boot, before the NVIDIA driver has
+# finished coming up: the DKMS module is built but not yet loaded, so there is
+# no /dev/nvidia* and no libcuda.so.1 - and a CUDA-built torch cannot even be
+# imported without libcuda, which makes the backend probe report "no usable
+# backend" (the CPU fallback is the same module, so it fails too). Wait for the
+# driver before the first GPU phase: `nvidia-smi` answers AND `import torch`
+# succeeds. Bounded (BENCH_GPU_WAIT_SECONDS, default 120s, in
+# BENCH_GPU_WAIT_STEP-sized steps) and gated on the gpu group, so a skipped
+# GPU group never pays it and non-GPU groups never depend on torch. If it never
+# comes up, the run proceeds and gpu_bench records the missing backend.
+# >>> gpu driver wait >>>
+GPU_WAIT_S=0
+GPU_READY=0
+if [ "$DO_GPU" = 1 ] && command -v nvidia-smi >/dev/null 2>&1; then
+    GPU_WAIT_MAX="${BENCH_GPU_WAIT_SECONDS:-120}"
+    GPU_WAIT_STEP="${BENCH_GPU_WAIT_STEP:-5}"
+    while :; do
+        if nvidia-smi --query-gpu=name --format=csv,noheader >/dev/null 2>&1 \
+                && "$PY" -c 'import torch' >/dev/null 2>&1; then
+            GPU_READY=1
+            break
+        fi
+        [ "$GPU_WAIT_S" -ge "$GPU_WAIT_MAX" ] && break
+        sleep "$GPU_WAIT_STEP"
+        GPU_WAIT_S=$((GPU_WAIT_S + GPU_WAIT_STEP))
+    done
+    if [ "$GPU_READY" = 1 ] && [ "$GPU_WAIT_S" -eq 0 ]; then
+        :   # already up: nothing to record
+    else
+        if [ "$GPU_READY" = 1 ]; then
+            echo "[gpu] driver wait: GPU usable after ${GPU_WAIT_S}s"
+        else
+            echo "[gpu] driver wait: GPU still not usable after ${GPU_WAIT_S}s - proceeding; the GPU phases will record the missing backend"
+        fi
+        GPU_READY_JSON=false
+        [ "$GPU_READY" = 1 ] && GPU_READY_JSON=true
+        printf '{"group":"gpu","phase":"driver-wait","result":{"waited_s":%d,"usable":%s}}\n' \
+            "$GPU_WAIT_S" "$GPU_READY_JSON" >> "$JSONL"
+    fi
+fi
+# <<< gpu driver wait <<<
+
 if [ "$DO_GPU" = 1 ]; then
     run_phase gpu gpu_bench.py info
     run_phase gpu gpu_bench.py matmul --size "$GPU_SIZE" --seconds 10 --force
@@ -674,8 +717,9 @@ sensors -j > "$LOGDIR/sensors.end.json" 2>&1 || true
 journalctl -k --since "$ISO" --no-pager > "$LOGDIR/kernel-since-start.log" 2>&1 || true
 journalctl -p err --since "$ISO" --no-pager > "$LOGDIR/errors-since-start.log" 2>&1 || true
 
+# >>> run summary >>>
 "$PY" - "$JSONL" "$BASE.json" "$BASE.md" "$HOST" "$ISO" "$PY" "$ROOT" "$TELEMETRY" "$LOGDIR" <<'PYEOF' 2> "$LOGDIR/summary-error.txt"
-import json, os, subprocess, sys, platform
+import json, os, re, subprocess, sys, platform
 jsonl, json_out, md_out, host, iso, py, root, telemetry_csv, logdir = sys.argv[1:10]
 
 recs = []
@@ -708,6 +752,35 @@ idle_rec = find("idle", "baseline")
 idle_res = idle_rec.get("result") if isinstance(idle_rec, dict) else None
 llm_rec = find("llm", "bench")
 llm_res = llm_rec.get("result") if isinstance(llm_rec, dict) else None
+
+# GPU driver bring-up: the wait before the first GPU phase records what it cost
+# and whether it ended usable, so a slow driver shows up as a wait, not a gap.
+wait_rec = find("gpu", "driver-wait")
+wait_res = wait_rec.get("result") if isinstance(wait_rec, dict) else None
+
+
+# A GPU group that found no usable backend must not read like a run that never
+# asked for one: gpu_bench marks the failed phases with backend_error_kind, so
+# turn that into an explicit warn verdict. Same finding as
+# benchreport.apply_backend_liveness (the dashboards' summary path).
+def backend_finding():
+    for r in recs:
+        res = r.get("result") if isinstance(r, dict) else None
+        if not isinstance(res, dict) or r.get("group") != "gpu":
+            continue
+        kind = res.get("backend_error_kind")
+        if not kind:
+            continue
+        err = str(res.get("error") or "").strip()
+        detail = re.sub(r"^no usable backend(?: \(kind=[^)]+\))?:?\s*", "", err) or err
+        return {"level": "warn", "kind": kind, "detail": detail or None,
+                "text": "GPU group found no usable backend (%s)%s - the GPU phases "
+                        "recorded no results; this run was asked for a GPU test, it "
+                        "was not skipped" % (kind, (": " + detail) if detail else "")}
+    return None
+
+
+backend = backend_finding()
 
 
 def idle_fields(res):
@@ -783,6 +856,14 @@ report = {
     "phases": recs,
 }
 report.update(idle_flat)
+if wait_res is not None:
+    report["gpu_driver_wait_s"] = wait_res.get("waited_s")
+    report["gpu_driver_usable"] = wait_res.get("usable")
+if backend is not None:
+    report["gpu_backend"] = {"ok": False, "kind": backend["kind"],
+                             "detail": backend["detail"]}
+    report["verdicts"] = [{"level": backend["level"], "text": backend["text"]}]
+    print("[warn] " + backend["text"])
 if idle_res is not None:
     report["idle"] = idle_res
 if llm_res is not None:
@@ -813,6 +894,13 @@ md.append("PyTorch %s (CUDA %s) | %s" % (env.get("torch"), env.get("torch_cuda")
 md.append("")
 md.append("Fan curve: %s" % ("`%s`" % fan_conf if fan_conf else "automatic"))
 md.append("")
+if wait_res is not None and wait_res.get("usable") is not True:
+    md.append("**GPU driver wait:** GPU still not usable after %ss - the GPU phases "
+              "record the missing backend, not a measurement" % wait_res.get("waited_s"))
+    md.append("")
+if backend is not None:
+    md.append("**GPU backend:** missing - %s" % backend["text"])
+    md.append("")
 
 def table(title, rows):
     md.append("## %s" % title)
@@ -1145,6 +1233,13 @@ idx = {
     "telemetry": telemetry,
 }
 idx.update(idle_flat)
+if wait_res is not None:
+    idx["gpu_driver_wait_s"] = wait_res.get("waited_s")
+    idx["gpu_driver_usable"] = wait_res.get("usable")
+if backend is not None:
+    idx["gpu_backend"] = {"ok": False, "kind": backend["kind"],
+                          "detail": backend["detail"]}
+    idx["verdicts"] = [{"level": backend["level"], "text": backend["text"]}]
 if idle_res is not None:
     idx["idle"] = idle_res
 if llm_res is not None:
@@ -1158,6 +1253,7 @@ with open(md_out, "w") as fh:
 
 print("[done] wrote %s and %s" % (json_out, md_out))
 PYEOF
+# <<< run summary <<<
 # The battery itself is done at this point; if the report writer throws we must not
 # report the whole run as failed (it also loses the summary). Surface it loudly,
 # keep the traceback next to the logs, and exit 0 - the phases really did run.

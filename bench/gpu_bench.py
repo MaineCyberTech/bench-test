@@ -734,6 +734,45 @@ def detect_backend(requested):
     return None
 
 
+# Import failures that mean "the NVIDIA driver is not up yet" rather than "no
+# torch at all": libcuda.so.1 missing on Linux, the CUDA DLLs/NVML on Windows.
+_DRIVER_MARKERS = ("libcuda", "nvcuda", "cuda", "nvidia")
+
+
+def classify_backend_error():
+    """Why the CUDA path is not usable, as ``(kind, detail)``; ``(None, None)`` when it is.
+
+    The three cases an operator has to tell apart:
+      * ``driver_not_ready`` - importing torch itself failed because the NVIDIA
+        driver is not up yet (no /dev/nvidia*, no libcuda.so.1). A live USB
+        booted moments ago hits this: the DKMS module is built but not loaded,
+        and waiting for the driver before the GPU group (Run-LinuxBench.sh
+        does) is the fix.
+      * ``no_cuda_device`` - torch imports but reports no CUDA device.
+      * ``no_torch`` - no importable torch at all.
+
+    torch stays optional and lazy: this is only called when a GPU phase or the
+    probe asks why CUDA was not selected.
+    """
+    try:
+        import torch as t
+    except Exception as e:
+        msg = "%s: %s" % (type(e).__name__, e)
+        if any(m in msg.lower() for m in _DRIVER_MARKERS):
+            return "driver_not_ready", (
+                "torch import failed while the NVIDIA driver is coming up (%s); "
+                "wait for the driver before the GPU group" % msg)
+        return "no_torch", "torch could not be imported (%s)" % msg
+    try:
+        if t.cuda.is_available():
+            return None, None
+    except Exception as e:
+        return "no_cuda_device", "torch.cuda.is_available() failed: %s: %s" % (
+            type(e).__name__, e)
+    return "no_cuda_device", "torch %s imports but reports no CUDA device" % (
+        getattr(t, "__version__", "?"))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("phase", choices=sorted(TORCH_PHASES) + ["probe"])
@@ -765,11 +804,25 @@ def main():
         log("TORCH=%d" % torch_ok)
         log("DML=%d" % dml)
         log("BACKEND=%s" % (backend or "none"))
+        # WHY the CUDA path was not taken, so a missing driver is not just "CUDA=0"
+        kind, detail = classify_backend_error()
+        if kind:
+            log("BACKEND_ERROR=%s" % kind)
+        if backend is None:
+            print("ERROR: no usable backend (kind=%s): %s" % (kind or "unknown", detail or ""),
+                  file=sys.stderr)
         return 0
 
     if backend is None:
-        print("ERROR: no usable backend (CUDA torch, onnxruntime-directml, or CPU torch)",
-              file=sys.stderr)
+        # Name the reason and record it: a run with no usable backend must never
+        # look like a run that was not asked for a GPU test. The runner stores
+        # this RESULT_JSON in the run and benchreport turns it into a warn
+        # verdict (apply_backend_liveness).
+        kind, detail = classify_backend_error()
+        err = "no usable backend (kind=%s): %s" % (kind or "unknown", detail or "")
+        print("ERROR: " + err, file=sys.stderr)
+        jline({"phase": a.phase, "backend": None, "error": err,
+               "backend_error_kind": kind or "unknown"})
         return 2
     a.backend = backend
     a.device = "cuda" if backend == "cuda" else ("cpu" if backend == "cpu" else "dml")
