@@ -891,6 +891,21 @@ def run():
     c.check("a legacy no-backend record is still caught",
             (backend_liveness([{"phases": [old_rec]}]) or {}).get("kind") == "unknown",
             backend_liveness([{"phases": [old_rec]}]))
+    # the Windows battery writes phases without a `group` key (and a flat
+    # report), so the detection must not depend on one
+    win_rec = {"phase": "info", "telemetry": None,
+               "result": {"phase": "info", "backend": None,
+                          "error": "no usable backend (kind=no_torch): "
+                                   "torch could not be imported",
+                          "backend_error_kind": "no_torch"}}
+    c.check("the Windows report shape is caught too (no group key)",
+            (backend_liveness([{"phases": [win_rec]}]) or {}).get("kind") == "no_torch",
+            backend_liveness([{"phases": [win_rec]}]))
+    # the single-report summary path carries the finding as well
+    s1 = build_summary(os.path.join(bd, "host-linux-20260101-000000.json"))
+    c.check("build_summary carries the missing-backend finding",
+            (s1.get("gpu_backend") or {}).get("kind") == "driver_not_ready",
+            s1.get("gpu_backend"))
 
     # the driver wait reaches the dashboard summary path as flat fields
     wd = tmpdir()
