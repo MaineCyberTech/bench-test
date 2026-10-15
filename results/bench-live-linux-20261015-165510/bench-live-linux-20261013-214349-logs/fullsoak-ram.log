@@ -1,0 +1,2 @@
+ram soak 60.1s iters=82 7 GB/s errors=0
+RESULT_JSON:{"phase": "soak", "seconds": 60.1, "iters": 82, "gbps": 7.3, "errors": 0, "gib_per_array": 1.0}

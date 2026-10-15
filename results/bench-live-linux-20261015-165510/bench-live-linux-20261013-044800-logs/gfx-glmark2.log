@@ -1,0 +1,21 @@
+=======================================================
+    glmark2 2023.01
+=======================================================
+    OpenGL Information
+    GL_VENDOR:      NVIDIA Corporation
+    GL_RENDERER:    NVIDIA GeForce GTX 1080/PCIe/SSE2
+    GL_VERSION:     4.6.0 NVIDIA 580.178.04
+    Surface Config: buf=32 r=8 g=8 b=8 a=8 depth=24 stencil=0 samples=0
+    Surface Size:   800x600 windowed
+=======================================================
+[build] duration=2: FPS: 42545 FrameTime: 0.024 ms
+[texture] duration=2: FPS: 40475 FrameTime: 0.025 ms
+[shading] duration=2: FPS: 38280 FrameTime: 0.026 ms
+[bump] duration=2: FPS: 45709 FrameTime: 0.022 ms
+[effect2d] duration=2: FPS: 36150 FrameTime: 0.028 ms
+[jellyfish] duration=2: FPS: 23120 FrameTime: 0.043 ms
+[terrain] duration=2: FPS: 2272 FrameTime: 0.440 ms
+[shadow] duration=2: FPS: 16517 FrameTime: 0.061 ms
+=======================================================
+                                  glmark2 Score: 30632 
+=======================================================

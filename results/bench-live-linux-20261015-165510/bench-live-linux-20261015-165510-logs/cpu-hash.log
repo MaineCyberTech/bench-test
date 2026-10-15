@@ -1,0 +1,2 @@
+sha256 499 MB/s (64 MiB block)
+RESULT_JSON:{"phase": "hash", "sha256_mbps": 499.0, "mb": 64}

@@ -1,0 +1,2 @@
+ram integrity filled=39.0GiB chunks=156/156 passes=1/1 bad=0
+RESULT_JSON:{"phase": "integrity", "giB": 39.0, "chunks": 156, "passes": 1, "planned_chunks": 156, "planned_passes": 1, "bad_elements": 0}

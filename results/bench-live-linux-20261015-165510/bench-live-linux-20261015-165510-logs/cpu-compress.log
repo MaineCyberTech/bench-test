@@ -1,0 +1,2 @@
+compress zlib c/d=41/1420  lzma c/d=5/5 MB/s
+RESULT_JSON:{"phase": "compress", "zlib_compress_mbps": 41.0, "zlib_decompress_mbps": 1420.0, "lzma_compress_mbps": 5.0, "lzma_decompress_mbps": 5.0}
