@@ -124,7 +124,7 @@ jobs:
           echo "no results/ files are tracked"
 
   gitleaks:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, lab, lab-docker, ci-runner]
     permissions:
       contents: read
       security-events: write
@@ -156,7 +156,7 @@ jobs:
           sarif_file: results.sarif
 
   trivy:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, lab, lab-docker, ci-runner]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -176,7 +176,7 @@ jobs:
           exit-code: "1"
 
   supply-chain:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, lab, lab-docker, ci-runner]
     permissions:
       contents: read
       pull-requests: read

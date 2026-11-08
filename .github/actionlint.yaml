@@ -1,0 +1,12 @@
+# actionlint configuration for the organisation's self-hosted labels.
+self-hosted-runner:
+  labels:
+    - lab
+    - lab-ubuntu
+    - lab-python
+    - lab-sudo
+    - lab-docker
+    - lab-debian
+    - ci-runner
+    - edge-builder
+    - lab-runner-2
