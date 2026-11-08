@@ -4,6 +4,9 @@ name: Runner diagnostic
 # manually; it does not modify the runner or the repository.
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/runner-diagnostic.yml
 
 permissions:
   contents: read
