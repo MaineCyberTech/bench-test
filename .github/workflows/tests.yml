@@ -124,7 +124,7 @@ jobs:
           echo "no results/ files are tracked"
 
   gitleaks:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, lab, lab-docker, ci-runner]
     permissions:
       contents: read
       security-events: write
@@ -156,9 +156,22 @@ jobs:
           sarif_file: results.sarif
 
   trivy:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, lab, lab-docker, ci-runner]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check runner free space
+        # The Trivy vulnerability DB is about 132 MiB. Fail with a clear message
+        # before the download instead of a mid-write "no space left on device"
+        # when the self-hosted runner workspace volume is nearly full.
+        run: |
+          set -euo pipefail
+          df -h .
+          avail_kib=$(df -Pk . | awk 'NR==2 {print $4}')
+          if [ "$avail_kib" -lt 524288 ]; then
+            echo "::error::runner workspace has less than 512 MiB free (${avail_kib} KiB)"
+            exit 1
+          fi
 
       - name: Trivy filesystem scan (vulnerability + secret + config)
         # DET-P3-002 / SC-P2-002: dependency/secret scanning was missing from CI.
@@ -176,7 +189,7 @@ jobs:
           exit-code: "1"
 
   supply-chain:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, lab, lab-docker, ci-runner]
     permissions:
       contents: read
       pull-requests: read

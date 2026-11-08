@@ -1,2 +1,0 @@
-ram latency approx 13.6 ns/access, gather 0.6 GB/s
-RESULT_JSON:{"phase": "latency", "accesses": 5000000, "ns_per_access_approx": 13.6, "gather_gbps_approx": 0.6, "note": "numpy gather; not a pure dependent-load chase"}
