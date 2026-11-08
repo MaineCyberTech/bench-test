@@ -1,7 +1,0 @@
-[backend] cuda
-matmul fp16  N=12288 iters=15 TFLOPS=5.4
-matmul bf16  N=12288 iters=9 TFLOPS=3.0
-matmul tf32  N=12288 iters=20 TFLOPS=7.2
-matmul fp32  N=12288 iters=20 TFLOPS=7.2
-matmul fp64  N=12288 iters=1 TFLOPS=0.3
-RESULT_JSON:{"phase": "matmul", "backend": "cuda", "n": 12288, "results": {"fp16": {"iters": 15, "seconds": 10.35, "tflops": 5.4}, "bf16": {"iters": 9, "seconds": 11.18, "tflops": 3.0}, "tf32": {"iters": 20, "seconds": 10.31, "tflops": 7.2}, "fp32": {"iters": 20, "seconds": 10.37, "tflops": 7.2}, "fp64": {"iters": 1, "seconds": 13.35, "tflops": 0.3}}}

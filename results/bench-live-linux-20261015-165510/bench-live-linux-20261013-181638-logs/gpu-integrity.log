@@ -1,3 +1,0 @@
-[backend] cuda
-integrity filled=7.0GiB mismatched=0 bad_elements=0
-RESULT_JSON:{"phase": "integrity", "backend": "cuda", "chunks": 7, "gib": 7.0, "float_mismatched": 0, "int_bad_elements": 0}

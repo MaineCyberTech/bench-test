@@ -1,2 +1,0 @@
-soak 45.1s iters=413 GFLOPS=157.3
-RESULT_JSON:{"phase": "soak", "seconds": 45.1, "iters": 413, "gflops": 157.3}

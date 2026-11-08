@@ -1,2 +1,0 @@
-ram soak 60.0s iters=160 4 GB/s errors=0
-RESULT_JSON:{"phase": "soak", "seconds": 60.0, "iters": 160, "gbps": 4.3, "errors": 0, "gib_per_array": 0.5}

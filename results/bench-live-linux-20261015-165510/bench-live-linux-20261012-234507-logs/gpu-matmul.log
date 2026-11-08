@@ -1,6 +1,0 @@
-matmul fp16  N=12288 iters=15 TFLOPS=5.4
-matmul bf16  N=12288 iters=9 TFLOPS=3.0
-matmul tf32  N=12288 iters=20 TFLOPS=7.2
-matmul fp32  N=12288 iters=20 TFLOPS=7.1
-matmul fp64  N=12288 iters=1 TFLOPS=0.3
-RESULT_JSON:{"phase": "matmul", "n": 12288, "results": {"fp16": {"iters": 15, "seconds": 10.38, "tflops": 5.4}, "bf16": {"iters": 9, "seconds": 11.15, "tflops": 3.0}, "tf32": {"iters": 20, "seconds": 10.35, "tflops": 7.2}, "fp32": {"iters": 20, "seconds": 10.4, "tflops": 7.1}, "fp64": {"iters": 1, "seconds": 13.36, "tflops": 0.3}}}
