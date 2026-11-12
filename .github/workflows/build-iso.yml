@@ -50,6 +50,9 @@ concurrency:
 
 jobs:
   build:
+    # Gate the job that builds and publishes the release ISO behind the
+    # protected `release` environment's required reviewer.
+    environment: release
     # The lab iso-builder was grown to 246G (2026-10-13, a 1TB disk was added to testnuc),
     # so the hybrid variant (~100G+ scratch) fits too. Override runner_labels with
     # ubuntu-latest when the lab is unavailable.

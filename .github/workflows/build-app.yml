@@ -151,6 +151,9 @@ jobs:
 
   release:
     needs: build
+    # Gate the release-asset publisher behind the protected `release`
+    # environment's required reviewer.
+    environment: release
     runs-on: ubuntu-latest
     # the only job that writes: it attaches the release assets
     permissions:
